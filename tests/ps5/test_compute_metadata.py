@@ -12,6 +12,8 @@ ROOT = Path(__file__).resolve().parents[2]
 PSBC = ROOT / "third_party/opengnm-psbc"
 runtime = (ROOT / "src/platform/ps5_agc_native_runtime.c").read_text()
 backend = (ROOT / "src/platform/ps5_agc_runtime_backend.c").read_text()
+probe = (ROOT / "tests/ps5/egl_public_compute_probe.c").read_text()
+probe = probe[probe.index("#define OUTPUT_WORDS"):probe.index("int main(void)")]
 compute_at = backend.index("int\nps5_agc_compute_execute(")
 compute = backend[compute_at:backend.index("\n#endif", compute_at)]
 parser_at = runtime.index("static int shader_sections(")
@@ -118,7 +120,7 @@ code = r'''
 #include <string.h>
 #include "compiler/nir/nir_builder.h"
 #include "ps5_agc_package.h"
-''' + types + mock + parsers + compute + r'''
+''' + types + mock + parsers + compute + "\n" + probe + r'''
 static void submission_contract(PsbcShaderOutput *out) {
     _Alignas(16) uint32_t table_data[64]={0}, output[16]={0};
     table_data[0]=(uintptr_t)output; table_data[1]=(uintptr_t)output>>32;
@@ -249,10 +251,44 @@ static void shapes(void) {
         ralloc_free(nir);
     }
 }
+static void native_cases(void) {
+    for (unsigned test=0; test<ARRAY_SIZE(cases); ++test) {
+        nir_shader *nir=create_probe_shader(test);
+        PsbcShaderOutput out={0};
+        assert(psbc_compile_nir(nir, &opts, &out)==PSBC_RESULT_OK);
+        assert(out.metadata.compute_wave_size==32 && !out.metadata.scratch_valid);
+        assert(!memcmp(out.metadata.compute_workgroup_size, cases[test].local, sizeof(cases[test].local)));
+        assert(out.metadata.compute_lds_bytes==(test==SHARED ? 1024 : 0));
+        assert(out.metadata.compute_grid_size_valid==(test==GRID));
+        uint8_t *package=NULL;
+        size_t size=0;
+        assert(ps5_agc_package_build(&out, 0, &package, &size)==0);
+        free(package);
+        uint32_t output[OUTPUT_WORDS];
+        for (unsigned i=0; i<OUTPUT_WORDS; ++i) output[i]=GUARD_WORD;
+        for (unsigned i=0; i<cases[test].words; ++i) {
+            output[i]=17+3*(test==SHARED ? (i^32) : i);
+            if (test==GRID) output[i]+=73;
+            if (test==ATOMIC) output[i]=i<256 ? 255-i : 256;
+        }
+        assert(count_correct(test, output)==cases[test].words);
+        output[0]=UINT32_MAX;
+        assert(count_correct(test, output)==cases[test].words-1);
+        if (test==ATOMIC) {
+            output[0]=output[1]; /* A duplicated return value must fail. */
+            assert(count_correct(test, output)==256);
+            output[256]=257;
+            assert(count_correct(test, output)==255);
+        }
+        printf("Native probe compiled/package/oracle: %s code=%zu LDS=%u\n",
+            cases[test].name, out.machine_code_size, out.metadata.compute_lds_bytes);
+        psbc_free_output(&out); ralloc_free(nir);
+    }
+}
 int main(void) {
     psbc_init();
     for (unsigned i=0; i<4; ++i) compiled(i&1, i&2);
-    shapes(); psbc_shutdown();
+    shapes(); native_cases(); psbc_shutdown();
 }
 '''
 with tempfile.TemporaryDirectory() as directory:
