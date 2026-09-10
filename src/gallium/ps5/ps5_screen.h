@@ -24,6 +24,9 @@ void ps5_screen_submit_unlock(struct pipe_screen *screen);
 void ps5_context_queue_present(struct pipe_context *context, unsigned buffer_index);
 int ps5_context_last_draw_status(struct pipe_context *context,
                                  unsigned *draw_calls);
+/* Internal compute bring-up diagnostics; no public GL capability implied. */
+int ps5_context_last_compute_status(struct pipe_context *context,
+                                    unsigned *dispatches);
 int ps5_shader_state_info(void *state, size_t *machine_code_size,
                           unsigned *hardware_stage,
                           unsigned *unresolved_fields);

@@ -186,6 +186,11 @@ struct ps5_constant_state {
    bool valid;
 };
 
+#define PS5_COMPUTE_STORAGE_SLOTS 16
+struct ps5_compute_shader {
+   PsbcShaderOutput output;
+};
+
 struct ps5_context {
    struct pipe_context base;
    struct blitter_context *blitter;
@@ -240,6 +245,12 @@ struct ps5_context {
    unsigned sample_mask;
    bool queries_enabled;
    bool render_condition_inverted;
+   struct ps5_compute_shader *cs;
+   struct pipe_resource *compute_descriptors;
+   struct pipe_shader_buffer compute_buffers[PS5_COMPUTE_STORAGE_SLOTS];
+   bool compute_bindings_invalid;
+   int last_compute_status;
+   unsigned dispatches;
 };
 
 struct ps5_shader {
@@ -10068,6 +10079,170 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
    return true;
 }
 
+#ifdef PS5_NATIVE_TITLE_RUNTIME
+/* Internal compute bring-up only: fixed groups and raw SSBOs. Public compute
+ * caps stay off until UBOs, images, barriers, indirect execution and limits
+ * are complete. Reuse the synchronous native submission owner. */
+static void *
+ps5_create_compute_state(struct pipe_context *base,
+                         const struct pipe_compute_state *templ)
+{
+   struct ps5_context *context = (struct ps5_context *)base;
+   struct ps5_compute_shader *shader = NULL;
+   if (!templ || templ->ir_type != PIPE_SHADER_IR_NIR || !templ->prog)
+      return NULL;
+   nir_shader *nir = (nir_shader *)templ->prog; /* Gallium transfers ownership. */
+   if (nir->info.stage != MESA_SHADER_COMPUTE || nir->num_uniforms ||
+       nir->info.num_ubos || nir->info.num_images || nir->info.num_textures ||
+       nir->info.num_ssbos > PS5_COMPUTE_STORAGE_SLOTS)
+      goto cleanup;
+   if (!context->compute_descriptors) {
+      struct pipe_resource desc = {
+         .target = PIPE_BUFFER, .format = PIPE_FORMAT_R8_UNORM,
+         .width0 = PS5_COMPUTE_STORAGE_SLOTS * 16,
+         .height0 = 1, .depth0 = 1, .array_size = 1,
+         .usage = PIPE_USAGE_DEFAULT, .bind = PIPE_BIND_SHADER_BUFFER,
+      };
+      context->compute_descriptors = base->screen->resource_create(base->screen, &desc);
+      if (!context->compute_descriptors)
+         goto cleanup;
+   }
+   const struct ps5_resource *descriptors = (struct ps5_resource *)context->compute_descriptors;
+   PsbcCompileOptions options = {
+      .target = PSBC_TARGET_PS5, .stage = PSBC_STAGE_COMPUTE, .optimise = true,
+      .address32_hi = (uintptr_t)descriptors->data >> 32,
+      .gallium_buffer_arrays = true, .descriptor_binding_count = 1,
+      .descriptor_bindings = {{
+         .binding = PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
+         .type = PSBC_DESCRIPTOR_STORAGE_BUFFER,
+         .array_size = PS5_COMPUTE_STORAGE_SLOTS, .stride = 16,
+      }},
+   };
+   shader = calloc(1, sizeof(*shader));
+   if (shader) {
+      uint8_t *package = NULL;
+      size_t package_size = 0;
+      if (psbc_compile_nir(nir, &options, &shader->output) != PSBC_RESULT_OK ||
+          ps5_agc_package_build(&shader->output, 0, &package, &package_size)) {
+         psbc_free_output(&shader->output);
+         free(shader);
+         shader = NULL;
+      }
+      free(package);
+   }
+cleanup:
+   ralloc_free(nir);
+   return shader;
+}
+
+static void
+ps5_bind_compute_state(struct pipe_context *base, void *state)
+{
+   ((struct ps5_context *)base)->cs = state;
+}
+
+static void
+ps5_delete_compute_state(struct pipe_context *base, void *state)
+{
+   struct ps5_context *context = (struct ps5_context *)base;
+   struct ps5_compute_shader *shader = state;
+   if (!shader)
+      return;
+   if (context->cs == shader)
+      context->cs = NULL;
+   psbc_free_output(&shader->output);
+   free(shader);
+}
+
+static void
+ps5_get_compute_state_info(struct pipe_context *base, void *state,
+                           struct pipe_compute_state_object_info *info)
+{
+   (void)base;
+   struct ps5_compute_shader *shader = state;
+   memset(info, 0, sizeof(*info));
+   if (shader) {
+      info->max_threads = 1024;
+      info->preferred_simd_size = shader->output.metadata.compute_wave_size;
+      info->simd_sizes = info->preferred_simd_size;
+   }
+}
+
+static void
+ps5_set_shader_buffers(struct pipe_context *base, mesa_shader_stage stage,
+                        unsigned start, unsigned count,
+                        const struct pipe_shader_buffer *buffers, unsigned writable)
+{
+   struct ps5_context *context = (struct ps5_context *)base;
+   (void)writable; /* Conservatively flush every retained buffer for now. */
+   if (stage != MESA_SHADER_COMPUTE)
+      return;
+   context->compute_bindings_invalid = true;
+   if (start > PS5_COMPUTE_STORAGE_SLOTS || count > PS5_COMPUTE_STORAGE_SLOTS - start)
+      return;
+   for (unsigned i = 0; buffers && i < count; ++i) {
+      const struct pipe_shader_buffer *b = &buffers[i];
+      if (!b->buffer)
+         continue;
+      if (b->buffer->screen != base->screen || b->buffer->target != PIPE_BUFFER ||
+          !b->buffer_size || (b->buffer_offset & 15u) ||
+          b->buffer_offset > b->buffer->width0 || b->buffer_size > b->buffer->width0 - b->buffer_offset)
+         return;
+   }
+   /* Validate the entire update before releasing any previously owned buffer. */
+   for (unsigned i = 0; i < count; ++i) {
+      struct pipe_shader_buffer *bound = &context->compute_buffers[start + i];
+      const struct pipe_shader_buffer *b = buffers ? &buffers[i] : NULL;
+      pipe_resource_reference(&bound->buffer, b ? b->buffer : NULL);
+      bound->buffer_offset = b && b->buffer ? b->buffer_offset : 0;
+      bound->buffer_size = b && b->buffer ? b->buffer_size : 0;
+   }
+   context->compute_bindings_invalid = false;
+}
+
+static void
+ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
+{
+   struct ps5_context *context = (struct ps5_context *)base;
+   struct pipe_resource *buffers[PS5_COMPUTE_STORAGE_SLOTS];
+   unsigned buffer_count = 0;
+   context->last_compute_status = -1;
+   if (!context->cs || !context->compute_descriptors || context->compute_bindings_invalid || !grid ||
+       grid->work_dim > 3 || grid->variable_shared_mem || grid->indirect || grid->num_globals ||
+       grid->draw_count || grid->indirect_draw_count)
+      return;
+   for (unsigned i = 0; i < 3; ++i) {
+      if (grid->block[i] != context->cs->output.metadata.compute_workgroup_size[i] ||
+          grid->grid_base[i] || (grid->last_block[i] && grid->last_block[i] != grid->block[i]) ||
+          grid->grid[i] > 65535)
+         return;
+   }
+   if (!grid->grid[0] || !grid->grid[1] || !grid->grid[2]) {
+      context->last_compute_status = 0; /* A zero-sized dispatch has no work. */
+      return;
+   }
+   struct ps5_resource *table = (struct ps5_resource *)context->compute_descriptors;
+   memset(table->data, 0, PS5_COMPUTE_STORAGE_SLOTS * 16);
+   for (unsigned i = 0; i < PS5_COMPUTE_STORAGE_SLOTS; ++i) {
+      const struct pipe_shader_buffer *bound = &context->compute_buffers[i];
+      if (!bound->buffer)
+         continue;
+      const struct ps5_resource *resource = (struct ps5_resource *)bound->buffer;
+      const uintptr_t address = (uintptr_t)resource->data + bound->buffer_offset;
+      uint32_t *srd = (uint32_t *)(table->data + i * 16);
+      srd[0] = address;
+      srd[1] = address >> 32;
+      srd[2] = bound->buffer_size;
+      srd[3] = UINT32_C(0x31016fac);
+      buffers[buffer_count++] = bound->buffer;
+   }
+   context->last_compute_status = ps5_agc_compute_execute(base->screen, &context->cs->output,
+      context->compute_descriptors, buffers, buffer_count, grid->grid);
+   if (!context->last_compute_status)
+      ++context->dispatches;
+}
+#endif
+
 static void *
 ps5_create_shader_state(struct pipe_screen *screen,
                         const struct pipe_shader_state *templ, PsbcStage stage,
@@ -10906,6 +11081,17 @@ ps5_context_last_draw_status(struct pipe_context *base, unsigned *draw_calls)
    return context->last_draw_status;
 }
 
+int
+ps5_context_last_compute_status(struct pipe_context *base, unsigned *dispatches)
+{
+   struct ps5_context *context = (struct ps5_context *)base;
+   if (!context)
+      return -1;
+   if (dispatches)
+      *dispatches = context->dispatches;
+   return context->last_compute_status;
+}
+
 static void
 ps5_context_destroy(struct pipe_context *base)
 {
@@ -10913,6 +11099,9 @@ ps5_context_destroy(struct pipe_context *base)
    unsigned index;
 
    ps5_draw_batch_drain();
+   for (index = 0; index < PS5_COMPUTE_STORAGE_SLOTS; ++index)
+      pipe_resource_reference(&context->compute_buffers[index].buffer, NULL);
+   pipe_resource_reference(&context->compute_descriptors, NULL);
    if (context->blitter)
       util_blitter_destroy(context->blitter);
    ps5_release_geometry_pipeline(context);
@@ -11007,6 +11196,14 @@ ps5_context_create(struct pipe_screen *screen, void *priv, unsigned flags)
    context->sample_mask = UINT32_C(0xffff);
    context->queries_enabled = true;
    context->base.destroy = ps5_context_destroy;
+#ifdef PS5_NATIVE_TITLE_RUNTIME
+   context->base.create_compute_state = ps5_create_compute_state;
+   context->base.bind_compute_state = ps5_bind_compute_state;
+   context->base.delete_compute_state = ps5_delete_compute_state;
+   context->base.get_compute_state_info = ps5_get_compute_state_info;
+   context->base.set_shader_buffers = ps5_set_shader_buffers;
+   context->base.launch_grid = ps5_launch_grid;
+#endif
    context->base.draw_vbo = ps5_draw_vbo;
    context->base.create_query = ps5_create_query;
    context->base.destroy_query = ps5_destroy_query;

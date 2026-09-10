@@ -113,3 +113,4 @@ test-compiler:
 	python3 tests/ps5/test_geometry_texture_bindings.py
 	python3 tests/ps5/test_buffer_array_lowering.py
 	python3 tests/ps5/test_compute_metadata.py
+	python3 tests/ps5/test_compute_bindings.py
