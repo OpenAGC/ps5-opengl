@@ -68,7 +68,7 @@ fi
 boilerplate_commit=$(git -c safe.directory="$template" -C "$template" \
     rev-parse HEAD)
 
-sdk="$template/.deps/native/ps5-payload-sdk"
+sdk=${PS5_PAYLOAD_SDK:-"$template/.deps/native/ps5-payload-sdk"}
 if [[ $gate_object =~ ^egl_public_core33_(imgui(_tv|_lifecycle|_benchmark)?|nanovg|sokol(_cube)?)\.o$ ]]; then
     renderer=${gate_object#egl_public_core33_}
     renderer=${renderer%.o}

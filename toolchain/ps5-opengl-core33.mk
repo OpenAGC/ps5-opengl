@@ -148,9 +148,11 @@ $(PS5_OPENGL_BUILD)/ps5_agc_package.o: \
 
 $(PS5_OPENGL_BUILD)/ps5_agc_runtime_backend.o: \
 	$(PS5_OPENGL_PLATFORM)/ps5_agc_runtime_backend.c \
+	$(PS5_OPENGL_PLATFORM)/ps5_agc_package.h \
+	$(PS5_OPENGL_PSBC)/libpsbc/psbc_compile.h \
 	$(PS5_OPENGL_DRIVER)/ps5_screen.h \
 	$(PS5_OPENGL_PLATFORM)/ps5_agc_native_runtime.c | $(PS5_OPENGL_BUILD)
-	$(CC) $(PS5_OPENGL_COMMON_CFLAGS) -Wno-error=unused-function \
+	$(CC) $(PS5_OPENGL_COMMON_CFLAGS) -I$(PS5_OPENGL_PSBC)/libpsbc -Wno-error=unused-function \
 		$(PS5_OPENGL_RUNTIME_DEFINES) \
 		-Dmain=ps5_agc_gate2_run -DAGC_TRIANGLE_SUBMIT=1 \
 		-DAGC_RUNTIME_PACKAGES=1 -c -o $@ $<

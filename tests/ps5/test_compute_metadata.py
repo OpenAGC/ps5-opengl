@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+# PS5 OpenGL - OpenGL implementation for PlayStation 5.
+# Copyright (C) 2026 BlackBearReloaded
+# SPDX-License-Identifier: GPL-3.0-or-later
+
+"""Compile real CS NIR and check native package/resource contracts without a GPU."""
+import subprocess
+import tempfile
+from pathlib import Path
+
+ROOT = Path(__file__).resolve().parents[2]
+PSBC = ROOT / "third_party/opengnm-psbc"
+runtime = (ROOT / "src/platform/ps5_agc_native_runtime.c").read_text()
+backend = (ROOT / "src/platform/ps5_agc_runtime_backend.c").read_text()
+compute_at = backend.index("int\nps5_agc_compute_execute(")
+compute = backend[compute_at:backend.index("\n#endif", compute_at)]
+parser_at = runtime.index("static int shader_sections(")
+parsers = runtime[parser_at:runtime.index("static int load_apis(", parser_at)]
+types_at = runtime.index("typedef struct agc_register {")
+types = runtime[types_at:runtime.index("typedef struct video_buffer {", types_at)]
+api_at = runtime.index("typedef struct agc_api {")
+types += runtime[api_at:runtime.index("} agc_api_t;", api_at) + len("} agc_api_t;")]
+mock = r'''
+#include <stdlib.h>
+typedef struct { int unused; } video_api_t;
+struct pipe_screen { int unused; };
+struct pipe_resource { void *data; size_t size; };
+static unsigned locked, allocations, submissions, dispatches, flushes, userdata_count;
+static unsigned out_of_space;
+static int runtime_agc_initialized, fail_map, fail_emit;
+static uint32_t saved_userdata[16], saved_groups[3];
+static volatile uint32_t *saved_marker;
+static uint32_t saved_expected;
+#define DIRECT_MEMORY_TYPE 12
+#define MAP_PROTECTION 0x33
+static void ps5_screen_submit_lock(struct pipe_screen *s) { assert(s && !locked); locked=1; }
+static void ps5_screen_submit_unlock(struct pipe_screen *s) { assert(s && locked); locked=0; }
+static int ps5_resource_info(struct pipe_resource *r, void **p, size_t *n, size_t *a) {
+    assert(!locked); /* The real function drains graphics under the same mutex. */
+    if (!r) return -1;
+    if (p) *p=r->data;
+    if (n) *n=r->size;
+    if (a) *a=r->size;
+    return 0;
+}
+static void runtime_require_retirement(int done) { assert(done); }
+static int64_t sceKernelGetDirectMemorySize(void) { return 1024*1024; }
+static int sceKernelAllocateDirectMemory(int64_t a, int64_t b, size_t n, size_t align,
+                                         int type, int64_t *p) {
+    assert(locked && !a && b && n && align==0x4000 && type==12);
+    *p=1; ++allocations; return 0;
+}
+static int sceKernelMapDirectMemory(void **p, size_t n, int prot, int flags,
+                                    int64_t phys, size_t align) {
+    assert(prot==0x33 && !flags && phys==1);
+    if (fail_map) return -1;
+    return posix_memalign(p, align, n);
+}
+static int mock_munmap(void *p, size_t n) { assert(locked && p && n); free(p); return 0; }
+#define munmap mock_munmap
+static int sceKernelReleaseDirectMemory(int64_t p, size_t n) {
+    assert(locked && p==1 && n && allocations); --allocations; return 0;
+}
+static void sceKernelUsleep(uint32_t n) { assert(n==1000); }
+static void flush_gpu_data(const void *p, size_t n) { assert(locked && p && n); ++flushes; }
+static uint8_t command_out_of_space(agc_command_buffer_t *c, uint32_t n, void *p) {
+    (void)c; (void)n; (void)p; out_of_space=1; return 0;
+}
+static uint32_t *emit(void *p) {
+    agc_command_buffer_t *c=p;
+    assert(locked && c->up+1<c->top);
+    if (fail_emit) return NULL;
+    return c->up++;
+}
+static int init(uint32_t n) { assert(locked && n==8); return 0; }
+static int create(void **p, void *header, void *code) {
+    assert(locked && code);
+    *(void **)((uint8_t *)header+32)=(uint8_t *)header+96;
+    *p=header; return 0;
+}
+static uint32_t *set_sh(void *p, const void *r, uint32_t n) { assert(r && n==8); return emit(p); }
+static uint32_t *set_direct(void *p, uint32_t off, const uint32_t *data, uint32_t n) {
+    assert(off==0x240 && n<=16); userdata_count=n;
+    memcpy(saved_userdata, data, n*4); return emit(p);
+}
+uint32_t *sceAgcDcbAcquireMem(void *p, uint8_t engine, uint32_t coher, uint32_t gcr,
+                              uint64_t address, uint64_t n, uint32_t poll) {
+    assert(!engine && !coher && gcr==0x4380 && address && n && poll==0xa0);
+    return emit(p);
+}
+uint32_t *sceAgcCbDispatch(void *p, uint32_t x, uint32_t y, uint32_t z, uint32_t modifier) {
+    assert(x && y && z && modifier==0x8000);
+    saved_groups[0]=x; saved_groups[1]=y; saved_groups[2]=z;
+    ++dispatches; return emit(p);
+}
+static uint32_t *release(void *p, uint8_t a, int16_t g, uint64_t s, int8_t d, void *dest,
+                         uint32_t select, uint64_t data, uint16_t i, uint16_t c, int8_t e, int32_t r) {
+    assert(a==40 && g==0x30c && !s && !d && dest && select==1 && !i && !c && !e && !r);
+    saved_marker=dest; saved_expected=data; return emit(p);
+}
+static int submit(void *p) {
+    agc_submit_description_t *s=p;
+    assert(locked && s->words && s->word_count && saved_marker && !*saved_marker && flushes>=3);
+    *saved_marker=saved_expected; ++submissions; return 0;
+}
+static int suspend_point(void) { assert(locked); return 0; }
+static int load_apis(void *a, void *b, void *c, agc_api_t *api, video_api_t *v) {
+    (void)v; assert(!a && !b && !c && locked);
+    *api=(agc_api_t){.init=init, .create_shader=create, .set_sh=set_sh, .set_sh_direct=set_direct,
+        .release_mem=release, .submit=submit, .suspend_point=suspend_point};
+    return 0;
+}
+'''
+code = r'''
+#include <assert.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include "compiler/nir/nir_builder.h"
+#include "ps5_agc_package.h"
+''' + types + mock + parsers + compute + r'''
+static void submission_contract(PsbcShaderOutput *out) {
+    _Alignas(16) uint32_t table_data[64]={0}, output[16]={0};
+    table_data[0]=(uintptr_t)output; table_data[1]=(uintptr_t)output>>32;
+    table_data[2]=sizeof(output); table_data[3]=0x31016fac;
+    struct pipe_screen screen={0};
+    struct pipe_resource table={table_data, sizeof(table_data)}, buffer={output, sizeof(output)};
+    struct pipe_resource *buffers[]={&buffer};
+    uint32_t groups[3]={2,3,4};
+    out->metadata.address32_hi=(uintptr_t)table_data>>32;
+    const unsigned old_submits=submissions;
+    assert(ps5_agc_compute_execute(&screen, out, &table, buffers, 1, groups)==0);
+    assert(!locked && !allocations && submissions==old_submits+1);
+    assert(userdata_count==out->metadata.user_sgpr_count && saved_userdata[0]==0 && saved_userdata[1]==0);
+    assert(saved_userdata[2]==(uint32_t)(uintptr_t)table_data && !memcmp(saved_groups, groups, 12));
+    if (out->metadata.compute_grid_size_valid) assert(!memcmp(saved_userdata+3, groups, 12));
+    const unsigned old_dispatches=dispatches;
+    for (unsigned fault=0; fault<7; ++fault) {
+        if (fault==0) groups[0]=0;
+        if (fault==1) table.size=16;
+        if (fault==2) table_data[2]=sizeof(output)+1;
+        if (fault==3) table_data[3]=0;
+        if (fault==4) out->metadata.address32_hi++;
+        if (fault==5) fail_map=1;
+        if (fault==6) fail_emit=1;
+        assert(ps5_agc_compute_execute(&screen, out, &table, buffers, 1, groups)<0);
+        assert(!locked && !allocations && submissions==old_submits+1 && dispatches==old_dispatches);
+        groups[0]=2; table.size=sizeof(table_data); table_data[2]=sizeof(output); table_data[3]=0x31016fac;
+        out->metadata.address32_hi=(uintptr_t)table_data>>32; fail_map=fail_emit=0;
+    }
+}
+static const PsbcCompileOptions opts = {
+    .target=PSBC_TARGET_PS5, .stage=PSBC_STAGE_COMPUTE, .optimise=true,
+    .address32_hi=2, .gallium_buffer_arrays=true, .descriptor_binding_count=1,
+    .descriptor_bindings={{.binding=PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
+        .type=PSBC_DESCRIPTOR_STORAGE_BUFFER, .array_size=16, .stride=16}},
+};
+static nir_shader *shader(bool grid, bool shared) {
+    nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
+        psbc_get_nir_options(PSBC_STAGE_COMPUTE), "native-compute-contract");
+    b.shader->info.workgroup_size[0]=16;
+    b.shader->info.workgroup_size[1]=b.shader->info.workgroup_size[2]=1;
+    b.shader->info.num_ssbos=16;
+    nir_def *id=nir_channel(&b, nir_load_local_invocation_id(&b), 0);
+    nir_def *value=nir_iadd_imm(&b, nir_imul_imm(&b, id, 3), 17);
+    if (grid) value=nir_iadd(&b, value, nir_channel(&b, nir_load_num_workgroups(&b), 0));
+    if (shared) {
+        b.shader->info.shared_size=64;
+        nir_store_shared(&b, value, nir_imul_imm(&b, id, 4), .align_mul=4, .write_mask=1);
+        nir_barrier(&b, .execution_scope=SCOPE_WORKGROUP, .memory_scope=SCOPE_WORKGROUP,
+            .memory_semantics=NIR_MEMORY_ACQ_REL, .memory_modes=nir_var_mem_shared);
+        value=nir_load_shared(&b, 1, 32,
+            nir_imul_imm(&b, nir_ixor(&b, id, nir_imm_int(&b, 1)), 4), .align_mul=4);
+    }
+    nir_store_ssbo(&b, value, nir_imm_int(&b, 0), nir_imul_imm(&b, id, 4),
+        .align_mul=4, .write_mask=1);
+    nir_validate_shader(b.shader, "compute metadata input");
+    return b.shader;
+}
+static void reject_package(const PsbcShaderOutput *out) {
+    uint8_t *package=(uint8_t *)(uintptr_t)1;
+    size_t size=1;
+    assert(ps5_agc_package_build(out, 0, &package, &size)<0);
+    assert(!package && !size);
+}
+static void compiled(bool grid, bool shared) {
+    nir_shader *nir=shader(grid, shared);
+    PsbcShaderOutput out={0};
+    assert(psbc_compile_nir(nir, &opts, &out)==PSBC_RESULT_OK);
+    PsbcShaderMetadata *m=&out.metadata;
+    assert(m->version==10 && m->hardware_stage==PSBC_HW_STAGE_COMPUTE);
+    assert(m->shader_register_count==8 && !m->context_register_count && !m->linkage_valid);
+    assert(m->compute_wave_size==32 && m->compute_workgroup_size[0]==16);
+    assert(m->compute_lds_bytes==(shared ? 1024 : 0));
+    assert(m->compute_grid_size_valid==grid && m->user_sgpr_count==(grid ? 6 : 3));
+    assert(!grid || m->compute_grid_size_user_data_dword==3);
+    assert(m->descriptor_set0_valid && m->descriptor_set0_user_data_dword==2);
+    uint8_t *package=NULL;
+    size_t size=0;
+    assert(ps5_agc_package_build(&out, 0, &package, &size)==0);
+    uint64_t sections, header_at;
+    memcpy(&sections, package+40, 8);
+    memcpy(&header_at, package+sections+2*64+24, 8);
+    const uint8_t *header=package+header_at;
+    assert(header[90]==0 && header[91]==0 && header[92]==8);
+    assert(!memcmp(header+96, m->shader_registers, 8*sizeof(PsbcRegisterWrite)));
+    free(package);
+    const PsbcShaderMetadata good=*m;
+    for (unsigned fault=0; fault<17; ++fault) {
+        *m=good;
+        switch (fault) {
+        case 0: m->compute_workgroup_size[0]=0; break;
+        case 1: m->compute_workgroup_size[0]=1025; break;
+        case 2: m->compute_wave_size=16; break;
+        case 3: m->compute_lds_bytes=65537; break;
+        case 4: m->shader_registers[5].value++; break;
+        case 5: m->shader_registers[4].offset=0x229; break;
+        case 6: m->user_sgpr_count=17; break;
+        case 7: m->descriptor_set0_user_data_dword=1; break;
+        case 8: m->compute_grid_size_valid=true; m->compute_grid_size_user_data_dword=UINT32_MAX; break;
+        case 9: m->compute_grid_size_valid=true; m->compute_grid_size_user_data_dword=2; break;
+        case 10: m->shader_registers[3].value|=1; break; /* Hidden scratch request. */
+        case 11: m->scratch_valid=true; break;
+        case 12: m->shader_registers[0].value=256; break;
+        case 13: m->source_stage=PSBC_STAGE_VERTEX; break;
+        case 14: m->descriptor_set0_valid=false; break;
+        case 15: m->compute_lds_bytes=1; break;
+        case 16: m->compute_lds_bytes=shared ? 0 : 1024; break;
+        }
+        reject_package(&out);
+    }
+    *m=good;
+    submission_contract(&out);
+    printf("CS metadata: grid=%u shared=%u code=%zu LDS=%u userdata=%u package valid\n",
+        grid, shared, out.machine_code_size, m->compute_lds_bytes, m->user_sgpr_count);
+    psbc_free_output(&out); ralloc_free(nir);
+}
+static void shapes(void) {
+    for (unsigned fault=0; fault<5; ++fault) {
+        nir_shader *nir=shader(false, false);
+        if (fault==0) nir->info.workgroup_size[1]=0;
+        if (fault==1) nir->info.workgroup_size[0]=1025;
+        if (fault==2) nir->info.workgroup_size[1]=65;
+        if (fault==3) nir->info.workgroup_size_variable=true;
+        if (fault==4) nir->info.shared_size=65537;
+        PsbcShaderOutput out={0};
+        assert(psbc_compile_nir(nir, &opts, &out)==PSBC_RESULT_COMPILE_NIR);
+        assert(!out.machine_code && !out.data);
+        ralloc_free(nir);
+    }
+}
+int main(void) {
+    psbc_init();
+    for (unsigned i=0; i<4; ++i) compiled(i&1, i&2);
+    shapes(); psbc_shutdown();
+}
+'''
+with tempfile.TemporaryDirectory() as directory:
+    obj = str(Path(directory) / "compute.o")
+    package_obj = str(Path(directory) / "package.o")
+    executable = str(Path(directory) / "compute")
+    subprocess.run(["clang-18", "-std=gnu11", "-Wall", "-Werror",
+        "-DHAVE_ENDIAN_H=1", "-DHAVE_FUNC_ATTRIBUTE_PACKED=1", "-DHAVE_PTHREAD=1",
+        "-DHAVE_STRUCT_TIMESPEC=1", "-D_GNU_SOURCE",
+        "-I", str(PSBC / "include/mesa"), "-I", str(PSBC / "include"),
+        "-I", str(PSBC / "src"), "-I", str(PSBC / "libpsbc"),
+        "-I", str(ROOT / "src/platform"),
+        "-x", "c", "-c", "-o", obj, "-"], input=code, text=True, check=True)
+    subprocess.run(["clang-18", "-std=c11", "-Wall", "-Werror",
+        "-I", str(PSBC / "libpsbc"), "-c", str(ROOT / "src/platform/ps5_agc_package.c"),
+        "-o", package_obj], check=True)
+    subprocess.run(["g++", "-o", executable, obj, package_obj, str(PSBC / "libpsbc.a"),
+        "-pthread", "-lm"], check=True)
+    subprocess.run([executable], check=True, timeout=30)
+print("PASS: compute package, grid/LDS metadata, malformed inputs; mocked submission lock/bounds/cleanup")

@@ -17,7 +17,8 @@ fingerprint() {
     git -C "$source_dir" write-tree || return
     "$sdk/bin/prospero-clang" --version || return
     sha256sum "$project_dir/dependencies.json" "$makefile" \
-        "$project_dir/toolchain/opengnm-psbc-ps5.mak" "$0" \
+        "$project_dir/toolchain/opengnm-psbc-ps5.mak" \
+        "$project_dir/toolchain/build-opengnm-psbc-ps5.sh" \
         "$project_dir/src/platform/ps5_mesa_shims.c" \
         "$sdk/bin/prospero-clang" "$sdk/bin/prospero-clang++" \
         "$source_dir/libpsbc.ps5.a"

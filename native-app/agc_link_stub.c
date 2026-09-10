@@ -49,3 +49,14 @@ uint32_t *sceAgcDcbSetFlip(void *cb, uint32_t handle, int index,
     return handle || index || mode || argument ? cb : 0;
 }
 int sceAgcSuspendPoint(void) { return -1; }
+uint32_t *sceAgcDcbAcquireMem(void *cb, uint8_t engine, uint32_t coher,
+                            uint32_t gcr, uint64_t address, uint64_t size,
+                            uint32_t poll)
+{
+    return engine || coher || gcr || address || size || poll ? cb : 0;
+}
+uint32_t *sceAgcCbDispatch(void *cb, uint32_t x, uint32_t y, uint32_t z,
+                          uint32_t modifier)
+{
+    return x || y || z || modifier ? cb : 0;
+}

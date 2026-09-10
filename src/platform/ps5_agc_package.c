@@ -93,6 +93,55 @@ semantics_valid(const uint32_t *semantics, uint32_t count, bool unique)
    return true;
 }
 
+static bool
+compute_metadata_valid(const PsbcShaderMetadata *m)
+{
+   /* Same stage-0 register layout as ProsperoAI's compute packages. Values
+    * come from ACO; do not substitute the fixed resources of its LLM kernels. */
+   static const uint16_t offsets[] = {
+      0x20c, 0x20d, 0x212, 0x213, 0x228, 0x207, 0x208, 0x209
+   };
+   uint32_t invocations = 1, user_mask = 3; /* Reserved scratch-ring pair. */
+   if (m->context_register_count || m->linkage_valid ||
+       m->input_semantic_count || m->output_semantic_count ||
+       m->vertex_buffer_table_valid || m->base_vertex_valid ||
+       m->start_instance_valid || m->streamout_valid || m->ngg_lds_layout_valid ||
+       (m->unresolved_fields & ~PSBC_UNRESOLVED_PROGRAM_CHECKSUM) ||
+       m->shader_register_count != 8 ||
+       (m->compute_wave_size != 32 && m->compute_wave_size != 64) ||
+       m->compute_lds_bytes > 65536 || (m->compute_lds_bytes & 1023u) ||
+       m->user_sgpr_count < 2 || m->user_sgpr_count > 16)
+      return false;
+   for (unsigned i = 0; i < 8; ++i)
+      if (m->shader_registers[i].offset != offsets[i])
+         return false;
+   for (unsigned i = 0; i < 3; ++i) {
+      uint32_t size = m->compute_workgroup_size[i];
+      if (!size || size > 1024 / invocations ||
+          m->shader_registers[5 + i].value != size)
+         return false;
+      invocations *= size;
+   }
+   const uint32_t rsrc2 = m->shader_registers[3].value;
+   if ((rsrc2 & 1u) || ((rsrc2 >> 1) & 31u) != m->user_sgpr_count ||
+       ((rsrc2 >> 15) & 511u) != m->compute_lds_bytes / 512u)
+      return false;
+   if (m->descriptor_set0_valid) {
+      unsigned at = m->descriptor_set0_user_data_dword;
+      if (at < 2 || at >= m->user_sgpr_count)
+         return false;
+      user_mask |= 1u << at;
+   }
+   if (m->compute_grid_size_valid) {
+      unsigned at = m->compute_grid_size_user_data_dword;
+      if (at < 2 || at > m->user_sgpr_count || m->user_sgpr_count - at < 3 ||
+          (user_mask & (7u << at)))
+         return false;
+      user_mask |= 7u << at;
+   }
+   return user_mask == (1u << m->user_sgpr_count) - 1u;
+}
+
 static void
 write_register(uint8_t *data, size_t offset,
                const PsbcRegisterWrite *record, bool patch_esgs,
@@ -182,7 +231,16 @@ ps5_agc_package_build(const PsbcShaderOutput *shader,
       return -2;
 
    has_linkage = metadata->linkage_valid;
-   if (metadata->hardware_stage == PSBC_HW_STAGE_PIXEL &&
+   if (metadata->hardware_stage == PSBC_HW_STAGE_COMPUTE &&
+       metadata->source_stage == PSBC_STAGE_COMPUTE &&
+       compute_metadata_valid(metadata)) {
+      agc_stage = 0;
+      pgm_lo = 0x20c;
+      pgm_hi = 0x20d;
+      rsrc1 = 0x212;
+      rsrc2 = 0x213;
+      patch_esgs = false;
+   } else if (metadata->hardware_stage == PSBC_HW_STAGE_PIXEL &&
        metadata->source_stage == PSBC_STAGE_FRAGMENT &&
        !metadata->output_semantic_count) {
       agc_stage = 1;

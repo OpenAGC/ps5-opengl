@@ -663,6 +663,172 @@ ps5_agc_runtime_dlsym(void *module, const char *name)
 #undef PS5_AGC_BIND_NATIVE_API
 #undef dlsym
 
+#ifdef PS5_NATIVE_TITLE_RUNTIME
+#include "ps5_agc_package.h"
+
+int
+ps5_agc_compute_execute(struct pipe_screen *screen,
+                        const PsbcShaderOutput *shader,
+                        struct pipe_resource *descriptors,
+                        struct pipe_resource *const *buffers,
+                        unsigned buffer_count, const uint32_t groups[3])
+{
+   extern uint32_t *sceAgcDcbAcquireMem(void *, uint8_t, uint32_t, uint32_t,
+                                       uint64_t, uint64_t, uint32_t);
+   extern uint32_t *sceAgcCbDispatch(void *, uint32_t, uint32_t, uint32_t, uint32_t);
+   void *addresses[32], *table = NULL, *program = NULL;
+   size_t sizes[32], table_size = 0, package_size = 0;
+   uint8_t *package = NULL, *memory = NULL;
+   int64_t physical = -1;
+   size_t memory_size = 0;
+   int result = -1;
+   bool locked = false;
+   agc_api_t agc = {0};
+   video_api_t video = {0};
+   uint32_t user_data[16] = {0};
+   const uint8_t *header, *code;
+   size_t header_size = 0, code_size = 0;
+   if (!screen || !shader || !groups || buffer_count > 32 ||
+       (buffer_count && !buffers) ||
+       shader->metadata.hardware_stage != PSBC_HW_STAGE_COMPUTE)
+      return -1;
+   for (unsigned i = 0; i < 3; ++i)
+      if (!groups[i] || groups[i] > 65535)
+         return -1;
+
+   if (ps5_agc_package_build(shader, 0, &package, &package_size) ||
+       shader_sections(package, package_size, &header, &header_size, &code, &code_size) ||
+       validate_shader_header(header, header_size, code_size, 0) ||
+       header_size > 4096 || code_size > 16 * 1024 * 1024)
+      goto cleanup;
+   const PsbcShaderMetadata *m = &shader->metadata;
+   for (unsigned i = 0; i < buffer_count; ++i)
+      if (ps5_resource_info(buffers[i], &addresses[i], &sizes[i], NULL) ||
+          !addresses[i] || !sizes[i] || sizes[i] > UINT32_MAX)
+         goto cleanup;
+   if (m->descriptor_set0_valid) {
+      if (ps5_resource_info(descriptors, &table, &table_size, NULL) ||
+          !table || ((uintptr_t)table & 15u) ||
+          (uintptr_t)table >> 32 != m->address32_hi || table_size > UINT32_MAX ||
+          !m->descriptor_binding_count || m->descriptor_binding_count > PSBC_MAX_DESCRIPTOR_BINDINGS)
+         goto cleanup;
+      for (unsigned i = 0; i < m->descriptor_binding_count; ++i) {
+         const PsbcDescriptorBinding *bank = &m->descriptor_bindings[i];
+         if (bank->set || bank->stride != 16 || !bank->array_size || bank->array_size > 32 ||
+             (bank->type != PSBC_DESCRIPTOR_STORAGE_BUFFER &&
+              bank->type != PSBC_DESCRIPTOR_UNIFORM_BUFFER) || (bank->offset & 15u) ||
+             (uint64_t)bank->offset + (uint64_t)bank->array_size * 16 > table_size)
+            goto cleanup;
+         for (unsigned slot = 0; slot < bank->array_size; ++slot) {
+            const uint32_t *srd = (const uint32_t *)((const uint8_t *)table + bank->offset + slot * 16);
+            if (!(srd[0] | srd[1] | srd[2] | srd[3]))
+               continue;
+            if (srd[1] & 0xffff0000u || !srd[2] || srd[3] != UINT32_C(0x31016fac))
+               goto cleanup;
+            const uint64_t address = srd[0] | ((uint64_t)srd[1] << 32);
+            bool owned = false;
+            for (unsigned j = 0; j < buffer_count; ++j) {
+               const uintptr_t start = (uintptr_t)addresses[j];
+               if (address >= start && address - start <= sizes[j] &&
+                   srd[2] <= sizes[j] - (address - start))
+                  owned = true;
+            }
+            if (!owned)
+               goto cleanup;
+         }
+      }
+      user_data[m->descriptor_set0_user_data_dword] = (uint32_t)(uintptr_t)table;
+   }
+   if (m->compute_grid_size_valid)
+      memcpy(user_data + m->compute_grid_size_user_data_dword, groups, 3 * sizeof(uint32_t));
+   /* Resource-info calls above drain pending graphics and take this lock
+    * themselves. Do not call them from inside the submission critical section.
+    * ponytail: serialize and retire before releasing memory; asynchronous
+    * compute needs a complete resource-lifetime contract first. */
+   ps5_screen_submit_lock(screen);
+   locked = true;
+   if (load_apis(NULL, NULL, NULL, &agc, &video))
+      goto cleanup;
+   if (!runtime_agc_initialized) {
+      if (agc.init(8))
+         goto cleanup;
+      runtime_agc_initialized = 1;
+   }
+   /* Bounded command area, separate cache line for completion, then header/code. */
+   memory_size = (0x5000u + code_size + 0x3fffu) & ~(size_t)0x3fffu;
+   if (sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), memory_size,
+                                    0x4000, DIRECT_MEMORY_TYPE, &physical))
+      goto cleanup;
+   if (sceKernelMapDirectMemory((void **)&memory, memory_size, MAP_PROTECTION, 0,
+                               physical, 0x4000)) {
+      memory = NULL;
+      goto cleanup;
+   }
+   memset(memory, 0, memory_size);
+   memcpy(memory + 0x4000, header, header_size);
+   memcpy(memory + 0x5000, code, code_size);
+   if (agc.create_shader(&program, memory + 0x4000, memory + 0x5000) ||
+       program != memory + 0x4000)
+      goto cleanup;
+   agc_register_t *registers = *(agc_register_t **)(memory + 0x4020);
+   if (registers != (agc_register_t *)(memory + 0x4060) || memory[0x405c] != 8)
+      goto cleanup;
+   uint32_t *words = (uint32_t *)memory;
+   agc_command_buffer_t command = {
+      words, words + 0x3000 / 4, words, words + 0x3000 / 4,
+      (uintptr_t)command_out_of_space, NULL, 0, 0
+   };
+   volatile uint32_t *marker = (volatile uint32_t *)(memory + 0x3fc0);
+   const uint32_t expected = UINT32_C(0x43535035);
+   out_of_space = 0;
+   if (!agc.set_sh(&command, registers, 8) ||
+       !agc.set_sh_direct(&command, 0x240, user_data, m->user_sgpr_count))
+      goto cleanup;
+   /* ProsperoAI's proven acquire/release flags: invalidate before CS reads,
+    * flush shader writes before signaling CPU completion. No VideoOut needed. */
+   if (table) {
+      flush_gpu_data(table, table_size);
+      if (!sceAgcDcbAcquireMem(&command, 0, 0, 0x4380, (uintptr_t)table, table_size, 0xa0))
+         goto cleanup;
+   }
+   for (unsigned i = 0; i < buffer_count; ++i) {
+      flush_gpu_data(addresses[i], sizes[i]);
+      if (!sceAgcDcbAcquireMem(&command, 0, 0, 0x4380,
+                             (uintptr_t)addresses[i], sizes[i], 0xa0))
+         goto cleanup;
+   }
+   if (!sceAgcCbDispatch(&command, groups[0], groups[1], groups[2],
+                         m->compute_wave_size == 32 ? 0x8000 : 0) ||
+       !agc.release_mem(&command, 40, 0x30c, 0, 0, (void *)marker, 1,
+                        expected, 0, 0, 0, 0) || out_of_space)
+      goto cleanup;
+   agc_submit_description_t submit = {words, (uint32_t)(command.up - words), 0, {0}};
+   flush_gpu_data(memory, memory_size);
+   int submit_rc = agc.submit(&submit);
+   int suspend_rc = submit_rc == 0 ? agc.suspend_point() : -1;
+   unsigned polls = 0;
+   for (; submit_rc == 0 && polls < 2000; ++polls) {
+      flush_gpu_data((const void *)marker, sizeof(*marker));
+      if (*marker == expected)
+         break;
+      sceKernelUsleep(1000);
+   }
+   runtime_require_retirement(submit_rc == 0 && suspend_rc == 0 && polls < 2000);
+   for (unsigned i = 0; i < buffer_count; ++i)
+      flush_gpu_data(addresses[i], sizes[i]);
+   result = 0;
+cleanup:
+   if (memory && munmap(memory, memory_size))
+      runtime_require_retirement(0);
+   if (physical >= 0 && sceKernelReleaseDirectMemory(physical, memory_size))
+      runtime_require_retirement(0);
+   free(package);
+   if (locked)
+      ps5_screen_submit_unlock(screen);
+   return result;
+}
+#endif
+
 int
 ps5_agc_gate2_set_depth_buffer(void *depth, size_t size,
                                uint32_t depth_control)
