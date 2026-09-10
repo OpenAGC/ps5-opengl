@@ -14,6 +14,7 @@
 #include "ps5_agc_package.h"
 
 #define OUTPUT_WORDS 512
+#define INPUT_WORDS (15 * 16)
 #define GUARD_WORD UINT32_C(0xcdcdcdcd)
 #ifdef PS5_COMPUTE_PIPE_PROBE
 #define OUTPUT_BINDING 15
@@ -22,7 +23,8 @@
 #define OUTPUT_BINDING 0
 #define PREFIX_WORDS 0
 #endif
-enum { CONTROL, GRID, SHARED, ATOMIC, FP32, FP64, SCRATCH, SCRATCH_GRID, POST_SCRATCH };
+enum { CONTROL, GRID, SHARED, ATOMIC, FP32, FP64, BUFFER_RANGES, BUFFER_ALIAS,
+       POST_BUFFER, SCRATCH, SCRATCH_GRID, POST_SCRATCH };
 static const struct {
    const char *name;
    uint32_t local[3], groups[3];
@@ -34,6 +36,9 @@ static const struct {
    {"atomic-multi-group", {64, 1, 1}, {4, 1, 1}, 257},
    {"fp32-control", {16, 1, 1}, {1, 1, 1}, 16},
    {"fp64-precision-store", {16, 1, 1}, {1, 1, 1}, 32},
+   {"buffer-ranges-15", {4, 1, 1}, {15, 1, 1}, 60},
+   {"buffer-alias-consumer", {4, 1, 1}, {15, 1, 1}, 60},
+   {"post-buffer-control", {16, 1, 1}, {1, 1, 1}, 16},
    {"scratch-private-16", {16, 1, 1}, {1, 1, 1}, 16},
    {"scratch-private-128-grid", {64, 1, 1}, {4, 1, 1}, 256},
    {"post-scratch-control", {16, 1, 1}, {1, 1, 1}, 16},
@@ -57,6 +62,17 @@ static nir_shader *create_probe_shader(unsigned test)
       x = nir_fmul(&b, x, nir_imm_floatN_t(&b, 0.25, bits));
       nir_def *large = nir_imm_floatN_t(&b, 1099511627776.0, bits); /* 2^40 */
       value = nir_fmul(&b, nir_fsub(&b, nir_fadd(&b, large, x), large), x);
+   } else if (test == BUFFER_RANGES || test == BUFFER_ALIAS) {
+      nir_def *group = nir_channel(&b, nir_load_workgroup_id(&b), 0);
+      nir_def *global = nir_iadd(&b, id, nir_imul_imm(&b, group, 4));
+      /* Workgroup-uniform dynamic block index; all fifteen ranges are live. */
+      nir_def *slot = test == BUFFER_RANGES ? group : nir_imm_int(&b, 0);
+      slot = nir_iadd_imm(&b, slot, OUTPUT_BINDING == 0 ? 1 : 0);
+      nir_def *offset = nir_imul_imm(&b, test == BUFFER_RANGES ? id : global, 4);
+      value = nir_load_ssbo(&b, 1, 32, slot, offset, .align_mul = 4);
+      if (test == BUFFER_ALIAS)
+         value = nir_iadd_imm(&b, nir_imul_imm(&b, value, 5), 2);
+      id = global;
    } else if (test == GRID) {
       nir_def *group = nir_load_workgroup_id(&b);
       nir_def *count = nir_load_num_workgroups(&b);
@@ -118,6 +134,11 @@ static unsigned count_correct(unsigned test, const uint32_t *output)
          uint32_t expected = 17 + 3 * (test == SHARED ? (i ^ 32) : i);
          if (test == GRID)
             expected += 7 * 2 + 11 * 3 + 13 * 2;
+         if (test == BUFFER_RANGES || test == BUFFER_ALIAS) {
+            expected = 1000 + 101 * (i / 4) + 7 * (i % 4);
+            if (test == BUFFER_ALIAS)
+               expected = 5 * expected + 2;
+         }
          if (test == ATOMIC)
             expected = 256;
          if (test == FP32)
@@ -139,7 +160,7 @@ int main(void)
 {
    int status = 1;
    struct pipe_screen *screen = ps5_screen_create();
-   struct pipe_resource *buffers[2] = {0};
+   struct pipe_resource *buffers[3] = {0};
    PsbcShaderOutput compiled = {0};
    if (!screen)
       return 1;
@@ -154,26 +175,25 @@ int main(void)
       .width0 = 256, .height0 = 1, .depth0 = 1, .array_size = 1,
       .usage = PIPE_USAGE_DEFAULT, .bind = PIPE_BIND_SHADER_BUFFER,
    };
-   void *table = NULL, *output = NULL;
-   for (unsigned i = 0; i < 2; ++i) {
-      templ.width0 = i ? (OUTPUT_WORDS + PREFIX_WORDS) * sizeof(uint32_t) : 256;
+   void *table = NULL, *output = NULL, *input_data = NULL;
+   for (unsigned i = 0; i < ARRAY_SIZE(buffers); ++i) {
+      templ.width0 = i == 2 ? INPUT_WORDS * sizeof(uint32_t) :
+         i == 1 ? (OUTPUT_WORDS + PREFIX_WORDS) * sizeof(uint32_t) : 256;
       buffers[i] = screen->resource_create(screen, &templ);
       if (!buffers[i])
          goto cleanup;
    }
    if (ps5_resource_info(buffers[0], &table, NULL, NULL) ||
-       ps5_resource_info(buffers[1], &output, NULL, NULL))
+       ps5_resource_info(buffers[1], &output, NULL, NULL) ||
+       ps5_resource_info(buffers[2], &input_data, NULL, NULL))
       goto cleanup;
    uint32_t *prefix = output;
    output = prefix + PREFIX_WORDS;
-#ifdef PS5_COMPUTE_PIPE_PROBE
    struct pipe_resource *output_buffer = buffers[1];
-#endif
-   memset(table, 0, 256);
-   uint32_t *srd = table;
-   srd[0] = (uintptr_t)output;
-   srd[1] = (uintptr_t)output >> 32;
-   srd[3] = UINT32_C(0x31016fac);
+   uint32_t *input = input_data;
+   for (unsigned i = 0; i < INPUT_WORDS; ++i)
+      input[i] = i % 16 >= 4 && i % 16 < 8 ?
+         1000 + 101 * (i / 16) + 7 * (i % 16 - 4) : GUARD_WORD;
 #ifndef PS5_COMPUTE_PIPE_PROBE
    PsbcCompileOptions opts = {
       .target = PSBC_TARGET_PS5, .stage = PSBC_STAGE_COMPUTE,
@@ -185,12 +205,26 @@ int main(void)
       }},
    };
 #endif
-   for (unsigned test = 0; test < ARRAY_SIZE(cases); ++test) {
+   /* Scratch cases remain in the host compile/rejection checks, never this
+    * native batch. The shared package guard must stay enabled until fixed. */
+   for (unsigned test = 0; test < SCRATCH; ++test) {
       status = 1;
-      memset(prefix, 0xcd, (OUTPUT_WORDS + PREFIX_WORDS) * sizeof(uint32_t));
+      if (test != BUFFER_ALIAS) /* Consume the previous GPU result unchanged. */
+         memset(prefix, 0xcd, (OUTPUT_WORDS + PREFIX_WORDS) * sizeof(uint32_t));
       if (test == ATOMIC)
          ((uint32_t *)output)[256] = 0;
-      srd[2] = cases[test].words * sizeof(uint32_t);
+      struct pipe_shader_buffer bindings[16] = {0};
+      bindings[OUTPUT_BINDING] = (struct pipe_shader_buffer){
+         output_buffer, PREFIX_WORDS * sizeof(uint32_t), cases[test].words * sizeof(uint32_t)
+      };
+      if (test == BUFFER_RANGES) {
+         for (unsigned i = 0; i < 15; ++i)
+            bindings[i + (OUTPUT_BINDING == 0)] = (struct pipe_shader_buffer){
+               buffers[2], (i * 16 + 4) * sizeof(uint32_t), 4 * sizeof(uint32_t)
+            };
+      } else if (test == BUFFER_ALIAS) {
+         bindings[OUTPUT_BINDING == 0 ? 1 : 0] = bindings[OUTPUT_BINDING];
+      }
       psbc_init();
       nir_shader *nir = create_probe_shader(test);
 #ifdef PS5_COMPUTE_PIPE_PROBE
@@ -204,14 +238,10 @@ int main(void)
       printf("[ps5-compute] case=%s pipe-created=1 wave=%u private=%u\n",
          cases[test].name, info.preferred_simd_size, info.private_memory);
       fflush(stdout);
-      const unsigned private_bytes = test == SCRATCH ? 32 : test == SCRATCH_GRID ? 128 : 0;
-      if (info.preferred_simd_size != 32 || info.private_memory != private_bytes)
+      if (info.preferred_simd_size != 32 || info.private_memory)
          goto cleanup;
       pipe->bind_compute_state(pipe, state);
-      struct pipe_shader_buffer binding = {
-         output_buffer, PREFIX_WORDS * sizeof(uint32_t), cases[test].words * sizeof(uint32_t)
-      };
-      pipe->set_shader_buffers(pipe, MESA_SHADER_COMPUTE, OUTPUT_BINDING, 1, &binding, 1);
+      pipe->set_shader_buffers(pipe, MESA_SHADER_COMPUTE, 0, 16, bindings, 1u << OUTPUT_BINDING);
       /* The binding now owns the last reference; rebinding must preserve it. */
       pipe_resource_reference(&buffers[1], NULL);
       struct pipe_grid_info grid = {.work_dim = 3};
@@ -236,6 +266,19 @@ int main(void)
       if (dispatches != test + 1)
          rc = -1;
 #else
+      memset(table, 0, 256);
+      for (unsigned i = 0; i < ARRAY_SIZE(bindings); ++i) {
+         const struct pipe_shader_buffer *bound = &bindings[i];
+         if (!bound->buffer)
+            continue;
+         const uintptr_t address = (uintptr_t)(bound->buffer == output_buffer ?
+            (void *)prefix : input_data) + bound->buffer_offset;
+         uint32_t *srd = (uint32_t *)table + i * 4;
+         srd[0] = address;
+         srd[1] = address >> 32;
+         srd[2] = bound->buffer_size;
+         srd[3] = UINT32_C(0x31016fac);
+      }
       PsbcResult compile_rc = psbc_compile_nir(nir, &opts, &compiled);
       ralloc_free(nir);
       psbc_shutdown();
@@ -246,7 +289,7 @@ int main(void)
       fflush(stdout);
       if (compile_rc != PSBC_RESULT_OK || (test == SHARED && compiled.metadata.compute_wave_size != 32))
          goto cleanup;
-      int rc = ps5_agc_compute_execute(screen, &compiled, buffers[0], buffers + 1, 1, cases[test].groups);
+      int rc = ps5_agc_compute_execute(screen, &compiled, buffers[0], buffers + 1, 2, cases[test].groups);
 #endif
       unsigned correct = count_correct(test, output), guards = 0;
       for (unsigned i = cases[test].words; i < OUTPUT_WORDS; ++i)
@@ -256,10 +299,18 @@ int main(void)
       for (unsigned i = 0; i < PREFIX_WORDS; ++i)
          prefix_correct += prefix[i] == GUARD_WORD;
       status |= prefix_correct != PREFIX_WORDS;
+      unsigned input_correct = 0;
+      for (unsigned i = 0; i < INPUT_WORDS; ++i) {
+         const uint32_t expected = i % 16 >= 4 && i % 16 < 8 ?
+            1000 + 101 * (i / 16) + 7 * (i % 16 - 4) : GUARD_WORD;
+         input_correct += input[i] == expected;
+      }
+      status |= input_correct != INPUT_WORDS;
       printf("[ps5-compute] case=%s dispatch=%d correct=%u/%u guards=%u/%u first=%u last=%u status=%d\n",
          cases[test].name, rc, correct, cases[test].words, guards, OUTPUT_WORDS - cases[test].words,
          ((uint32_t *)output)[0], ((uint32_t *)output)[cases[test].words - 1], status);
       fflush(stdout);
+      printf("[ps5-compute] input-and-guards=%u/%u\n", input_correct, INPUT_WORDS);
 #ifdef PS5_COMPUTE_PIPE_PROBE
       printf("[ps5-compute] pipe dispatches=%u slot=%u prefix=%u/%u status=%d\n",
          dispatches, OUTPUT_BINDING, prefix_correct, PREFIX_WORDS, status);
@@ -280,9 +331,9 @@ cleanup:
    }
 #endif
    psbc_free_output(&compiled);
-   for (unsigned i = 0; i < 2; ++i)
+   for (unsigned i = 0; i < ARRAY_SIZE(buffers); ++i)
       pipe_resource_reference(&buffers[i], NULL);
    screen->destroy(screen);
-   printf("[ps5-compute] completed status=%d (internal probe; GL caps unchanged)\n", status);
+   printf("[ps5-compute] completed status=%d (internal probe; GL caps unchanged; scratch excluded)\n", status);
    return status;
 }

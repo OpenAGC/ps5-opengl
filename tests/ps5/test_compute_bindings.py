@@ -34,14 +34,27 @@ struct ps5_context {
     unsigned dispatches;
 };
 static unsigned submitted, destroyed;
+static bool multi;
 static void destroy(struct pipe_screen *s, struct pipe_resource *r) {
     assert(s && r && !r->reference.count); ++destroyed;
 }
 static int ps5_agc_compute_execute(struct pipe_screen *s, const PsbcShaderOutput *shader,
     struct pipe_resource *table, struct pipe_resource *const *buffers, unsigned count,
     const uint32_t groups[3]) {
-    assert(s && shader && count==1 && groups[0]==2 && groups[1]==1 && groups[2]==1);
+    assert(s && shader && count==(multi ? 16 : 1) && groups[0]==2 && groups[1]==1 && groups[2]==1);
     struct ps5_resource *t=(struct ps5_resource *)table, *b=(struct ps5_resource *)buffers[0];
+    if (multi) {
+        assert(b->base.reference.count==15 && !destroyed);
+        for (unsigned i=0; i<16; ++i) {
+            struct ps5_resource *r=(struct ps5_resource *)buffers[i];
+            const uint32_t *d=(uint32_t *)t->data+i*4;
+            const uintptr_t address=(uintptr_t)r->data+(i==15 ? 16 : i*16);
+            assert(i==15 ? r->base.reference.count==1 : r==b);
+            assert(d[0]==(uint32_t)address && d[1]==address>>32);
+            assert(d[2]==(i==15 ? 64 : 16) && d[3]==0x31016fac);
+        }
+        ++submitted; return 0;
+    }
     uint32_t *srd=(uint32_t *)t->data+15*4;
     assert(b->base.reference.count==1 && !destroyed);
     assert(srd[0]==(uint32_t)(uintptr_t)(b->data+16) && srd[1]==(uintptr_t)b->data>>32);
@@ -113,6 +126,23 @@ int main(void) {
     assert(!context.last_compute_status && submitted==1);
     ps5_set_shader_buffers(&context.base,MESA_SHADER_COMPUTE,15,1,NULL,0);
     assert(!context.compute_buffers[15].buffer && destroyed==1);
+    /* Fifteen nonoverlapping ranges of one retained resource plus output. */
+    destroyed=0; multi=true;
+    uint8_t input[256];
+    struct ps5_resource ranges={.base={.screen=&screen,.target=PIPE_BUFFER,.width0=256},.data=input};
+    pipe_reference_init(&ranges.base.reference,1);
+    pipe_reference_init(&buffer.base.reference,1);
+    struct pipe_shader_buffer bindings[16];
+    for (unsigned i=0; i<15; ++i)
+        bindings[i]=(struct pipe_shader_buffer){&ranges.base,i*16,16};
+    bindings[15]=binding;
+    ps5_set_shader_buffers(&context.base,MESA_SHADER_COMPUTE,0,16,bindings,1u<<15);
+    caller=&ranges.base; pipe_resource_reference(&caller,NULL);
+    caller=&buffer.base; pipe_resource_reference(&caller,NULL);
+    ps5_launch_grid(&context.base,&good);
+    assert(!context.last_compute_status && submitted==2 && context.dispatches==2);
+    ps5_set_shader_buffers(&context.base,MESA_SHADER_COMPUTE,0,16,NULL,0);
+    assert(destroyed==2);
 }
 '''
 with tempfile.TemporaryDirectory() as directory:
@@ -130,4 +160,4 @@ with tempfile.TemporaryDirectory() as directory:
         "-I", str(ROOT / "third_party/opengnm-psbc/libpsbc"),
         "-x", "c", "-o", executable, "-"], input=code, text=True, check=True)
     subprocess.run([executable], check=True, timeout=10)
-print("PASS: actual Gallium binding/grid guards, slot15 descriptors, retained lifetime and unbind")
+print("PASS: actual Gallium binding/grid guards, 16 descriptors/range aliases, retained lifetime and unbind")

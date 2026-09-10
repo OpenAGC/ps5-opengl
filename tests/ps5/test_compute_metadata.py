@@ -308,6 +308,10 @@ static void native_cases(void) {
         for (unsigned i=0; i<cases[test].words; ++i) {
             output[i]=17+3*(test==SHARED ? (i^32) : i);
             if (test==GRID) output[i]+=73;
+            if (test==BUFFER_RANGES || test==BUFFER_ALIAS) {
+                output[i]=1000+101*(i/4)+7*(i%4);
+                if (test==BUFFER_ALIAS) output[i]=5*output[i]+2;
+            }
             if (test==ATOMIC) output[i]=i<256 ? 255-i : 256;
             if (test==FP32) output[i]=0;
             if (test==FP64) {
@@ -371,17 +375,19 @@ with tempfile.TemporaryDirectory() as directory:
     obj = str(Path(directory) / "compute.o")
     package_obj = str(Path(directory) / "package.o")
     executable = str(Path(directory) / "compute")
-    subprocess.run(["clang-18", "-std=gnu11", "-Wall", "-Werror",
+    compile_command = ["clang-18", "-std=gnu11", "-Wall", "-Werror",
         "-DHAVE_ENDIAN_H=1", "-DHAVE_FUNC_ATTRIBUTE_PACKED=1", "-DHAVE_PTHREAD=1",
         "-DHAVE_STRUCT_TIMESPEC=1", "-D_GNU_SOURCE",
         "-I", str(PSBC / "include/mesa"), "-I", str(PSBC / "include"),
         "-I", str(PSBC / "src"), "-I", str(PSBC / "libpsbc"),
         "-I", str(ROOT / "src/platform"),
-        "-x", "c", "-c", "-o", obj, "-"], input=code, text=True, check=True)
+        "-x", "c", "-c", "-o", obj, "-"]
     subprocess.run(["clang-18", "-std=c11", "-Wall", "-Werror",
         "-I", str(PSBC / "libpsbc"), "-c", str(ROOT / "src/platform/ps5_agc_package.c"),
         "-o", package_obj], check=True)
-    subprocess.run(["g++", "-o", executable, obj, package_obj, str(PSBC / "libpsbc.a"),
-        "-pthread", "-lm"], check=True)
-    subprocess.run([executable], check=True, timeout=30)
+    for defines in ([], ["-DPS5_COMPUTE_PIPE_PROBE=1"]):
+        subprocess.run(compile_command + defines, input=code, text=True, check=True)
+        subprocess.run(["g++", "-o", executable, obj, package_obj, str(PSBC / "libpsbc.a"),
+            "-pthread", "-lm"], check=True)
+        subprocess.run([executable], check=True, timeout=30)
 print("PASS: compute package, grid/LDS metadata, malformed inputs; mocked submission lock/bounds/cleanup")
