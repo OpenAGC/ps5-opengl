@@ -158,6 +158,11 @@ ps5_agc_package_build(const PsbcShaderOutput *shader,
    *package = NULL;
    *package_size = 0;
    metadata = &shader->metadata;
+   /* ponytail: no native scratch allocation/binding yet; keep these shaders
+    * off the GPU until their scratch and retirement contract is implemented. */
+   if (metadata->scratch_valid || metadata->scratch_bytes_per_wave ||
+       metadata->scratch_size_per_thread)
+      return -7;
    context = metadata->context_registers;
    shader_registers = metadata->shader_registers;
    if (metadata->version != PSBC_SHADER_METADATA_VERSION ||

@@ -61,6 +61,18 @@ static void package(const PsbcShaderOutput *out) {
         assert(found);
     }
     free(data);
+    /* Native packages must reject unprovisioned scratch before packaging,
+     * including inconsistent metadata that reports only one size/flag. */
+    for (unsigned mask = 1; mask < 8; ++mask) {
+        PsbcShaderOutput spilling = *out;
+        spilling.metadata.scratch_valid = !!(mask & 1);
+        spilling.metadata.scratch_bytes_per_wave = (mask & 2) ? 256 : 0;
+        spilling.metadata.scratch_size_per_thread = (mask & 4) ? 4 : 0;
+        data = (uint8_t *)(uintptr_t)1;
+        size = 1;
+        assert(ps5_agc_package_build(&spilling, 4, &data, &size) == -7);
+        assert(data == NULL && size == 0);
+    }
 }
 static void check(unsigned varyings, bool explicit_id, bool last) {
     nir_builder b = nir_builder_init_simple_shader(
@@ -243,6 +255,7 @@ static void geometry(bool inputs) {
             .format=PSBC_VERTEX_FORMAT_R32G32B32A32_FLOAT, .stride=16, .alignment=16}}};
     PsbcShaderOutput out;
     assert(psbc_compile_nir_geometry_pipeline(v.shader, g.shader, &options, &out) == PSBC_RESULT_OK);
+    package(&out);
     const PsbcShaderMetadata *m = &out.metadata;
     assert(m->base_vertex_valid && m->vertex_buffer_table_valid == inputs);
     unsigned supplied = 1u << m->base_vertex_user_data_dword;
@@ -321,4 +334,4 @@ assert "SYSTEM_VALUE_PRIMITIVE_ID)" in source
 assert "user_data[vertex_metadata->ngg_lds_layout_user_data_dword] =" in source
 assert "vertex_metadata->ngg_lds_layout_user_data_dword >= user_data_count" in source
 assert "vertex_metadata->ngg_lds_layout > UINT16_MAX" in source
-print("PASS: PrimitiveID exports/consumers, mixed interpolation, provoking vertex, packages, cache keys")
+print("PASS: PrimitiveID exports/consumers, mixed interpolation, provoking vertex, packages, cache keys; scratch rejected")
