@@ -270,6 +270,13 @@ static void native_cases(void) {
             output[i]=17+3*(test==SHARED ? (i^32) : i);
             if (test==GRID) output[i]+=73;
             if (test==ATOMIC) output[i]=i<256 ? 255-i : 256;
+            if (test==FP32) output[i]=0;
+            if (test==FP64) {
+                double x=(i/2+1)*0.25, square=x*x;
+                uint64_t bits;
+                memcpy(&bits, &square, sizeof(bits));
+                output[i]=bits>>(32*(i&1));
+            }
         }
         assert(count_correct(test, output)==cases[test].words);
         output[0]=UINT32_MAX;

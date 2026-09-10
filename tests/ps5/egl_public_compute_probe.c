@@ -14,7 +14,7 @@
 
 #define OUTPUT_WORDS 512
 #define GUARD_WORD UINT32_C(0xcdcdcdcd)
-enum { CONTROL, GRID, SHARED, ATOMIC };
+enum { CONTROL, GRID, SHARED, ATOMIC, FP32, FP64 };
 static const struct {
    const char *name;
    uint32_t local[3], groups[3];
@@ -24,6 +24,8 @@ static const struct {
    {"grid-3d", {4, 2, 2}, {2, 3, 2}, 192},
    {"shared-cross-wave", {64, 1, 1}, {1, 1, 1}, 64},
    {"atomic-multi-group", {64, 1, 1}, {4, 1, 1}, 257},
+   {"fp32-control", {16, 1, 1}, {1, 1, 1}, 16},
+   {"fp64-precision-store", {16, 1, 1}, {1, 1, 1}, 32},
 };
 
 static nir_shader *create_probe_shader(unsigned test)
@@ -36,7 +38,15 @@ static nir_shader *create_probe_shader(unsigned test)
    nir_def *local = nir_load_local_invocation_id(&b);
    nir_def *id = nir_channel(&b, local, 0);
    nir_def *value;
-   if (test == GRID) {
+   if (test == FP32 || test == FP64) {
+      const unsigned bits = test == FP64 ? 64 : 32;
+      b.fp_math_ctrl = nir_fp_no_fast_math;
+      nir_def *n = nir_iadd_imm(&b, id, 1);
+      nir_def *x = test == FP64 ? nir_u2f64(&b, n) : nir_u2f32(&b, n);
+      x = nir_fmul(&b, x, nir_imm_floatN_t(&b, 0.25, bits));
+      nir_def *large = nir_imm_floatN_t(&b, 1099511627776.0, bits); /* 2^40 */
+      value = nir_fmul(&b, nir_fsub(&b, nir_fadd(&b, large, x), large), x);
+   } else if (test == GRID) {
       nir_def *group = nir_load_workgroup_id(&b);
       nir_def *count = nir_load_num_workgroups(&b);
       nir_def *global[3];
@@ -66,8 +76,9 @@ static nir_shader *create_probe_shader(unsigned test)
             nir_imul_imm(&b, nir_ixor(&b, id, nir_imm_int(&b, 32)), 4), .align_mul = 4);
       }
    }
-   nir_store_ssbo(&b, value, nir_imm_int(&b, 0), nir_imul_imm(&b, id, 4),
-      .align_mul = 4, .write_mask = 1);
+   const unsigned stride = value->bit_size / 8;
+   nir_store_ssbo(&b, value, nir_imm_int(&b, 0), nir_imul_imm(&b, id, stride),
+      .align_mul = stride, .write_mask = 1);
    nir_validate_shader(b.shader, "native compute probe");
    return b.shader;
 }
@@ -89,6 +100,15 @@ static unsigned count_correct(unsigned test, const uint32_t *output)
             expected += 7 * 2 + 11 * 3 + 13 * 2;
          if (test == ATOMIC)
             expected = 256;
+         if (test == FP32)
+            expected = 0; /* FP32 loses x when it is added to 2^40. */
+         if (test == FP64) {
+            const double n = i / 2 + 1;
+            const double square = n * n / 16.0; /* Dyadic, exactly representable. */
+            uint64_t bits;
+            memcpy(&bits, &square, sizeof(bits));
+            expected = bits >> (32 * (i & 1));
+         }
          correct += output[i] == expected;
       }
    }
