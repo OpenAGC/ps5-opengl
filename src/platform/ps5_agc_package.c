@@ -217,14 +217,12 @@ ps5_agc_package_build(const PsbcShaderOutput *shader,
    *package = NULL;
    *package_size = 0;
    metadata = &shader->metadata;
-   /* Graphics scratch still needs its distinct ring-table/lifetime contract.
-    * Only the validated native CS path below provisions private scratch. */
+   /* Native flat-scratch addressing is not validated. The initial CS probe
+    * hit MEMVIOL despite passing host allocation/binding checks. Reject here
+    * so every package consumer stops before allocation or GPU submission. */
    if (metadata->scratch_valid || metadata->scratch_bytes_per_wave ||
-       metadata->scratch_size_per_thread) {
-      if (metadata->hardware_stage != PSBC_HW_STAGE_COMPUTE ||
-          metadata->source_stage != PSBC_STAGE_COMPUTE || !compute_metadata_valid(metadata))
-         return -7;
-   }
+       metadata->scratch_size_per_thread)
+      return -7;
    context = metadata->context_registers;
    shader_registers = metadata->shader_registers;
    if (metadata->version != PSBC_SHADER_METADATA_VERSION ||

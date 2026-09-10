@@ -152,6 +152,13 @@ static void submission_contract(PsbcShaderOutput *out) {
     uint32_t groups[3]={2,3,4};
     out->metadata.address32_hi=(uintptr_t)table_data>>32;
     const unsigned old_submits=submissions;
+    if (out->metadata.scratch_valid) {
+        const unsigned old_dispatches=dispatches, old_flushes=flushes;
+        assert(ps5_agc_compute_execute(&screen, out, &table, buffers, 1, groups)<0);
+        assert(!locked && !allocations && !mapped_memory && submissions==old_submits);
+        assert(dispatches==old_dispatches && flushes==old_flushes);
+        return; /* Known native MEMVIOL: host success must not enable execution. */
+    }
     assert(ps5_agc_compute_execute(&screen, out, &table, buffers, 1, groups)==0);
     assert(!locked && !allocations && submissions==old_submits+1);
     assert(userdata_count==out->metadata.user_sgpr_count);
@@ -292,7 +299,9 @@ static void native_cases(void) {
         assert(out.metadata.compute_grid_size_valid==(test==GRID));
         uint8_t *package=NULL;
         size_t size=0;
-        assert(ps5_agc_package_build(&out, 0, &package, &size)==0);
+        const int package_rc=ps5_agc_package_build(&out, 0, &package, &size);
+        assert(package_rc==(out.metadata.scratch_valid ? -7 : 0));
+        if (out.metadata.scratch_valid) assert(!package && !size);
         free(package);
         uint32_t output[OUTPUT_WORDS];
         for (unsigned i=0; i<OUTPUT_WORDS; ++i) output[i]=GUARD_WORD;
@@ -317,8 +326,8 @@ static void native_cases(void) {
             output[256]=257;
             assert(count_correct(test, output)==255);
         }
-        printf("Native probe compiled/package/oracle: %s code=%zu LDS=%u\n",
-            cases[test].name, out.machine_code_size, out.metadata.compute_lds_bytes);
+        printf("Native probe compiled/package/oracle: %s code=%zu LDS=%u package=%d\n",
+            cases[test].name, out.machine_code_size, out.metadata.compute_lds_bytes, package_rc);
         psbc_free_output(&out); ralloc_free(nir);
     }
 }
@@ -347,7 +356,7 @@ static void scratch_contract(void) {
         reject_package(&out);
     }
     out.metadata=good;
-    printf("CS scratch package/submission contract: code=%zu wave-bytes=%u thread-bytes=%u userdata=%u rsrc2=%08x\n",
+    printf("CS scratch execution BLOCKED: code=%zu wave-bytes=%u thread-bytes=%u userdata=%u rsrc2=%08x\n",
         out.machine_code_size,out.metadata.scratch_bytes_per_wave,out.metadata.scratch_size_per_thread,
         out.metadata.scratch_buffer_table_user_data_dword,out.metadata.shader_registers[3].value);
     psbc_free_output(&out); ralloc_free(nir);

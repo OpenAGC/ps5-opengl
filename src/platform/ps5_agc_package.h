@@ -10,7 +10,7 @@
 
 #include "psbc_compile.h"
 
-/* Returns -7 for unprovisioned graphics scratch or invalid CS scratch metadata. */
+/* Returns -7 for scratch: native addressing must be validated before execution. */
 int ps5_agc_package_build(const PsbcShaderOutput *shader,
                           uint32_t esgs_ring_itemsize,
                           uint8_t **package, size_t *package_size);
