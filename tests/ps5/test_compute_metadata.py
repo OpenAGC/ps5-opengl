@@ -29,8 +29,12 @@ struct pipe_screen { int unused; };
 struct pipe_resource { void *data; size_t size; };
 static unsigned locked, allocations, submissions, dispatches, flushes, userdata_count;
 static unsigned out_of_space;
-static int runtime_agc_initialized, fail_map, fail_emit;
+static int runtime_agc_initialized, fail_map, fail_emit, fail_alloc;
+static int64_t direct_size=1024*1024;
+static void *mapped_memory;
+static size_t mapped_size;
 static uint32_t saved_userdata[16], saved_groups[3];
+static uint32_t saved_tmpring;
 static volatile uint32_t *saved_marker;
 static uint32_t saved_expected;
 #define DIRECT_MEMORY_TYPE 12
@@ -46,19 +50,25 @@ static int ps5_resource_info(struct pipe_resource *r, void **p, size_t *n, size_
     return 0;
 }
 static void runtime_require_retirement(int done) { assert(done); }
-static int64_t sceKernelGetDirectMemorySize(void) { return 1024*1024; }
+static int64_t sceKernelGetDirectMemorySize(void) { return direct_size; }
 static int sceKernelAllocateDirectMemory(int64_t a, int64_t b, size_t n, size_t align,
                                          int type, int64_t *p) {
-    assert(locked && !a && b && n && align==0x4000 && type==12);
+    assert(locked && !a && b>0 && n<=(uint64_t)b && !(n&0x3fff) && align==0x4000 && type==12);
+    if (fail_alloc) return -1;
     *p=1; ++allocations; return 0;
 }
 static int sceKernelMapDirectMemory(void **p, size_t n, int prot, int flags,
                                     int64_t phys, size_t align) {
     assert(prot==0x33 && !flags && phys==1);
     if (fail_map) return -1;
-    return posix_memalign(p, align, n);
+    int rc=posix_memalign(p, align, n);
+    if (!rc) { mapped_memory=*p; mapped_size=n; }
+    return rc;
 }
-static int mock_munmap(void *p, size_t n) { assert(locked && p && n); free(p); return 0; }
+static int mock_munmap(void *p, size_t n) {
+    assert(locked && p==mapped_memory && n==mapped_size);
+    free(p); mapped_memory=NULL; mapped_size=0; return 0;
+}
 #define munmap mock_munmap
 static int sceKernelReleaseDirectMemory(int64_t p, size_t n) {
     assert(locked && p==1 && n && allocations); --allocations; return 0;
@@ -82,6 +92,7 @@ static int create(void **p, void *header, void *code) {
 }
 static uint32_t *set_sh(void *p, const void *r, uint32_t n) { assert(r && n==8); return emit(p); }
 static uint32_t *set_direct(void *p, uint32_t off, const uint32_t *data, uint32_t n) {
+    if (off==0x218) { assert(n==1); saved_tmpring=*data; return emit(p); }
     assert(off==0x240 && n<=16); userdata_count=n;
     memcpy(saved_userdata, data, n*4); return emit(p);
 }
@@ -103,6 +114,16 @@ static uint32_t *release(void *p, uint8_t a, int16_t g, uint64_t s, int8_t d, vo
 static int submit(void *p) {
     agc_submit_description_t *s=p;
     assert(locked && s->words && s->word_count && saved_marker && !*saved_marker && flushes>=3);
+    if (saved_tmpring) {
+        assert((saved_tmpring&0xfff)==32 && (saved_userdata[1]&0xffff0000)==0x80000000);
+        uintptr_t scratch=saved_userdata[0] | ((uint64_t)(saved_userdata[1]&0xffff)<<32);
+        size_t bytes=(saved_tmpring>>12)*1024u*32u;
+        assert(!(scratch&0x3fff) && scratch==(uintptr_t)mapped_memory+0xc000);
+        assert(scratch+bytes+0x4000==(uintptr_t)mapped_memory+mapped_size);
+        const uint32_t *before=(const uint32_t *)(scratch-0x4000), *after=(const uint32_t *)(scratch+bytes);
+        for (unsigned i=0; i<0x4000/4; ++i) assert(before[i]==0xa5a5a5a5 && after[i]==0xa5a5a5a5);
+        memset((void *)scratch, 0x37, bytes); /* Only private storage may be overwritten. */
+    } else assert(!saved_userdata[0] && !saved_userdata[1]);
     *saved_marker=saved_expected; ++submissions; return 0;
 }
 static int suspend_point(void) { assert(locked); return 0; }
@@ -133,11 +154,13 @@ static void submission_contract(PsbcShaderOutput *out) {
     const unsigned old_submits=submissions;
     assert(ps5_agc_compute_execute(&screen, out, &table, buffers, 1, groups)==0);
     assert(!locked && !allocations && submissions==old_submits+1);
-    assert(userdata_count==out->metadata.user_sgpr_count && saved_userdata[0]==0 && saved_userdata[1]==0);
+    assert(userdata_count==out->metadata.user_sgpr_count);
+    assert(saved_tmpring==(out->metadata.scratch_valid ?
+        32u|((out->metadata.scratch_bytes_per_wave/1024u)<<12) : 0));
     assert(saved_userdata[2]==(uint32_t)(uintptr_t)table_data && !memcmp(saved_groups, groups, 12));
     if (out->metadata.compute_grid_size_valid) assert(!memcmp(saved_userdata+3, groups, 12));
     const unsigned old_dispatches=dispatches;
-    for (unsigned fault=0; fault<7; ++fault) {
+    for (unsigned fault=0; fault<11; ++fault) {
         if (fault==0) groups[0]=0;
         if (fault==1) table.size=16;
         if (fault==2) table_data[2]=sizeof(output)+1;
@@ -145,10 +168,15 @@ static void submission_contract(PsbcShaderOutput *out) {
         if (fault==4) out->metadata.address32_hi++;
         if (fault==5) fail_map=1;
         if (fault==6) fail_emit=1;
+        if (fault==7) fail_alloc=1;
+        if (fault==8) direct_size=0;
+        if (fault==9) direct_size=-1;
+        if (fault==10) direct_size=0x4000; /* Reject an arena larger than the heap. */
         assert(ps5_agc_compute_execute(&screen, out, &table, buffers, 1, groups)<0);
         assert(!locked && !allocations && submissions==old_submits+1 && dispatches==old_dispatches);
         groups[0]=2; table.size=sizeof(table_data); table_data[2]=sizeof(output); table_data[3]=0x31016fac;
-        out->metadata.address32_hi=(uintptr_t)table_data>>32; fail_map=fail_emit=0;
+        out->metadata.address32_hi=(uintptr_t)table_data>>32; fail_map=fail_emit=fail_alloc=0;
+        direct_size=1024*1024;
     }
 }
 static const PsbcCompileOptions opts = {
@@ -256,7 +284,9 @@ static void native_cases(void) {
         nir_shader *nir=create_probe_shader(test);
         PsbcShaderOutput out={0};
         assert(psbc_compile_nir(nir, &opts, &out)==PSBC_RESULT_OK);
-        assert(out.metadata.compute_wave_size==32 && !out.metadata.scratch_valid);
+        assert(out.metadata.compute_wave_size==32);
+        assert(out.metadata.scratch_valid==(test==SCRATCH || test==SCRATCH_GRID));
+        assert(out.metadata.scratch_size_per_thread==(test==SCRATCH ? 16 : test==SCRATCH_GRID ? 128 : 0));
         assert(!memcmp(out.metadata.compute_workgroup_size, cases[test].local, sizeof(cases[test].local)));
         assert(out.metadata.compute_lds_bytes==(test==SHARED ? 1024 : 0));
         assert(out.metadata.compute_grid_size_valid==(test==GRID));
@@ -292,10 +322,40 @@ static void native_cases(void) {
         psbc_free_output(&out); ralloc_free(nir);
     }
 }
+static void scratch_contract(void) {
+    nir_shader *nir=create_probe_shader(SCRATCH);
+    PsbcShaderOutput out={0};
+    assert(psbc_compile_nir(nir,&opts,&out)==PSBC_RESULT_OK);
+    assert(out.metadata.scratch_valid && out.metadata.scratch_size_per_thread==16);
+    assert(out.metadata.scratch_bytes_per_wave>=16*32 && !(out.metadata.scratch_bytes_per_wave&1023));
+    assert(out.metadata.scratch_buffer_table_user_data_dword==0);
+    assert(out.metadata.shader_registers[3].value&1); /* SCRATCH_EN */
+    submission_contract(&out);
+    const PsbcShaderMetadata good=out.metadata;
+    for (unsigned fault=0; fault<8; ++fault) {
+        out.metadata=good;
+        switch (fault) {
+        case 0: out.metadata.scratch_bytes_per_wave=0; break;
+        case 1: out.metadata.scratch_bytes_per_wave=1025; break;
+        case 2: out.metadata.scratch_bytes_per_wave=0x40000u*1024u; break;
+        case 3: out.metadata.scratch_size_per_thread=good.scratch_bytes_per_wave/32+1; break;
+        case 4: out.metadata.scratch_buffer_table_user_data_dword=2; break;
+        case 5: out.metadata.scratch_valid=false; break;
+        case 6: out.metadata.shader_registers[3].value&=~1u; break;
+        case 7: out.metadata.compute_wave_size=0; break;
+        }
+        reject_package(&out);
+    }
+    out.metadata=good;
+    printf("CS scratch package/submission contract: code=%zu wave-bytes=%u thread-bytes=%u userdata=%u rsrc2=%08x\n",
+        out.machine_code_size,out.metadata.scratch_bytes_per_wave,out.metadata.scratch_size_per_thread,
+        out.metadata.scratch_buffer_table_user_data_dword,out.metadata.shader_registers[3].value);
+    psbc_free_output(&out); ralloc_free(nir);
+}
 int main(void) {
     psbc_init();
     for (unsigned i=0; i<4; ++i) compiled(i&1, i&2);
-    shapes(); native_cases(); psbc_shutdown();
+    shapes(); native_cases(); scratch_contract(); compiled(false, false); psbc_shutdown();
 }
 '''
 with tempfile.TemporaryDirectory() as directory:

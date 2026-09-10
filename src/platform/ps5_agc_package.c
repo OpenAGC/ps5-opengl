@@ -101,7 +101,7 @@ compute_metadata_valid(const PsbcShaderMetadata *m)
    static const uint16_t offsets[] = {
       0x20c, 0x20d, 0x212, 0x213, 0x228, 0x207, 0x208, 0x209
    };
-   uint32_t invocations = 1, user_mask = 3; /* Reserved scratch-ring pair. */
+   uint32_t invocations = 1, user_mask = 3; /* Direct CS scratch pointer pair. */
    if (m->context_register_count || m->linkage_valid ||
        m->input_semantic_count || m->output_semantic_count ||
        m->vertex_buffer_table_valid || m->base_vertex_valid ||
@@ -123,9 +123,19 @@ compute_metadata_valid(const PsbcShaderMetadata *m)
       invocations *= size;
    }
    const uint32_t rsrc2 = m->shader_registers[3].value;
-   if ((rsrc2 & 1u) || ((rsrc2 >> 1) & 31u) != m->user_sgpr_count ||
+   if (!!(rsrc2 & 1u) != m->scratch_valid ||
+       ((rsrc2 >> 1) & 31u) != m->user_sgpr_count ||
        ((rsrc2 >> 15) & 511u) != m->compute_lds_bytes / 512u)
       return false;
+   if (m->scratch_valid) {
+      if (!m->scratch_bytes_per_wave || (m->scratch_bytes_per_wave & 1023u) ||
+          m->scratch_bytes_per_wave / 1024u > 0x3ffffu ||
+          m->scratch_size_per_thread > m->scratch_bytes_per_wave / m->compute_wave_size ||
+          m->scratch_buffer_table_user_data_dword != 0)
+         return false;
+   } else if (m->scratch_bytes_per_wave || m->scratch_size_per_thread) {
+      return false;
+   }
    if (m->descriptor_set0_valid) {
       unsigned at = m->descriptor_set0_user_data_dword;
       if (at < 2 || at >= m->user_sgpr_count)
@@ -207,11 +217,14 @@ ps5_agc_package_build(const PsbcShaderOutput *shader,
    *package = NULL;
    *package_size = 0;
    metadata = &shader->metadata;
-   /* ponytail: no native scratch allocation/binding yet; keep these shaders
-    * off the GPU until their scratch and retirement contract is implemented. */
+   /* Graphics scratch still needs its distinct ring-table/lifetime contract.
+    * Only the validated native CS path below provisions private scratch. */
    if (metadata->scratch_valid || metadata->scratch_bytes_per_wave ||
-       metadata->scratch_size_per_thread)
-      return -7;
+       metadata->scratch_size_per_thread) {
+      if (metadata->hardware_stage != PSBC_HW_STAGE_COMPUTE ||
+          metadata->source_stage != PSBC_STAGE_COMPUTE || !compute_metadata_valid(metadata))
+         return -7;
+   }
    context = metadata->context_registers;
    shader_registers = metadata->shader_registers;
    if (metadata->version != PSBC_SHADER_METADATA_VERSION ||

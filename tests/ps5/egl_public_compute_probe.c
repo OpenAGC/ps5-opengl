@@ -22,7 +22,7 @@
 #define OUTPUT_BINDING 0
 #define PREFIX_WORDS 0
 #endif
-enum { CONTROL, GRID, SHARED, ATOMIC, FP32, FP64 };
+enum { CONTROL, GRID, SHARED, ATOMIC, FP32, FP64, SCRATCH, SCRATCH_GRID, POST_SCRATCH };
 static const struct {
    const char *name;
    uint32_t local[3], groups[3];
@@ -34,6 +34,9 @@ static const struct {
    {"atomic-multi-group", {64, 1, 1}, {4, 1, 1}, 257},
    {"fp32-control", {16, 1, 1}, {1, 1, 1}, 16},
    {"fp64-precision-store", {16, 1, 1}, {1, 1, 1}, 32},
+   {"scratch-private-16", {16, 1, 1}, {1, 1, 1}, 16},
+   {"scratch-private-128-grid", {64, 1, 1}, {4, 1, 1}, 256},
+   {"post-scratch-control", {16, 1, 1}, {1, 1, 1}, 16},
 };
 
 static nir_shader *create_probe_shader(unsigned test)
@@ -68,6 +71,15 @@ static nir_shader *create_probe_shader(unsigned test)
       for (unsigned axis = 0; axis < 3; ++axis)
          value = nir_iadd(&b, value,
             nir_imul_imm(&b, nir_channel(&b, count, axis), weights[axis]));
+   } else if (test == SCRATCH || test == SCRATCH_GRID) {
+      const unsigned bytes = test == SCRATCH ? 16 : 128;
+      b.shader->scratch_size = bytes;
+      id = nir_iadd(&b, id, nir_imul_imm(&b,
+         nir_channel(&b, nir_load_workgroup_id(&b), 0), cases[test].local[0]));
+      nir_def *offset = nir_imul_imm(&b, nir_iand_imm(&b, id, bytes / 4 - 1), 4);
+      value = nir_iadd_imm(&b, nir_imul_imm(&b, id, 3), 17);
+      nir_store_scratch(&b, value, offset, .align_mul = 4, .write_mask = 1);
+      value = nir_load_scratch(&b, 1, 32, offset, .align_mul = 4);
    } else if (test == ATOMIC) {
       id = nir_iadd(&b, id, nir_imul_imm(&b,
          nir_channel(&b, nir_load_workgroup_id(&b), 0), 64));
@@ -189,9 +201,11 @@ int main(void)
          goto cleanup;
       struct pipe_compute_state_object_info info = {0};
       pipe->get_compute_state_info(pipe, state, &info);
-      printf("[ps5-compute] case=%s pipe-created=1 wave=%u\n", cases[test].name, info.preferred_simd_size);
+      printf("[ps5-compute] case=%s pipe-created=1 wave=%u private=%u\n",
+         cases[test].name, info.preferred_simd_size, info.private_memory);
       fflush(stdout);
-      if (info.preferred_simd_size != 32)
+      const unsigned private_bytes = test == SCRATCH ? 32 : test == SCRATCH_GRID ? 128 : 0;
+      if (info.preferred_simd_size != 32 || info.private_memory != private_bytes)
          goto cleanup;
       pipe->bind_compute_state(pipe, state);
       struct pipe_shader_buffer binding = {

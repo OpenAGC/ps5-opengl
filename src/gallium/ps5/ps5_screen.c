@@ -10165,6 +10165,8 @@ ps5_get_compute_state_info(struct pipe_context *base, void *state,
       info->max_threads = 1024;
       info->preferred_simd_size = shader->output.metadata.compute_wave_size;
       info->simd_sizes = info->preferred_simd_size;
+      info->private_memory = shader->output.metadata.scratch_bytes_per_wave /
+                             info->preferred_simd_size;
    }
 }
 
