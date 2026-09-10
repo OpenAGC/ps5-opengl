@@ -111,3 +111,4 @@ test-compiler:
 	python3 tests/ps5/test_unused_primitive_export.py
 	python3 tests/ps5/test_vertex_constants.py
 	python3 tests/ps5/test_geometry_texture_bindings.py
+	python3 tests/ps5/test_buffer_array_lowering.py

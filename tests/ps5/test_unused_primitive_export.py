@@ -214,7 +214,7 @@ static void consumer(unsigned varyings, bool mixed) {
     }
     ralloc_free(b.shader);
 }
-static void geometry(bool inputs) {
+static void geometry(bool inputs, bool buffer_arrays) {
     nir_builder v = nir_builder_init_simple_shader(MESA_SHADER_VERTEX,
         psbc_get_nir_options(PSBC_STAGE_VERTEX), "geometry-lds-producer");
     nir_builder g = nir_builder_init_simple_shader(MESA_SHADER_GEOMETRY,
@@ -231,6 +231,9 @@ static void geometry(bool inputs) {
         nir_def *position = nir_load_input(&v, 4, 32, vz,
             .dest_type=nir_type_float32,
             .io_semantics={.location=VERT_ATTRIB_GENERIC0, .num_slots=1});
+        if (buffer_arrays)
+            position = nir_fadd(&v, position, nir_load_ubo(&v, 4, 32,
+                nir_imm_int(&v, 1), vz, .align_mul=16, .range=16));
         nir_store_output(&v, position, vz, .src_type=nir_type_float32,
             .io_semantics={.location=VARYING_SLOT_POS, .num_slots=1});
     }
@@ -239,6 +242,9 @@ static void geometry(bool inputs) {
             .dest_type=nir_type_float32,
             .io_semantics={.location=VARYING_SLOT_POS, .num_slots=1}) :
             nir_imm_vec4(&g, i == 0 ? -0.5 : 0.5, i == 2 ? 0.5 : -0.5, 0, 1);
+        if (buffer_arrays)
+            p = nir_fadd(&g, p, nir_load_ubo(&g, 4, 32,
+                nir_imm_int(&g, 1), gz, .align_mul=16, .range=16));
         nir_store_output(&g, p, gz, .src_type=nir_type_float32,
             .io_semantics={.location=VARYING_SLOT_POS, .num_slots=1});
         nir_store_output(&g, p, gz, .base=1, .src_type=nir_type_float32,
@@ -250,6 +256,13 @@ static void geometry(bool inputs) {
     nir_shader_gather_info(g.shader, nir_shader_get_entrypoint(g.shader));
     PsbcCompileOptions options = {.target=PSBC_TARGET_PS5, .stage=PSBC_STAGE_GEOMETRY,
         .optimise=true, .ngg=true, .primitive_type=inputs ? 4 : 1, .address32_hi=2,
+        .gallium_buffer_arrays=buffer_arrays,
+        .descriptor_binding_count=buffer_arrays ? 2 : 0,
+        .descriptor_bindings={
+            {.binding=PSBC_GALLIUM_UBO_ARRAY_BINDING(PSBC_STAGE_VERTEX),
+             .type=PSBC_DESCRIPTOR_UNIFORM_BUFFER, .array_size=2, .stride=16},
+            {.binding=PSBC_GALLIUM_UBO_ARRAY_BINDING(PSBC_STAGE_GEOMETRY),
+             .type=PSBC_DESCRIPTOR_UNIFORM_BUFFER, .array_size=2, .stride=16, .offset=32}},
         .vertex_attribute_count=inputs ? 1 : 0,
         .vertex_attributes={{.location=0, .binding=0,
             .format=PSBC_VERTEX_FORMAT_R32G32B32A32_FLOAT, .stride=16, .alignment=16}}};
@@ -260,6 +273,14 @@ static void geometry(bool inputs) {
     assert(m->base_vertex_valid && m->vertex_buffer_table_valid == inputs);
     unsigned supplied = 1u << m->base_vertex_user_data_dword;
     if (inputs) supplied |= 1u << m->vertex_buffer_table_user_data_dword;
+    assert(m->descriptor_set0_valid == buffer_arrays);
+    if (buffer_arrays) {
+        assert(m->descriptor_set0_user_data_dword < m->user_sgpr_count);
+        assert(!(supplied & (1u << m->descriptor_set0_user_data_dword)));
+        supplied |= 1u << m->descriptor_set0_user_data_dword;
+        assert(m->descriptor_binding_count == 2);
+        assert(m->descriptor_bindings[0].binding != m->descriptor_bindings[1].binding);
+    }
     assert(m->ngg_lds_layout_valid && m->ngg_lds_layout_user_data_dword < m->user_sgpr_count);
     assert(!(supplied & (1u << m->ngg_lds_layout_user_data_dword)));
     supplied |= 1u << m->ngg_lds_layout_user_data_dword;
@@ -284,8 +305,8 @@ static void geometry(bool inputs) {
         assert(!native_ngg_data(&bad, data, m->user_sgpr_count));
         for (unsigned j = 0; j < 32; ++j) assert(data[j] == 0);
     }
-    fprintf(stderr, "geometry LDS: inputs=%u base=%u user-sgprs=%u supplied-mask=%x\n",
-        inputs, m->ngg_lds_layout, m->user_sgpr_count, supplied);
+    fprintf(stderr, "geometry LDS: inputs=%u buffer-arrays=%u base=%u user-sgprs=%u supplied-mask=%x\n",
+        inputs, buffer_arrays, m->ngg_lds_layout, m->user_sgpr_count, supplied);
     assert(supplied == (1u << m->user_sgpr_count) - 1);
     psbc_free_output(&out);
     ralloc_free(v.shader);
@@ -293,8 +314,10 @@ static void geometry(bool inputs) {
 }
 int main(void) {
     psbc_init();
-    geometry(true);
-    geometry(false);
+    geometry(true, false);
+    geometry(false, false);
+    geometry(true, true);
+    geometry(false, true);
     for (unsigned i = 0; i <= 2; ++i)
         for (unsigned last = 0; last < 2; ++last) { check(i, false, last); check(i, true, last); }
     for (unsigned i = 0; i <= 2; ++i) {
