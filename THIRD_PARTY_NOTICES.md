@@ -34,6 +34,13 @@ module is copied into this repository. Patches and the test inventory are includ
 | [LLVM](https://llvm.org/) | Clang/LLD, compiler builtins, libc++, libc++abi and libunwind | Apache-2.0 with LLVM exceptions or component-specific notices |
 | [zlib](https://zlib.net/) | Native boilerplate build-time compression | zlib license in fetched source |
 
+The compiler-only linked-tessellation helpers in the PSBC patch adapt
+`src/amd/vulkan/radv_pipeline_graphics.c` from the pinned Mesa/RADV source:
+Copyright © 2016 Red Hat; Copyright © 2016 Bas Nieuwenhuizen; based in part on
+the ANV driver, Copyright © 2015 Intel Corporation. These portions retain their
+MIT license, not the project's license. The host regressions also extract
+unchanged Mesa functions from the fetched sources; their upstream notices apply.
+
 The build also uses Python, GNU Make/binutils, Meson, Ninja, Mako, PyYAML,
 packaging, glslang and SPIR-V Tools. These are host tools, not bundled runtime
 implementations; their own projects retain their licenses.
