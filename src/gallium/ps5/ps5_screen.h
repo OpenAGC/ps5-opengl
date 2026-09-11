@@ -10,6 +10,7 @@ struct pipe_context;
 struct pipe_resource;
 
 #include <stddef.h>
+#include <stdint.h>
 #include "../../platform/ps5_scanout.h"
 
 #define PS5_RENDER_WIDTH PS5_SCANOUT_WIDTH
@@ -32,6 +33,9 @@ int ps5_shader_state_info(void *state, size_t *machine_code_size,
                           unsigned *unresolved_fields);
 int ps5_resource_info(struct pipe_resource *resource, void **address,
                       size_t *logical_size, size_t *allocation_size);
+/* Internal base-level linear R32_UINT storage image, validated before use. */
+int ps5_resource_storage_image_descriptor(struct pipe_resource *resource,
+                                          uint32_t descriptor[8]);
 int ps5_resource_stencil_info(struct pipe_resource *resource, void **address,
                               size_t *allocation_size);
 struct pipe_resource *ps5_display_target_alias(struct pipe_resource *owner,

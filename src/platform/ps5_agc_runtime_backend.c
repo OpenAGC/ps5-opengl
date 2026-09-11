@@ -676,8 +676,8 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
    extern uint32_t *sceAgcDcbAcquireMem(void *, uint8_t, uint32_t, uint32_t,
                                        uint64_t, uint64_t, uint32_t);
    extern uint32_t *sceAgcCbDispatch(void *, uint32_t, uint32_t, uint32_t, uint32_t);
-   void *addresses[32], *table = NULL, *program = NULL;
-   size_t sizes[32], table_size = 0, package_size = 0;
+   void *addresses[PS5_AGC_COMPUTE_MAX_RESOURCES], *table = NULL, *program = NULL;
+   size_t sizes[PS5_AGC_COMPUTE_MAX_RESOURCES], table_size = 0, package_size = 0;
    uint8_t *package = NULL, *memory = NULL;
    int64_t physical = -1;
    size_t memory_size = 0, scratch_offset = 0, scratch_size = 0;
@@ -689,7 +689,7 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
    uint32_t user_data[16] = {0};
    const uint8_t *header, *code;
    size_t header_size = 0, code_size = 0;
-   if (!screen || !shader || !groups || buffer_count > 32 ||
+   if (!screen || !shader || !groups || buffer_count > PS5_AGC_COMPUTE_MAX_RESOURCES ||
        (buffer_count && !buffers) ||
        shader->metadata.hardware_stage != PSBC_HW_STAGE_COMPUTE)
       return -1;
@@ -715,15 +715,32 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
          goto cleanup;
       for (unsigned i = 0; i < m->descriptor_binding_count; ++i) {
          const PsbcDescriptorBinding *bank = &m->descriptor_bindings[i];
-         if (bank->set || bank->stride != 16 || !bank->array_size || bank->array_size > 32 ||
+         const bool image = bank->type == PSBC_DESCRIPTOR_STORAGE_IMAGE;
+         if (bank->set || bank->stride != (image ? 32u : 16u) || !bank->array_size ||
+             bank->array_size > (image ? 8u : 32u) ||
              (bank->type != PSBC_DESCRIPTOR_STORAGE_BUFFER &&
-              bank->type != PSBC_DESCRIPTOR_UNIFORM_BUFFER) || (bank->offset & 15u) ||
-             (uint64_t)bank->offset + (uint64_t)bank->array_size * 16 > table_size)
+              bank->type != PSBC_DESCRIPTOR_UNIFORM_BUFFER && !image) || (bank->offset & 15u) ||
+             (uint64_t)bank->offset + (uint64_t)bank->array_size * bank->stride > table_size)
             goto cleanup;
          for (unsigned slot = 0; slot < bank->array_size; ++slot) {
-            const uint32_t *srd = (const uint32_t *)((const uint8_t *)table + bank->offset + slot * 16);
-            if (!(srd[0] | srd[1] | srd[2] | srd[3]))
+            const uint32_t *srd = (const uint32_t *)((const uint8_t *)table + bank->offset + slot * bank->stride);
+            uint32_t nonzero = 0;
+            for (unsigned word = 0; word < bank->stride / 4; ++word)
+               nonzero |= srd[word];
+            if (!nonzero)
                continue;
+            if (image) {
+               bool owned = false;
+               for (unsigned j = 0; j < buffer_count; ++j) {
+                  uint32_t expected[8];
+                  if (!ps5_resource_storage_image_descriptor(buffers[j], expected) &&
+                      !memcmp(srd, expected, sizeof(expected)))
+                     owned = true;
+               }
+               if (!owned)
+                  goto cleanup;
+               continue;
+            }
             if (srd[1] & 0xffff0000u || !srd[2] || srd[3] != UINT32_C(0x31016fac))
                goto cleanup;
             const uint64_t address = srd[0] | ((uint64_t)srd[1] << 32);

@@ -15,6 +15,7 @@
 
 #define OUTPUT_WORDS 512
 #define INPUT_WORDS (15 * 16)
+#define IMAGE_WORDS (64 * 3) /* 17x3 R32_UINT with a 256-byte linear row. */
 #define GUARD_WORD UINT32_C(0xcdcdcdcd)
 #ifdef PS5_COMPUTE_PIPE_PROBE
 #define OUTPUT_BINDING 15
@@ -25,7 +26,8 @@
 #endif
 enum { CONTROL, GRID, SHARED, ATOMIC, FP32, FP64, BUFFER_RANGES, BUFFER_ALIAS,
        POST_BUFFER, UBO_RANGES, UBO_COPY, POST_UBO, INDIRECT_ARGS, INDIRECT,
-       POST_INDIRECT, SCRATCH, SCRATCH_GRID, POST_SCRATCH };
+       POST_INDIRECT, IMAGE_STORE, IMAGE_LOAD, IMAGE_SIZE, POST_IMAGE,
+       SCRATCH, SCRATCH_GRID, POST_SCRATCH };
 static const struct {
    const char *name;
    uint32_t local[3], groups[3];
@@ -46,6 +48,10 @@ static const struct {
    {"indirect-arguments", {3, 1, 1}, {1, 1, 1}, 3},
    {"indirect-grid-consumer", {4, 2, 2}, {2, 3, 2}, 192},
    {"post-indirect-control", {16, 1, 1}, {1, 1, 1}, 16},
+   {"image-store-r32ui", {16, 1, 1}, {1, 1, 1}, 16},
+   {"image-load-r32ui", {16, 1, 1}, {1, 1, 1}, 16},
+   {"image-size-r32ui", {16, 1, 1}, {1, 1, 1}, 16},
+   {"post-image-control", {16, 1, 1}, {1, 1, 1}, 16},
    {"scratch-private-16", {16, 1, 1}, {1, 1, 1}, 16},
    {"scratch-private-128-grid", {64, 1, 1}, {4, 1, 1}, 256},
    {"post-scratch-control", {16, 1, 1}, {1, 1, 1}, 16},
@@ -59,6 +65,7 @@ static nir_shader *create_probe_shader(unsigned test)
       b.shader->info.workgroup_size[axis] = cases[test].local[axis];
    b.shader->info.num_ssbos = 16;
    b.shader->info.num_ubos = test == UBO_RANGES ? 15 : test == UBO_COPY ? 1 : 0;
+   b.shader->info.num_images = test >= IMAGE_STORE && test <= IMAGE_SIZE ? 8 : 0;
    nir_def *local = nir_load_local_invocation_id(&b);
    nir_def *id = nir_channel(&b, local, 0);
    nir_def *value;
@@ -70,6 +77,21 @@ static nir_shader *create_probe_shader(unsigned test)
       x = nir_fmul(&b, x, nir_imm_floatN_t(&b, 0.25, bits));
       nir_def *large = nir_imm_floatN_t(&b, 1099511627776.0, bits); /* 2^40 */
       value = nir_fmul(&b, nir_fsub(&b, nir_fadd(&b, large, x), large), x);
+   } else if (test >= IMAGE_STORE && test <= IMAGE_SIZE) {
+      nir_def *zero = nir_imm_int(&b, 0), *slot = nir_imm_int(&b, 7);
+      nir_def *coord = nir_vec4(&b, nir_iadd_imm(&b, id, 1), nir_imm_int(&b, 1), zero, zero);
+      value = nir_iadd_imm(&b, nir_imul_imm(&b, id, 3), 17);
+      if (test == IMAGE_STORE)
+         nir_image_store(&b, slot, coord, zero, nir_vec4(&b, value, zero, zero, zero), zero,
+            .image_dim = GLSL_SAMPLER_DIM_2D, .format = PIPE_FORMAT_R32_UINT, .src_type = nir_type_uint32);
+      else if (test == IMAGE_LOAD)
+         value = nir_iadd_imm(&b, nir_channel(&b, nir_image_load(&b, 4, 32, slot, coord, zero, zero,
+            .image_dim = GLSL_SAMPLER_DIM_2D, .format = PIPE_FORMAT_R32_UINT, .dest_type = nir_type_uint32), 0), 100);
+      else {
+         nir_def *size = nir_image_size(&b, 2, 32, slot, zero,
+            .image_dim = GLSL_SAMPLER_DIM_2D, .format = PIPE_FORMAT_R32_UINT);
+         value = nir_iadd(&b, nir_channel(&b, size, 0), nir_imul_imm(&b, nir_channel(&b, size, 1), 100));
+      }
    } else if (test == UBO_COPY) {
       value = nir_load_ubo(&b, 1, 32, nir_imm_int(&b, 0), nir_imul_imm(&b, id, 4),
          .align_mul = 4, .range = 64);
@@ -154,6 +176,10 @@ static unsigned count_correct(unsigned test, const uint32_t *output)
             expected += 7 * 2 + 11 * 3 + 13 * 2;
          if (test == INDIRECT_ARGS)
             expected = i == 1 ? 3 : 2;
+         if (test == IMAGE_LOAD)
+            expected += 100;
+         if (test == IMAGE_SIZE)
+            expected = 317;
          if (test == BUFFER_RANGES || test == BUFFER_ALIAS) {
             expected = 1000 + 101 * (i / 4) + 7 * (i % 4);
             if (test == BUFFER_ALIAS)
@@ -180,11 +206,21 @@ static unsigned count_correct(unsigned test, const uint32_t *output)
    return correct;
 }
 
+static unsigned count_image_correct(const uint32_t *pixels)
+{
+   unsigned correct = 0;
+   for (unsigned i = 0; i < IMAGE_WORDS; ++i) {
+      const uint32_t expected = i >= 65 && i < 81 ? 17 + 3 * (i - 65) : GUARD_WORD;
+      correct += pixels[i] == expected;
+   }
+   return correct;
+}
+
 int main(void)
 {
    int status = 1;
    struct pipe_screen *screen = ps5_screen_create();
-   struct pipe_resource *buffers[3] = {0};
+   struct pipe_resource *buffers[4] = {0};
    PsbcShaderOutput compiled = {0};
    if (!screen)
       return 1;
@@ -192,7 +228,7 @@ int main(void)
    struct pipe_context *pipe = screen->context_create(screen, NULL, 0);
    void *state = NULL;
    if (!pipe || !pipe->create_compute_state || !pipe->launch_grid ||
-       !pipe->set_shader_buffers || !pipe->set_constant_buffer)
+       !pipe->set_shader_buffers || !pipe->set_constant_buffer || !pipe->set_shader_images)
       goto cleanup;
 #endif
    struct pipe_resource templ = {
@@ -201,13 +237,25 @@ int main(void)
       .usage = PIPE_USAGE_DEFAULT, .bind = PIPE_BIND_SHADER_BUFFER,
    };
    void *table = NULL, *output = NULL, *input_data = NULL;
-   for (unsigned i = 0; i < ARRAY_SIZE(buffers); ++i) {
+   for (unsigned i = 0; i < 3; ++i) {
       templ.width0 = i == 2 ? (INPUT_WORDS + 16) * sizeof(uint32_t) :
-         i == 1 ? (OUTPUT_WORDS + PREFIX_WORDS) * sizeof(uint32_t) : 31 * 16;
+         i == 1 ? (OUTPUT_WORDS + PREFIX_WORDS) * sizeof(uint32_t) : 31 * 16 + 8 * 32;
       buffers[i] = screen->resource_create(screen, &templ);
       if (!buffers[i])
          goto cleanup;
    }
+   templ = (struct pipe_resource){
+      .target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_R32_UINT,
+      .width0 = 17, .height0 = 3, .depth0 = 1, .array_size = 1,
+      .bind = PIPE_BIND_SHADER_IMAGE | PIPE_BIND_SAMPLER_VIEW,
+   };
+   struct pipe_resource *image_buffer = buffers[3] = screen->resource_create(screen, &templ);
+   void *image_data = NULL;
+   size_t image_size = 0;
+   if (!image_buffer || ps5_resource_info(image_buffer, &image_data, &image_size, NULL) ||
+       !image_data || image_size != IMAGE_WORDS * sizeof(uint32_t))
+      goto cleanup;
+   memset(image_data, 0xcd, image_size);
    if (ps5_resource_info(buffers[0], &table, NULL, NULL) ||
        ps5_resource_info(buffers[1], &output, NULL, NULL) ||
        ps5_resource_info(buffers[2], &input_data, NULL, NULL))
@@ -224,7 +272,7 @@ int main(void)
    PsbcCompileOptions opts = {
       .target = PSBC_TARGET_PS5, .stage = PSBC_STAGE_COMPUTE,
       .optimise = true, .address32_hi = (uintptr_t)table >> 32,
-      .gallium_buffer_arrays = true, .descriptor_binding_count = 2,
+      .gallium_buffer_arrays = true, .descriptor_binding_count = 3,
       .descriptor_bindings = {{
          .binding = PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
          .type = PSBC_DESCRIPTOR_STORAGE_BUFFER, .array_size = 16, .stride = 16,
@@ -232,6 +280,10 @@ int main(void)
          .binding = PSBC_GALLIUM_UBO_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
          .type = PSBC_DESCRIPTOR_UNIFORM_BUFFER, .array_size = 15, .stride = 16,
          .offset = 16 * 16,
+      }, {
+         .binding = PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
+         .type = PSBC_DESCRIPTOR_STORAGE_IMAGE, .array_size = 8, .stride = 32,
+         .offset = 31 * 16,
       }},
    };
 #endif
@@ -284,6 +336,11 @@ int main(void)
       if (info.preferred_simd_size != 32 || info.private_memory)
          goto cleanup;
       pipe->bind_compute_state(pipe, state);
+      if (test == IMAGE_STORE) {
+         const struct pipe_image_view view = {.resource = image_buffer,
+            .format = PIPE_FORMAT_R32_UINT, .access = PIPE_IMAGE_ACCESS_READ_WRITE};
+         pipe->set_shader_images(pipe, MESA_SHADER_COMPUTE, 7, 1, 0, &view);
+      }
       pipe->set_shader_buffers(pipe, MESA_SHADER_COMPUTE, 0, 16, bindings, 1u << OUTPUT_BINDING);
       for (unsigned i = 0; i < 15; ++i) {
          const struct pipe_shader_buffer *bound = &bindings[16 + i];
@@ -335,7 +392,10 @@ int main(void)
 #else
       memcpy(input + INPUT_WORDS, user_constants, sizeof(user_constants));
       memset(user_constants, 0, sizeof(user_constants));
-      memset(table, 0, 31 * 16);
+      memset(table, 0, 31 * 16 + 8 * 32);
+      if (test >= IMAGE_STORE && ps5_resource_storage_image_descriptor(image_buffer,
+            (uint32_t *)table + 31 * 4 + 7 * 8))
+         goto cleanup;
       for (unsigned i = 0; i < ARRAY_SIZE(bindings); ++i) {
          const struct pipe_shader_buffer *bound = &bindings[i];
          if (!bound->buffer)
@@ -360,7 +420,7 @@ int main(void)
          goto cleanup;
       uint32_t direct_groups[3];
       memcpy(direct_groups, test == INDIRECT ? output : cases[test].groups, sizeof(direct_groups));
-      int rc = ps5_agc_compute_execute(screen, &compiled, buffers[0], buffers + 1, 2, direct_groups);
+      int rc = ps5_agc_compute_execute(screen, &compiled, buffers[0], buffers + 1, 3, direct_groups);
 #endif
       unsigned correct = count_correct(test, output), guards = 0;
       for (unsigned i = cases[test].words; i < OUTPUT_WORDS; ++i)
@@ -377,6 +437,11 @@ int main(void)
          input_correct += input[i] == expected;
       }
       status |= input_correct != INPUT_WORDS;
+      if (test >= IMAGE_STORE) {
+         unsigned image_correct = count_image_correct(image_data);
+         status |= image_correct != IMAGE_WORDS;
+         printf("[ps5-compute] image-pixels-and-padding=%u/%u status=%d\n", image_correct, IMAGE_WORDS, status);
+      }
       printf("[ps5-compute] case=%s dispatch=%d correct=%u/%u guards=%u/%u first=%u last=%u status=%d\n",
          cases[test].name, rc, correct, cases[test].words, guards, OUTPUT_WORDS - cases[test].words,
          ((uint32_t *)output)[0], ((uint32_t *)output)[cases[test].words - 1], status);
@@ -390,6 +455,10 @@ int main(void)
 #endif
       if (status)
          goto cleanup;
+#ifdef PS5_COMPUTE_PIPE_PROBE
+      if (test == IMAGE_STORE)
+         pipe_resource_reference(&buffers[3], NULL); /* Validated binding owns the later reads. */
+#endif
       psbc_free_output(&compiled);
       memset(&compiled, 0, sizeof(compiled));
    }

@@ -26,7 +26,12 @@ mock = r'''
 #include <stdlib.h>
 typedef struct { int unused; } video_api_t;
 struct pipe_screen { int unused; };
-struct pipe_resource { void *data; size_t size; };
+struct pipe_resource { void *data; size_t size; bool image; };
+static int ps5_resource_storage_image_descriptor(struct pipe_resource *r,uint32_t d[8]) {
+    if(!r || !r->image) return -1;
+    const uint32_t srd[8]={(uintptr_t)r->data>>8,0,0x80000000,0x90000fac,63,0x400000,0,0};
+    memcpy(d,srd,sizeof(srd)); return 0;
+}
 static unsigned locked, allocations, submissions, dispatches, flushes, userdata_count;
 static unsigned out_of_space;
 static int runtime_agc_initialized, fail_map, fail_emit, fail_alloc;
@@ -143,7 +148,7 @@ code = r'''
 #include "ps5_agc_package.h"
 ''' + types + mock + parsers + compute + "\n" + probe + r'''
 static void submission_contract(PsbcShaderOutput *out) {
-    _Alignas(16) uint32_t table_data[31*4]={0}, output[16]={0};
+    _Alignas(16) uint32_t table_data[31*4+8*8]={0}, output[16]={0};
     table_data[0]=(uintptr_t)output; table_data[1]=(uintptr_t)output>>32;
     table_data[2]=sizeof(output); table_data[3]=0x31016fac;
     memcpy(table_data+30*4,table_data,16); /* Highest UBO uses the same owned range. */
@@ -181,7 +186,7 @@ static void submission_contract(PsbcShaderOutput *out) {
         if (fault==9) direct_size=-1;
         if (fault==10) direct_size=0x4000; /* Reject an arena larger than the heap. */
         if (fault==11) table_data[30*4+2]=sizeof(output)+1;
-        if (fault==12) table.size=sizeof(table_data)-1;
+        if (fault==12) table.size=31*16-1;
         assert(ps5_agc_compute_execute(&screen, out, &table, buffers, 1, groups)<0);
         assert(!locked && !allocations && submissions==old_submits+1 && dispatches==old_dispatches);
         groups[0]=2; table.size=sizeof(table_data); table_data[2]=sizeof(output); table_data[3]=0x31016fac;
@@ -189,14 +194,39 @@ static void submission_contract(PsbcShaderOutput *out) {
         direct_size=1024*1024;
         memcpy(table_data+30*4,table_data,16);
     }
+    const PsbcShaderMetadata saved=out->metadata;
+    out->metadata.descriptor_binding_count=3;
+    out->metadata.descriptor_bindings[2]=(PsbcDescriptorBinding){
+        .binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
+        .type=PSBC_DESCRIPTOR_STORAGE_IMAGE,.array_size=8,.stride=32,.offset=31*16};
+    _Alignas(256) uint32_t pixels[192]={0};
+    struct pipe_resource image={pixels,sizeof(pixels),true};
+    uint32_t expected[8]; assert(!ps5_resource_storage_image_descriptor(&image,expected));
+    memcpy(table_data+31*4+7*8,expected,32);
+    struct pipe_resource *all[PS5_AGC_COMPUTE_MAX_RESOURCES];
+    for(unsigned i=0;i<PS5_AGC_COMPUTE_MAX_RESOURCES;++i) all[i]=i<31 ? &buffer : &image;
+    assert(!ps5_agc_compute_execute(&screen,out,&table,all,39,groups));
+    const unsigned after=submissions;
+    for(unsigned word=0;word<8;++word) {
+        table_data[31*4+7*8+word]^=1;
+        assert(ps5_agc_compute_execute(&screen,out,&table,all,39,groups)<0);
+        assert(!allocations && !locked && submissions==after);
+        table_data[31*4+7*8+word]^=1;
+    }
+    assert(ps5_agc_compute_execute(&screen,out,&table,all,40,groups)<0);
+    assert(ps5_agc_compute_execute(&screen,out,&table,buffers,1,groups)<0); /* Image not owned. */
+    assert(!allocations && !locked && submissions==after);
+    out->metadata=saved;
 }
 static const PsbcCompileOptions opts = {
     .target=PSBC_TARGET_PS5, .stage=PSBC_STAGE_COMPUTE, .optimise=true,
-    .address32_hi=2, .gallium_buffer_arrays=true, .descriptor_binding_count=2,
+    .address32_hi=2, .gallium_buffer_arrays=true, .descriptor_binding_count=3,
     .descriptor_bindings={{.binding=PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
         .type=PSBC_DESCRIPTOR_STORAGE_BUFFER, .array_size=16, .stride=16},
         {.binding=PSBC_GALLIUM_UBO_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
-        .type=PSBC_DESCRIPTOR_UNIFORM_BUFFER, .array_size=15, .stride=16, .offset=16*16}},
+        .type=PSBC_DESCRIPTOR_UNIFORM_BUFFER, .array_size=15, .stride=16, .offset=16*16},
+        {.binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
+        .type=PSBC_DESCRIPTOR_STORAGE_IMAGE, .array_size=8, .stride=32, .offset=31*16}},
 };
 static nir_shader *shader(bool grid, bool shared) {
     nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
@@ -231,7 +261,7 @@ static void compiled(bool grid, bool shared) {
     PsbcShaderOutput out={0};
     assert(psbc_compile_nir(nir, &opts, &out)==PSBC_RESULT_OK);
     PsbcShaderMetadata *m=&out.metadata;
-    assert(m->version==10 && m->hardware_stage==PSBC_HW_STAGE_COMPUTE);
+    assert(m->version==PSBC_SHADER_METADATA_VERSION && m->hardware_stage==PSBC_HW_STAGE_COMPUTE);
     assert(m->shader_register_count==8 && !m->context_register_count && !m->linkage_valid);
     assert(m->compute_wave_size==32 && m->compute_workgroup_size[0]==16);
     assert(m->compute_lds_bytes==(shared ? 1024 : 0));
@@ -315,6 +345,8 @@ static void native_cases(void) {
             output[i]=17+3*(test==SHARED ? (i^32) : i);
             if (test==GRID || test==INDIRECT) output[i]+=73;
             if (test==INDIRECT_ARGS) output[i]=i==1 ? 3 : 2;
+            if (test==IMAGE_LOAD) output[i]+=100;
+            if (test==IMAGE_SIZE) output[i]=317;
             if (test==BUFFER_RANGES || test==BUFFER_ALIAS) {
                 output[i]=1000+101*(i/4)+7*(i%4);
                 if (test==BUFFER_ALIAS) output[i]=5*output[i]+2;
@@ -334,6 +366,13 @@ static void native_cases(void) {
             }
         }
         assert(count_correct(test, output)==cases[test].words);
+        if(test==IMAGE_STORE) {
+            uint32_t pixels[IMAGE_WORDS];
+            for(unsigned i=0;i<IMAGE_WORDS;++i) pixels[i]=i>=65 && i<81 ? 17+3*(i-65) : GUARD_WORD;
+            assert(count_image_correct(pixels)==IMAGE_WORDS);
+            pixels[0]=17; assert(count_image_correct(pixels)==IMAGE_WORDS-1);
+            pixels[65]=0; assert(count_image_correct(pixels)==IMAGE_WORDS-2);
+        }
         output[0]=UINT32_MAX;
         assert(count_correct(test, output)==cases[test].words-1);
         if (test==ATOMIC) {

@@ -134,8 +134,101 @@ static void invalid(void) {
         ralloc_free(nir);
     }
 }
+static nir_shader *image_shader(unsigned operation, bool dynamic, bool manual) {
+    nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
+        psbc_get_nir_options(PSBC_STAGE_COMPUTE), "image-bank-contract");
+    b.shader->info.workgroup_size[0]=16;
+    b.shader->info.workgroup_size[1]=b.shader->info.workgroup_size[2]=1;
+    b.shader->info.num_images=8;
+    b.shader->info.num_ssbos=16;
+    nir_def *zero=nir_imm_int(&b,0), *id=nir_channel(&b,nir_load_local_invocation_id(&b),0);
+    nir_def *slot=dynamic ? nir_iand_imm(&b,nir_channel(&b,nir_load_workgroup_id(&b),0),7)
+                          : nir_imm_int(&b,7);
+    nir_def *coord=nir_vec4(&b,id,zero,zero,zero), *value=nir_iadd_imm(&b,id,17), *result=NULL;
+    switch(operation) {
+    case 0: result=nir_image_load(&b,4,32,slot,coord,zero,zero,
+        .image_dim=GLSL_SAMPLER_DIM_2D,.format=PIPE_FORMAT_R32_UINT,.dest_type=nir_type_uint32); break;
+    case 1: nir_image_store(&b,slot,coord,zero,nir_vec4(&b,value,zero,zero,zero),zero,
+        .image_dim=GLSL_SAMPLER_DIM_2D,.format=PIPE_FORMAT_R32_UINT,.src_type=nir_type_uint32); break;
+    case 2: result=nir_image_atomic(&b,32,slot,coord,zero,value,
+        .image_dim=GLSL_SAMPLER_DIM_2D,.format=PIPE_FORMAT_R32_UINT,.atomic_op=nir_atomic_op_iadd); break;
+    case 3: result=nir_image_atomic_swap(&b,32,slot,coord,zero,zero,value,
+        .image_dim=GLSL_SAMPLER_DIM_2D,.format=PIPE_FORMAT_R32_UINT,.atomic_op=nir_atomic_op_cmpxchg); break;
+    case 4: result=nir_image_size(&b,2,32,slot,zero,
+        .image_dim=GLSL_SAMPLER_DIM_2D,.format=PIPE_FORMAT_R32_UINT); break;
+    }
+    if(result) nir_store_ssbo(&b,nir_channel(&b,result,0),nir_imm_int(&b,15),
+        nir_imul_imm(&b,id,4),.write_mask=1,.align_mul=4);
+    if(manual) {
+        nir_foreach_function_impl(impl,b.shader) nir_foreach_block(block,impl)
+        nir_foreach_instr_safe(instr,block) {
+            if(instr->type!=nir_instr_type_intrinsic) continue;
+            nir_intrinsic_instr *intr=nir_instr_as_intrinsic(instr);
+            if(!nir_intrinsic_has_image_dim(intr)) continue;
+            b.cursor=nir_before_instr(instr);
+            const glsl_type *type=glsl_array_type(glsl_image_type(GLSL_SAMPLER_DIM_2D,false,GLSL_TYPE_UINT),8,0);
+            nir_variable *var=nir_variable_create(b.shader,nir_var_image,type,"manual-image-array");
+            var->data.binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_COMPUTE);
+            var->data.image.format=PIPE_FORMAT_R32_UINT;
+            nir_rewrite_image_intrinsic(intr,&nir_build_deref_array(&b,nir_build_deref_var(&b,var),slot)->def,
+                nir_image_intrinsic_type_deref);
+        }
+    }
+    nir_validate_shader(b.shader,"image contract input");
+    return b.shader;
+}
+static void image_contract(void) {
+    PsbcCompileOptions opts=options(PSBC_STAGE_COMPUTE);
+    opts.descriptor_binding_count=3;
+    opts.descriptor_bindings[2]=(PsbcDescriptorBinding){
+        .binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
+        .type=PSBC_DESCRIPTOR_STORAGE_IMAGE,.array_size=8,.offset=31*16,.stride=32};
+    for(unsigned op=0;op<5;++op) for(unsigned dynamic=0;dynamic<2;++dynamic) {
+        PsbcShaderOutput out[2]={{0}};
+        for(unsigned manual=0;manual<2;++manual) {
+            nir_shader *nir=image_shader(op,dynamic,manual);
+            assert(psbc_compile_nir(nir,&opts,&out[manual])==PSBC_RESULT_OK);
+            assert(!out[manual].metadata.scratch_valid && out[manual].metadata.descriptor_set0_valid);
+            ralloc_free(nir);
+        }
+        assert(out[0].machine_code_size==out[1].machine_code_size);
+        assert(!memcmp(out[0].machine_code,out[1].machine_code,out[0].machine_code_size));
+        printf("Image compiler op=%u dynamic=%u code=%zu matches deref reference\n",op,dynamic,out[0].machine_code_size);
+        psbc_free_output(&out[0]); psbc_free_output(&out[1]);
+    }
+    for(unsigned fault=0;fault<7;++fault) {
+        PsbcCompileOptions bad=opts;
+        nir_shader *nir=image_shader(0,false,false);
+        if(fault==0) bad.gallium_buffer_arrays=false;
+        if(fault==1) bad.descriptor_binding_count=2;
+        if(fault==2) bad.descriptor_bindings[2].array_size=7;
+        if(fault==3) bad.descriptor_bindings[2].stride=16;
+        if(fault>=4) {
+            nir_foreach_function_impl(impl,nir) nir_foreach_block(block,impl)
+            nir_foreach_instr(instr,block) {
+                if(instr->type!=nir_instr_type_intrinsic) continue;
+                nir_intrinsic_instr *intr=nir_instr_as_intrinsic(instr);
+                if(intr->intrinsic!=nir_intrinsic_image_load) continue;
+                if(fault==4) nir_intrinsic_set_image_dim(intr,GLSL_SAMPLER_DIM_3D);
+                if(fault==5) nir_intrinsic_set_image_array(intr,true);
+                if(fault==6) nir_intrinsic_set_format(intr,PIPE_FORMAT_R32_FLOAT);
+            }
+        }
+        /* Exercise the actual boundary independently, before whole-shader optimization. */
+        struct gallium_buffer_state state={.options=&bad,.valid=true};
+        if(fault!=3) {
+            assert(!nir_shader_instructions_pass(nir,lower_gallium_image_index,
+                nir_metadata_control_flow,&state));
+            assert(!state.valid);
+        }
+        PsbcShaderOutput out={0};
+        assert(psbc_compile_nir(nir,&bad,&out)!=PSBC_RESULT_OK);
+        assert(!out.data && !out.machine_code);
+        ralloc_free(nir);
+    }
+}
 int main(void) {
-    psbc_init(); structural(); compiled(false); compiled(true); invalid(); psbc_shutdown();
+    psbc_init(); structural(); compiled(false); compiled(true); invalid(); image_contract(); psbc_shutdown();
 }
 '''
 with tempfile.TemporaryDirectory() as directory:
@@ -150,4 +243,4 @@ with tempfile.TemporaryDirectory() as directory:
     subprocess.run(["g++", "-o", executable, obj, str(PSBC / "libpsbc.a"),
         "-pthread", "-lm"], check=True)
     subprocess.run([executable], check=True, timeout=30)
-print("PASS: six-stage buffer banks, SSBO intrinsic families, indexed arrays, reference codegen, clean failures")
+print("PASS: six-stage buffer/image banks, scalar/dynamic image operations, reference codegen and clean failures")
