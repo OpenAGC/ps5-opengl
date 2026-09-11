@@ -552,7 +552,8 @@ static int run_fragment_images(struct pipe_context *pipe, struct pipe_resource *
       struct pipe_image_view views[8];
       for (unsigned i = 0; i < 8; ++i) views[i] = (struct pipe_image_view){.resource = image,
          .format = image_formats[kind], .access = PIPE_IMAGE_ACCESS_READ_WRITE,
-         .u.tex = {.level = templ.last_level, .last_layer = templ.array_size - 1}};
+         .u.tex = {.level = templ.last_level, .last_layer = templ.array_size - 1,
+                   .single_layer_view = !array}};
       pipe->set_shader_images(pipe, MESA_SHADER_FRAGMENT, 0, slot + 1, 0, views);
       uint32_t uniform = kind ? (slot ? 200u : 100u) : (slot ? UINT32_C(0x3ec00000) : UINT32_C(0x3e000000));
       if (mixed) {
@@ -756,6 +757,7 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
             .access = PIPE_IMAGE_ACCESS_WRITE};
          iv.u.tex.level = level;
          iv.u.tex.last_layer = layers - 1;
+         iv.u.tex.single_layer_view = layers == 1;
          pipe->set_shader_images(pipe, MESA_SHADER_COMPUTE, 0, 1, 0, &iv);
          pipe->bind_compute_state(pipe, writers[level]);
          pipe->launch_grid(pipe, &writer_grid);

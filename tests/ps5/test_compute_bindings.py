@@ -281,7 +281,8 @@ static void fragment_contract(void) {
     pipe_reference_init(&image.base.reference,1);
     struct pipe_image_view views[8];
     for(unsigned i=0;i<8;++i) views[i]=(struct pipe_image_view){.resource=&image.base,
-        .format=PIPE_FORMAT_R32_UINT,.access=PIPE_IMAGE_ACCESS_READ_WRITE};
+        .format=PIPE_FORMAT_R32_UINT,.access=PIPE_IMAGE_ACCESS_READ_WRITE,
+        .u.tex.single_layer_view=true};
     assert(!ps5_prepare_fragment_storage(&c,userdata,16));
     ps5_set_shader_images(&c.base,MESA_SHADER_FRAGMENT,0,8,0,views);
     assert(image.base.reference.count==9 && !c.compute_images[0].resource);
@@ -509,6 +510,24 @@ int main(void) {
         assert(mip.base.reference.count==1);
     }
     assert(ps5_resource_storage_image_descriptor(&mip.base,4,descriptor)<0);
+    for(unsigned stage=0;stage<2;++stage) for(unsigned level=0;level<4;++level) {
+        mesa_shader_stage which=stage ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
+        struct pipe_image_view v={.resource=&mip.base,.format=mip.base.format,
+            .access=PIPE_IMAGE_ACCESS_READ_WRITE};
+        v.u.tex.level=level;
+        uint32_t control[8];
+        assert(!ps5_resource_storage_image_descriptor(v.resource,level,control));
+        ps5_set_shader_images(&context.base,which,7,1,0,&v);
+        v.u.tex.single_layer_view=true;
+        ps5_set_shader_images(&context.base,which,7,1,0,&v);
+        struct pipe_image_view *bound=stage ? context.fragment_images : context.compute_images;
+        assert(!(stage ? context.fragment_images_invalid : context.compute_images_invalid));
+        assert(bound[7].u.tex.single_layer_view && mip.base.reference.count==2);
+        assert(!ps5_resource_storage_image_descriptor(bound[7].resource,bound[7].u.tex.level,descriptor));
+        assert(!memcmp(control,descriptor,sizeof(control)));
+        ps5_set_shader_images(&context.base,which,7,0,1,NULL);
+        assert(mip.base.reference.count==1 && !bound[7].resource);
+    }
     struct ps5_resource layered=mip;
     _Alignas(256) uint8_t array_pixels[3*3840];
     layered.data=array_pixels;
@@ -597,6 +616,12 @@ int main(void) {
             view.u.tex.level=level; view.u.tex.last_layer=7;
             ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,1,0,&view);
             assert(!context.compute_images_invalid && v.base.reference.count==2);
+            /* A non-layered array view needs a different descriptor; stay gated. */
+            view.u.tex.single_layer_view=true;
+            ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,1,0,&view);
+            assert(context.compute_images_invalid && v.base.reference.count==2);
+            assert(!context.compute_images[7].u.tex.single_layer_view);
+            view.u.tex.single_layer_view=false;
             /* Rejected sublayers must preserve the retained binding. */
             view.u.tex.first_layer=1;
             ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,1,0,&view);
@@ -641,6 +666,7 @@ int main(void) {
     }
     pipe_reference_init(&image.base.reference,1);
     struct pipe_image_view view={.resource=&image.base,.format=PIPE_FORMAT_R32_UINT,.access=PIPE_IMAGE_ACCESS_READ_WRITE};
+    view.u.tex.single_layer_view=true; /* Actual Mesa 2D image representation. */
     ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,1,0,&view);
     caller=&image.base; pipe_resource_reference(&caller,NULL);
     assert(image.base.reference.count==1 && !context.compute_images_invalid);
@@ -651,7 +677,7 @@ int main(void) {
         if(fault==2) bad.access|=PIPE_IMAGE_ACCESS_TEX2D_FROM_BUFFER;
         if(fault==3) bad.u.tex.level=1;
         if(fault==4) bad.u.tex.last_layer=1;
-        if(fault==5) bad.u.tex.single_layer_view=true;
+        if(fault==5) bad.u.tex.is_2d_view_of_3d=true;
         if(fault==6) image.base.screen=&other_screen;
         struct pipe_image_view pair[2]={view,bad};
         ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,6,2,0,pair);
