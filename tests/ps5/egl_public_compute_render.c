@@ -467,7 +467,7 @@ static int run_fragment_storage(struct pipe_context *pipe, struct pipe_resource 
 }
 
 static int run_fragment_images(struct pipe_context *pipe, struct pipe_resource *output,
-                               uint32_t *words, size_t bytes, unsigned kind, bool mixed)
+                               uint32_t *words, size_t bytes, unsigned kind, bool mixed, void *sampler)
 {
    int status = 1;
    void *fs = NULL;
@@ -507,6 +507,7 @@ static int run_fragment_images(struct pipe_context *pipe, struct pipe_resource *
             pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, 0, &cb);
          }
          pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, slot ? 15 : 0, 1, 0, &sampled);
+         pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, slot ? 15 : 0, 1, &sampler);
       }
       for (unsigned operation = 2; operation <= (kind == 0 || mixed ? 3u : 4u); ++operation) {
          memset(words, 0xcd, bytes); /* Output only; no CPU image access between producer and consumer. */
@@ -561,6 +562,9 @@ out:
    pipe->set_shader_buffers(pipe, MESA_SHADER_FRAGMENT, 0, 16, NULL, 0);
    if (mixed) {
       pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 16, NULL);
+      void *none = NULL;
+      pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, &none);
+      pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 15, 1, &none);
       for (unsigned i = 0; i < 13; ++i) pipe->set_constant_buffer(pipe, MESA_SHADER_FRAGMENT, i, NULL);
    }
    pipe_sampler_view_reference(&sampled, NULL);
@@ -999,9 +1003,9 @@ int main(void)
    if (run_all_slots(pipe, sample_words, sample_bytes)) goto cleanup;
    if (run_fragment_storage(pipe, sample_output, sample_words, sample_bytes, target)) goto cleanup;
    for (unsigned kind = 0; kind < 3; ++kind)
-      if (run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, false)) goto cleanup;
+      if (run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, false, sampler)) goto cleanup;
    for (unsigned kind = 0; kind < 3; ++kind)
-      if (run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, true)) goto cleanup;
+      if (run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, true, sampler)) goto cleanup;
    status = 0;
 cleanup:
    if (pipe) {
