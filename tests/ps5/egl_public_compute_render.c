@@ -111,7 +111,7 @@ int main(void)
    if (!pipe)
       goto cleanup;
    /* The graphics backend requires its normal render pool even for offscreen
-    * draws. Allocate it without opening VideoOut or presenting a frame. */
+    * draws. It may open VideoOut internally; this test never swaps buffers. */
    const struct pipe_resource pool_template = {.target = PIPE_TEXTURE_2D,
       .format = PIPE_FORMAT_R8G8B8A8_UNORM, .width0 = PS5_SCANOUT_WIDTH,
       .height0 = PS5_SCANOUT_HEIGHT, .depth0 = 1, .array_size = 1,
