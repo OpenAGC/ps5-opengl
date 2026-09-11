@@ -3807,12 +3807,28 @@ ps5_resource_linear_image_descriptor(struct pipe_resource *base, uint32_t descri
        (base->target == PIPE_TEXTURE_2D && base->array_size != 1) || base->last_level >= PIPE_MAX_TEXTURE_LEVELS ||
        base->last_level > 15 || first_level > last_level || last_level > base->last_level ||
        base->nr_samples > 1 || base->nr_storage_samples > 1 ||
-       !(base->bind & required_bind) ||
-       (base->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DEPTH_STENCIL | PIPE_BIND_DISPLAY_TARGET)) ||
-       resource->render_staging_size || resource->depth_staging_size || !resource->data ||
+       (!(base->bind & required_bind) &&
+        !(required_bind == PIPE_BIND_SHADER_IMAGE && (base->bind & PIPE_BIND_SAMPLER_VIEW))) ||
+       (base->bind & (PIPE_BIND_DEPTH_STENCIL | PIPE_BIND_DISPLAY_TARGET)) ||
+       !ps5_linear_sampled_layout(base) || resource->depth_staging_size || !resource->data ||
+       resource->size > resource->allocation_size ||
        ((uintptr_t)resource->data & 255u) || (uintptr_t)resource->data >> 48 ||
        !ps5_texture_descriptor_format(base->format, &format))
       return -1;
+   /* Mesa's ordinary textures carry SAMPLER_VIEW|RENDER_TARGET, not an image
+    * hint. Their linear data remains authoritative: draws stage it in/out,
+    * and compute submission drains pending graphics before using this SRD.
+    * Never resolve staging here: it may predate the latest compute write. */
+   if (base->bind & PIPE_BIND_RENDER_TARGET) {
+      if (!(base->bind & PIPE_BIND_SAMPLER_VIEW) || !resource->render_staging_size ||
+          resource->render_staging_offset < resource->size ||
+          (resource->render_staging_offset & (PS5_COLOR_TARGET_ALIGNMENT - 1u)) ||
+          resource->render_staging_offset > resource->allocation_size ||
+          resource->render_staging_size > resource->allocation_size - resource->render_staging_offset)
+         return -1;
+   } else if (resource->render_staging_size || resource->render_staging_offset) {
+      return -1;
+   }
    size_t offset = 0;
    for (unsigned level = base->last_level + 1; level-- > 0;) {
       const unsigned width = ps5_linear_mip_storage_extent(base->width0, level);
@@ -10696,12 +10712,18 @@ ps5_set_compute_sampler_views(struct pipe_context *base, unsigned start, unsigne
    for (unsigned i = 0; i < count; ++i) {
       const struct pipe_sampler_view *v = views[i];
       uint32_t descriptor[8];
+      const unsigned channels = v ? ps5_storage_image_channels(v->format) : 0;
+      /* The descriptor already supplies missing R/RG channels as zero/one. */
+      const bool swizzle_ok = !v || (v->swizzle_r == PIPE_SWIZZLE_X &&
+         ((v->swizzle_g == PIPE_SWIZZLE_Y && v->swizzle_b == PIPE_SWIZZLE_Z &&
+           v->swizzle_a == PIPE_SWIZZLE_W) ||
+          (v->swizzle_b == PIPE_SWIZZLE_0 && v->swizzle_a == PIPE_SWIZZLE_1 &&
+           ((channels == 1 && v->swizzle_g == PIPE_SWIZZLE_0) ||
+            (channels == 2 && v->swizzle_g == PIPE_SWIZZLE_Y)))));
       if (v && (!v->texture || v->texture->screen != base->screen ||
           v->target != v->texture->target || v->format != v->texture->format ||
           v->u.tex.first_layer ||
-          v->u.tex.last_layer != v->texture->array_size - 1 || v->swizzle_r != PIPE_SWIZZLE_X ||
-          v->swizzle_g != PIPE_SWIZZLE_Y || v->swizzle_b != PIPE_SWIZZLE_Z ||
-          v->swizzle_a != PIPE_SWIZZLE_W ||
+          v->u.tex.last_layer != v->texture->array_size - 1 || !swizzle_ok ||
           ps5_resource_sampled_image_descriptor(v->texture, v->u.tex.first_level, v->u.tex.last_level, descriptor)))
          return;
    }
@@ -10728,13 +10750,17 @@ ps5_set_compute_sampler_states(struct pipe_context *base, unsigned start, unsign
       if ((s->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE && s->wrap_s != PIPE_TEX_WRAP_REPEAT &&
            s->wrap_s != PIPE_TEX_WRAP_MIRROR_REPEAT) || s->wrap_t != s->wrap_s ||
           s->wrap_r != s->wrap_s || s->compare_mode || s->unnormalized_coords ||
-          s->max_anisotropy > 1 || !(s->min_lod >= 0 && s->max_lod <= 15 && s->max_lod >= s->min_lod) ||
+          s->max_anisotropy > 1 || !ps5_float_is_finite(s->min_lod) ||
+          !ps5_float_is_finite(s->max_lod) ||
+          !(s->min_lod >= 0 && s->max_lod >= s->min_lod) ||
           s->lod_bias != 0 || !ps5_texture_descriptor_mip_filter(s->min_mip_filter, &mip_filter) ||
           !ps5_texture_descriptor_wrap(s->wrap_s, &wrap) ||
           !ps5_texture_descriptor_filter(s->min_img_filter, &min_filter) ||
           !ps5_texture_descriptor_filter(s->mag_img_filter, &mag_filter))
          return;
       descriptors[i][0] = wrap | (wrap << 3) | (wrap << 6);
+      /* Mesa's default max LOD is 1000. Validate before the existing encoder
+       * saturates finite bounds to the supported levels 0..15. */
       descriptors[i][1] = ps5_texture_descriptor_unsigned_lod(s->min_lod) |
                          (ps5_texture_descriptor_unsigned_lod(s->max_lod) << 12);
       descriptors[i][2] = ps5_texture_descriptor_lod_bias(s->lod_bias) |
@@ -10760,8 +10786,14 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
        context->compute_constants_invalid || context->compute_images_invalid ||
        context->compute_views_invalid || context->compute_samplers_invalid || !grid ||
        grid->work_dim > 3 || grid->variable_shared_mem || grid->num_globals ||
-       grid->draw_count || grid->indirect_draw_count)
+       grid->draw_count || grid->indirect_draw_count) {
+      printf("[ps5-gallium] compute rejected cs=%u descriptors=%u buffers=%u constants=%x images=%u views=%u samplers=%u grid=%u\n",
+             context->cs != NULL, context->compute_descriptors != NULL,
+             context->compute_bindings_invalid, context->compute_constants_invalid,
+             context->compute_images_invalid, context->compute_views_invalid,
+             context->compute_samplers_invalid, grid != NULL);
       return;
+   }
    for (unsigned i = 0; i < 3; ++i) {
       if (grid->block[i] != context->cs->output.metadata.compute_workgroup_size[i] ||
           grid->grid_base[i] || (grid->last_block[i] && grid->last_block[i] != grid->block[i]))

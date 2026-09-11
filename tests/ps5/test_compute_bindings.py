@@ -14,13 +14,21 @@ source = (ROOT / "src/gallium/ps5/ps5_screen.c").read_text()
 begin = source.index("static void\nps5_set_shader_buffers(")
 functions = source[begin:source.index("\n#endif", begin)]
 sampler_at = source.index("static bool\nps5_texture_descriptor_wrap(")
-sampler_helpers = source[sampler_at:source.index("static bool\nps5_float_is_finite(", sampler_at)]
+bits_at = source.index("static uint32_t\nps5_float_bits(")
+sampler_helpers = source[bits_at:source.index("static size_t\nps5_tiled_depth_layer_xor(", bits_at)]
+sampler_helpers += source[sampler_at:source.index("static uint32_t\nps5_pack_float_12p4(", sampler_at)]
 extent_at = source.index("static unsigned\nps5_linear_mip_storage_extent(")
 extent_helper = source[extent_at:source.index("static bool\nps5_packed_depth_sample_layout(", extent_at)]
 image_at = source.index("static int\nps5_resource_linear_image_descriptor(")
 image_descriptor = source[image_at:source.index("\nstruct pipe_resource *", image_at)]
 array_at = source.index("static unsigned\nps5_storage_image_texel_size(")
 array_layout = source[array_at:source.index("static unsigned\nps5_texture_format_size(", array_at)]
+format_at = source.index("static bool\nps5_integer_texture_format(")
+linear_helpers = source[format_at:source.index("static bool\nps5_msaa4_color_format(", format_at)]
+format_at = source.index("static bool\nps5_core_sampled_texture_format(")
+linear_helpers += source[format_at:source.index("static bool\nps5_packed_vertex_format(", format_at)]
+linear_at = source.index("static bool\nps5_linear_sampled_layout(")
+linear_helpers += source[linear_at:source.index("static bool\nps5_color_render_target(", linear_at)]
 barrier_at = source.index("static void\nps5_memory_barrier(")
 barrier = source[barrier_at:source.index("static bool\nps5_draw_primitive(", barrier_at)]
 fragment_at = source.index("static unsigned\nps5_shader_storage_count(")
@@ -40,6 +48,8 @@ atomic_offset_state = state_source[state_at:state_source.index("      return;", 
 code = r'''
 #include <assert.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <math.h>
 #include <string.h>
 #include "pipe/p_context.h"
 #include "pipe/p_screen.h"
@@ -51,6 +61,25 @@ code = r'''
 #include "ps5_agc_package.h"
 #include "amd/common/amdgfxregs.h"
 #define PS5_ENABLE_UBO_CANDIDATE 1
+#define PS5_ENABLE_RENDER_TO_TEXTURE_CANDIDATE 1
+#define PS5_ENABLE_DYNAMIC_COLOR_TARGET_CANDIDATE 1
+#define PS5_ENABLE_CORE_RENDER_FORMATS_CANDIDATE 1
+#define PS5_ENABLE_CORE_TEXTURE_FORMATS_CANDIDATE 1
+#define PS5_ENABLE_FRAMEBUFFER_SRGB_CANDIDATE 1
+#define PS5_ENABLE_SRGB_CANDIDATE 1
+#define PS5_ENABLE_TEXTURE_RG_CANDIDATE 1
+#define PS5_ENABLE_TEXTURE_SNORM_CANDIDATE 1
+#define PS5_ENABLE_TEXTURE_FLOAT_CANDIDATE 1
+#define PS5_ENABLE_TEXTURE_INTEGER_CANDIDATE 1
+#define PS5_ENABLE_NARROW_TEXTURE_INTEGER_CANDIDATE 1
+#define PS5_ENABLE_RGB10_A2UI_CANDIDATE 1
+#define PS5_ENABLE_SHARED_EXPONENT_CANDIDATE 1
+#define PS5_ENABLE_PACKED_FLOAT_CANDIDATE 1
+#define PS5_ENABLE_DEPTH_TEXTURE_CANDIDATE 1
+#define PS5_ENABLE_PACKED_DEPTH_STENCIL 1
+#define PS5_MAX_COLOR_WIDTH 8192
+#define PS5_MAX_COLOR_HEIGHT 8192
+#define PS5_COLOR_TARGET_ALIGNMENT 0x10000u
 #define PS5_MAX_CONSTANT_BUFFERS 13
 #define PS5_CONSTANT_DATA_OFFSET 2048
 #define PS5_DESCRIPTOR_STORAGE_BYTES (2048+2*PS5_MAX_CONSTANT_BUFFER_SIZE)
@@ -69,7 +98,7 @@ code = r'''
 #define PS5_MAX_CONSTANT_BUFFER_SIZE 0x4000u
 struct ps5_resource {
     struct pipe_resource base; uint8_t *data;
-    size_t size, render_staging_size, depth_staging_size, layer_stride;
+    size_t size, allocation_size, render_staging_offset, render_staging_size, depth_staging_size, layer_stride;
     unsigned level_stride[PIPE_MAX_TEXTURE_LEVELS];
     size_t level_offset[PIPE_MAX_TEXTURE_LEVELS];
 };
@@ -119,7 +148,7 @@ static bool ps5_texture_descriptor_format(enum pipe_format f,uint32_t *word) {
     *word=f==PIPE_FORMAT_R32_UINT ? 0x1400000 : f==PIPE_FORMAT_R32_SINT ? 0x1500000 : 0x1600000;
     return true;
 }
-''' + extent_helper + array_layout + image_descriptor + r'''
+''' + extent_helper + array_layout + linear_helpers + image_descriptor + r'''
 static int ps5_resource_info(struct pipe_resource *base, void **address, size_t *size, size_t *allocation) {
     (void)allocation;
     if (fail_info) return -1;
@@ -496,7 +525,7 @@ static void fragment_contract(void) {
     _Alignas(256) uint8_t pixels[768];
     struct ps5_resource image={.base={.screen=&screen,.target=PIPE_TEXTURE_2D,
         .format=PIPE_FORMAT_R32_UINT,.width0=17,.height0=3,.depth0=1,.array_size=1,
-        .bind=PIPE_BIND_SHADER_IMAGE|PIPE_BIND_SAMPLER_VIEW},.data=pixels,.size=768,.level_stride={256}};
+        .bind=PIPE_BIND_SHADER_IMAGE|PIPE_BIND_SAMPLER_VIEW},.data=pixels,.size=768,.allocation_size=sizeof(pixels),.level_stride={256}};
     pipe_reference_init(&image.base.reference,1);
     struct pipe_image_view views[8];
     for(unsigned i=0;i<8;++i) views[i]=(struct pipe_image_view){.resource=&image.base,
@@ -704,15 +733,72 @@ int main(void) {
     _Alignas(256) uint8_t pixels[768];
     struct ps5_resource image={.base={.screen=&screen,.target=PIPE_TEXTURE_2D,
         .format=PIPE_FORMAT_R32_UINT,.width0=17,.height0=3,.depth0=1,.array_size=1,
-        .bind=PIPE_BIND_SHADER_IMAGE|PIPE_BIND_SAMPLER_VIEW},.data=pixels,.size=sizeof(pixels),.level_stride={256}};
+        .bind=PIPE_BIND_SHADER_IMAGE|PIPE_BIND_SAMPLER_VIEW},.data=pixels,.size=sizeof(pixels),.allocation_size=sizeof(pixels),.level_stride={256}};
     uint32_t descriptor[8];
     assert(!ps5_resource_storage_image_descriptor(&image.base,0,descriptor));
     assert(descriptor[0]==(uint32_t)((uintptr_t)pixels>>8));
     assert(descriptor[2]==(4u|(2u<<14)|0x80000000u));
     assert(descriptor[3]==0x90000204 && descriptor[4]==63 && descriptor[5]==0x400000);
+    /* Mesa default_bindings: ordinary R32F uses SAMPLER_VIEW|RENDER_TARGET,
+     * without SHADER_IMAGE. Both descriptors must address canonical bytes. */
+    _Alignas(65536) static uint8_t canonical_pixels[131072];
+    struct ps5_resource canonical=image;
+    canonical.base.format=PIPE_FORMAT_R32_FLOAT;
+    canonical.base.bind=PIPE_BIND_SAMPLER_VIEW|PIPE_BIND_RENDER_TARGET;
+    canonical.data=canonical_pixels; canonical.allocation_size=sizeof(canonical_pixels);
+    canonical.render_staging_offset=65536; canonical.render_staging_size=65536;
+    memset(canonical_pixels,0x79,sizeof(canonical_pixels));
+    assert(ps5_linear_sampled_layout(&canonical.base));
+    uint32_t canonical_srd[8], sampled_srd[8];
+    assert(!ps5_resource_storage_image_descriptor(&canonical.base,0,canonical_srd));
+    assert(!ps5_resource_sampled_image_descriptor(&canonical.base,0,0,sampled_srd));
+    assert(!memcmp(canonical_srd,sampled_srd,sizeof(canonical_srd)));
+    assert(canonical_srd[0]==(uint32_t)((uintptr_t)canonical_pixels>>8));
+    for(unsigned i=0;i<sizeof(canonical_pixels);++i) assert(canonical_pixels[i]==0x79);
+    pipe_reference_init(&canonical.base.reference,1);
+    for(unsigned stage=0;stage<2;++stage) {
+        mesa_shader_stage which=stage ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
+        struct pipe_image_view view={.resource=&canonical.base,.format=canonical.base.format,
+            .access=PIPE_IMAGE_ACCESS_READ_WRITE};
+        ps5_set_shader_images(&context.base,which,7,1,0,&view);
+        assert(!(stage ? context.fragment_images_invalid : context.compute_images_invalid));
+        assert(canonical.base.reference.count==2);
+        view.format=PIPE_FORMAT_R32_UINT;
+        ps5_set_shader_images(&context.base,which,7,1,0,&view);
+        assert(stage ? context.fragment_images_invalid : context.compute_images_invalid);
+        assert(canonical.base.reference.count==2);
+        ps5_set_shader_images(&context.base,which,7,0,1,NULL);
+        assert(canonical.base.reference.count==1);
+    }
+    for(unsigned fault=0;fault<15;++fault) {
+        struct ps5_resource bad=canonical;
+        if(fault==0) bad.base.bind=PIPE_BIND_RENDER_TARGET|PIPE_BIND_SHADER_IMAGE;
+        if(fault==1) bad.base.bind|=PIPE_BIND_DEPTH_STENCIL;
+        if(fault==2) bad.base.bind|=PIPE_BIND_DISPLAY_TARGET;
+        if(fault==3) bad.render_staging_size=0;
+        if(fault==4) bad.render_staging_offset=0;
+        if(fault==5) bad.render_staging_offset=bad.size-1;
+        if(fault==6) bad.render_staging_offset=bad.allocation_size;
+        if(fault==7) bad.render_staging_size++;
+        if(fault==8) bad.allocation_size=bad.size-1;
+        if(fault==9) bad.render_staging_size=SIZE_MAX;
+        if(fault==10) bad.level_offset[0]=256;
+        if(fault==11) bad.level_stride[0]=512;
+        if(fault==12) bad.base.format=PIPE_FORMAT_R16G16B16A16_FLOAT; /* native tiled */
+        if(fault==13) bad.base.bind=PIPE_BIND_SAMPLER_VIEW; /* orphan staging */
+        if(fault==14) bad.render_staging_offset++;
+        memset(descriptor,0xa5,sizeof(descriptor));
+        assert(ps5_resource_storage_image_descriptor(&bad.base,0,descriptor)<0);
+        assert(ps5_resource_sampled_image_descriptor(&bad.base,0,0,descriptor)<0);
+        for(unsigned i=0;i<8;++i) assert(descriptor[i]==0xa5a5a5a5u);
+    }
+    canonical.base.bind=PIPE_BIND_SAMPLER_VIEW;
+    canonical.render_staging_offset=canonical.render_staging_size=0;
+    assert(!ps5_resource_storage_image_descriptor(&canonical.base,0,descriptor));
+    assert(!memcmp(descriptor,canonical_srd,sizeof(descriptor)));
     _Alignas(256) uint8_t mip_pixels[3840];
     struct ps5_resource mip=image;
-    mip.data=mip_pixels; mip.size=sizeof(mip_pixels);
+    mip.data=mip_pixels; mip.size=mip.allocation_size=sizeof(mip_pixels);
     mip.base.width0=16; mip.base.height0=8; mip.base.last_level=3;
     const size_t offsets[4]={1792,768,256,0};
     for(unsigned level=0;level<4;++level) {mip.level_offset[level]=offsets[level];mip.level_stride[level]=256;}
@@ -753,7 +839,7 @@ int main(void) {
     _Alignas(256) uint8_t array_pixels[3*3840];
     layered.data=array_pixels;
     layered.base.target=PIPE_TEXTURE_2D_ARRAY; layered.base.array_size=3;
-    layered.size=sizeof(array_pixels); layered.layer_stride=3840;
+    layered.size=layered.allocation_size=sizeof(array_pixels); layered.layer_stride=3840;
     assert(ps5_compute_image_array_resource(&layered.base));
     for(unsigned fault=0;fault<7;++fault) {
         struct pipe_resource bad=layered.base;
@@ -803,7 +889,7 @@ int main(void) {
     for(unsigned i=0;i<9;++i) {
         struct ps5_resource v=image; v.base.format=vectors[i]; v.data=vector_pixels;
         unsigned bytes=i>=3 && i<6 ? 16 : 8, stride=(17*bytes+255)&~255u;
-        v.level_stride[0]=stride; v.size=stride*3;
+        v.level_stride[0]=stride; v.size=stride*3; v.allocation_size=sizeof(vector_pixels);
         assert(ps5_storage_image_texel_size(v.base.format)==bytes);
         assert(!ps5_resource_storage_image_descriptor(&v.base,0,descriptor));
         assert((descriptor[3]&4095)==(i<3 ? 0x22c : 0xfac));
@@ -821,6 +907,7 @@ int main(void) {
         v.base.format=vectors[i]; v.base.width0=17; v.base.height0=9;
         v.base.array_size=8; v.data=vector_array_pixels;
         v.layer_stride=i>=3 && i<6 ? 7168 : 4864; v.size=8*v.layer_stride;
+        v.allocation_size=sizeof(vector_array_pixels);
         const size_t vector_offsets[]={2560,1280,512,0};
         for(unsigned level=0;level<4;++level) {
             v.level_offset[level]=vector_offsets[level];
@@ -876,7 +963,7 @@ int main(void) {
         if(fault==5) bad.base.array_size=2;
         if(fault==6) bad.base.last_level=1;
         if(fault==7) bad.base.nr_samples=4;
-        if(fault==8) bad.base.bind=PIPE_BIND_SAMPLER_VIEW;
+        if(fault==8) bad.base.bind=0;
         if(fault==9) bad.base.bind|=PIPE_BIND_RENDER_TARGET;
         if(fault==10) bad.render_staging_size=1;
         if(fault==11) bad.depth_staging_size=1;
@@ -971,6 +1058,52 @@ int main(void) {
     assert(context.last_compute_status<0 && submitted==before_sampled+1);
     ps5_set_compute_sampler_views(&context.base,0,0,8,NULL);
     assert(sampled.reference.count==1 && !context.compute_views_invalid);
+    /* Mesa R/RG views use X001/XY01, matching the physical image SRD.
+     * A rejected replacement must neither retain its valid prefix nor unbind
+     * trailing views. Test real callbacks; no GPU sampling is implied. */
+    const enum pipe_format canonical_formats[]={PIPE_FORMAT_R32_FLOAT,PIPE_FORMAT_R32_UINT,
+        PIPE_FORMAT_R32_SINT,PIPE_FORMAT_R32G32_FLOAT,PIPE_FORMAT_R32G32_UINT,PIPE_FORMAT_R32G32_SINT};
+    for(unsigned f=0;f<6;++f) {
+        struct ps5_resource texture=canonical;
+        texture.base.format=canonical_formats[f];
+        struct pipe_sampler_view cv={.texture=&texture.base,.target=PIPE_TEXTURE_2D,
+            .format=texture.base.format,.swizzle_r=PIPE_SWIZZLE_X,
+            .swizzle_g=f<3 ? PIPE_SWIZZLE_0 : PIPE_SWIZZLE_Y,
+            .swizzle_b=PIPE_SWIZZLE_0,.swizzle_a=PIPE_SWIZZLE_1};
+        pipe_reference_init(&cv.reference,1);
+        struct pipe_sampler_view identity=cv;
+        identity.swizzle_g=PIPE_SWIZZLE_Y; identity.swizzle_b=PIPE_SWIZZLE_Z;
+        identity.swizzle_a=PIPE_SWIZZLE_W;
+        pipe_reference_init(&identity.reference,1);
+        uint32_t physical[8];
+        assert(!ps5_resource_sampled_image_descriptor(&texture.base,0,0,physical));
+        assert((physical[3]&0xfffu)==(f<3 ? 0x204u : 0x22cu));
+        struct pipe_sampler_view *initial[3]={&identity,&identity,&identity};
+        ps5_set_compute_sampler_views(&context.base,0,3,0,initial);
+        assert(!context.compute_views_invalid && identity.reference.count==4);
+        struct pipe_sampler_view *replacement[2]={&cv,&cv};
+        ps5_set_compute_sampler_views(&context.base,0,2,1,replacement);
+        assert(!context.compute_views_invalid && cv.reference.count==3 && identity.reference.count==1);
+        assert(context.compute_views[0]==&cv && context.compute_views[1]==&cv && !context.compute_views[2]);
+        ps5_set_compute_sampler_views(&context.base,2,1,0,&initial[0]);
+        assert(identity.reference.count==2);
+        for(unsigned remap=0;remap<4;++remap) {
+            struct pipe_sampler_view bad=cv;
+            pipe_reference_init(&bad.reference,1);
+            if(remap==0) bad.swizzle_r=PIPE_SWIZZLE_Y;
+            if(remap==1) bad.swizzle_g=PIPE_SWIZZLE_X;
+            if(remap==2) bad.swizzle_b=PIPE_SWIZZLE_1;
+            if(remap==3) bad.swizzle_a=PIPE_SWIZZLE_0;
+            struct pipe_sampler_view *pair[2]={&identity,&bad};
+            ps5_set_compute_sampler_views(&context.base,0,2,1,pair);
+            assert(context.compute_views_invalid && bad.reference.count==1);
+            assert(cv.reference.count==3 && identity.reference.count==2);
+            assert(context.compute_views[0]==&cv && context.compute_views[1]==&cv && context.compute_views[2]==&identity);
+        }
+        ps5_set_compute_sampler_views(&context.base,0,0,3,NULL);
+        assert(!context.compute_views_invalid && cv.reference.count==1 && identity.reference.count==1);
+        assert(!context.compute_views[0] && !context.compute_views[1] && !context.compute_views[2]);
+    }
     ps5_set_compute_sampler_views(&context.base,0,8,0,sampled_views);
     cs.filtered_textures=with_filtered=255;
     unsigned before_filter=submitted;
@@ -1003,7 +1136,13 @@ int main(void) {
     ps5_launch_grid(&context.base,&good); /* Even valid sampler state cannot exceed the view. */
     assert(context.last_compute_status<0 && submitted==before_filter);
     cs.texture_lod[7]=0;
-    for(unsigned fault=0;fault<12;++fault) {
+    for(unsigned i=0;i<2;++i) {
+        sampler=valid; sampler.base.max_lod=i ? 1000 : 16;
+        ps5_set_compute_sampler_states(&context.base,0,8,states);
+        assert(!context.compute_samplers_invalid && context.compute_sampler_mask==255);
+        assert(context.compute_samplers[7][1]==0x00f00000);
+    }
+    for(unsigned fault=0;fault<17;++fault) {
         sampler=valid;
         if(fault==0) sampler.base.wrap_s=PIPE_TEX_WRAP_REPEAT;
         if(fault==1) sampler.base.wrap_t=PIPE_TEX_WRAP_REPEAT;
@@ -1012,9 +1151,14 @@ int main(void) {
         if(fault==4) sampler.base.unnormalized_coords=1;
         if(fault==5) sampler.base.max_anisotropy=2;
         if(fault==6) sampler.base.min_mip_filter=3;
-        if(fault==7) sampler.base.min_lod=1;
-        if(fault==8) sampler.base.max_lod=16;
+        if(fault==7) sampler.base.min_lod=-1;
+        if(fault==8) sampler.base.max_lod=NAN;
         if(fault==9) sampler.base.lod_bias=1;
+        if(fault==12) sampler.base.min_lod=NAN;
+        if(fault==13) sampler.base.min_lod=INFINITY;
+        if(fault==14) sampler.base.max_lod=INFINITY;
+        if(fault==15) sampler.base.max_lod=-1;
+        if(fault==16) { sampler.base.min_lod=2; sampler.base.max_lod=1; }
         ps5_set_compute_sampler_states(&context.base,fault==10 ? 16 : 0,8,fault==11 ? NULL : states);
         assert(context.compute_samplers_invalid && context.compute_sampler_mask==255);
         ps5_launch_grid(&context.base,&good);
@@ -1066,5 +1210,7 @@ with tempfile.TemporaryDirectory() as directory:
         "-x", "c", "-o", executable, "-"], input=code, text=True, check=True)
     subprocess.run([executable], check=True, timeout=10)
 print("PASS: Gallium 39-resource bindings, image descriptors/lifetime, upload failure, direct/indirect guards and unbind")
+print("PASS: Mesa sampler+render canonical SRDs without image hint; staging/allocation/layout guards, CS/FS refs and format mismatch")
+print("PASS: R/RG X001/XY01 and identity views, arbitrary remap rejection, atomic replacement/trailing unbind and references")
 print("PASS: Mesa atomic handoff CS/FS, SSBO counts 0/1/8 + bindings 0/7, alignment/offset state, refs, isolation, replacement/unbind")
 print("PASS: Mesa CS/FS zero-initialized 0-to-16-to-2-to-0 tracking, stale cleanup, reference counts and stage isolation")
