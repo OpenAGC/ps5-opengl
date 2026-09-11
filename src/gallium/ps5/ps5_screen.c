@@ -1249,6 +1249,18 @@ ps5_mutable_sampled_resource_bind(unsigned bind)
           !(bind & ~(PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET));
 }
 
+static unsigned
+ps5_storage_image_texel_size(enum pipe_format format)
+{
+   switch (format) {
+   case PIPE_FORMAT_R32_FLOAT: case PIPE_FORMAT_R32_UINT: case PIPE_FORMAT_R32_SINT: return 4;
+   case PIPE_FORMAT_R32G32_FLOAT: case PIPE_FORMAT_R32G32_UINT: case PIPE_FORMAT_R32G32_SINT: return 8;
+   case PIPE_FORMAT_R32G32B32A32_FLOAT: case PIPE_FORMAT_R32G32B32A32_UINT:
+   case PIPE_FORMAT_R32G32B32A32_SINT: return 16;
+   default: return 0;
+   }
+}
+
 static bool
 ps5_compute_image_array_resource(const struct pipe_resource *resource)
 {
@@ -1256,8 +1268,7 @@ ps5_compute_image_array_resource(const struct pipe_resource *resource)
           resource->array_size > 0 && resource->array_size <= 8 &&
           resource->nr_samples <= 1 && resource->nr_storage_samples <= 1 &&
           resource->bind == (PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_SHADER_IMAGE) &&
-          (resource->format == PIPE_FORMAT_R32_FLOAT ||
-           resource->format == PIPE_FORMAT_R32_UINT || resource->format == PIPE_FORMAT_R32_SINT);
+          ps5_storage_image_texel_size(resource->format);
 }
 
 static unsigned
@@ -1355,10 +1366,9 @@ ps5_texture_descriptor_swizzle(unsigned swizzle, enum pipe_format format, uint32
 
    if (swizzle >= ARRAY_SIZE(selectors))
       return false;
-   /* Compose logical R32 view channels with the one-channel storage format.
-    * Keep other formats unchanged until their full-channel audit is complete. */
-   if (swizzle < 4 && (format == PIPE_FORMAT_R32_FLOAT ||
-       format == PIPE_FORMAT_R32_UINT || format == PIPE_FORMAT_R32_SINT))
+   /* Compose missing logical channels for the supported 32-bit image formats. */
+   if (swizzle < 4 && ps5_storage_image_texel_size(format) &&
+       swizzle >= ps5_storage_image_texel_size(format) / 4)
       swizzle = util_format_description(format)->swizzle[swizzle];
    *selector = selectors[swizzle];
    return true;
@@ -3774,9 +3784,9 @@ ps5_resource_linear_image_descriptor(struct pipe_resource *base, uint32_t descri
 {
    const struct ps5_resource *resource = (const struct ps5_resource *)base;
    uint32_t format;
+   const unsigned texel_size = base ? ps5_storage_image_texel_size(base->format) : 0;
    if (!base || !descriptor || (base->target != PIPE_TEXTURE_2D && base->target != PIPE_TEXTURE_2D_ARRAY) ||
-       (base->format != PIPE_FORMAT_R32_UINT && base->format != PIPE_FORMAT_R32_SINT &&
-        base->format != PIPE_FORMAT_R32_FLOAT) || !base->width0 || !base->height0 ||
+       !texel_size || !base->width0 || !base->height0 ||
        base->width0 > PS5_MAX_TEXTURE_2D_SIZE || base->height0 > PS5_MAX_TEXTURE_2D_SIZE ||
        base->depth0 != 1 || !base->array_size || base->array_size > 8 ||
        (base->target == PIPE_TEXTURE_2D && base->array_size != 1) || base->last_level >= PIPE_MAX_TEXTURE_LEVELS ||
@@ -3792,7 +3802,7 @@ ps5_resource_linear_image_descriptor(struct pipe_resource *base, uint32_t descri
    for (unsigned level = base->last_level + 1; level-- > 0;) {
       const unsigned width = ps5_linear_mip_storage_extent(base->width0, level);
       const unsigned height = ps5_linear_mip_storage_extent(base->height0, level);
-      const unsigned stride = (width * 4u + 255u) & ~255u;
+      const unsigned stride = (width * texel_size + 255u) & ~255u;
       const size_t span = (size_t)stride * height;
       if (resource->level_offset[level] != offset || resource->level_stride[level] != stride ||
           offset > resource->size || span > resource->size - offset)
@@ -3805,14 +3815,13 @@ ps5_resource_linear_image_descriptor(struct pipe_resource *base, uint32_t descri
    /* Same reverse-ordered linear mip storage and layer encoding as graphics.
     * ponytail: full arrays of at most eight layers; sublayers/tiled formats remain gated. */
    const uintptr_t address = (uintptr_t)resource->data;
-   const unsigned pitch = resource->level_stride[0] / 4u;
+   const unsigned pitch = resource->level_stride[0] / texel_size;
+   const uint32_t swizzle = texel_size == 4 ? 0x204u : texel_size == 8 ? 0x22cu : 0xfacu;
    const uint32_t srd[8] = {
       address >> 8,
       format | (((base->width0 - 1u) & 3u) << 30) | (uint32_t)(address >> 40),
       ((base->width0 - 1u) >> 2) | ((base->height0 - 1u) << 14) | UINT32_C(0x80000000),
-      /* R32 has one stored channel: logical identity expands to (R,0,0,1),
-       * not hardware XYZW (which replicates R). Shared by loads and fetches. */
-      (base->target == PIPE_TEXTURE_2D_ARRAY ? UINT32_C(0xd0000204) : UINT32_C(0x90000204)) |
+      (base->target == PIPE_TEXTURE_2D_ARRAY ? UINT32_C(0xd0000000) : UINT32_C(0x90000000)) | swizzle |
          (first_level << 12) | (last_level << 16),
       base->target == PIPE_TEXTURE_2D_ARRAY ? base->array_size - 1 :
          !base->last_level && pitch > base->width0 ? pitch - 1u : 0,

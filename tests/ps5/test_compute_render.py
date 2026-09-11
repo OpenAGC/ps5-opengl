@@ -237,8 +237,8 @@ int main(void) {
     storage.descriptor_bindings[1]=(PsbcDescriptorBinding){
         .binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_FRAGMENT),
         .type=PSBC_DESCRIPTOR_STORAGE_IMAGE,.array_size=8,.offset=256,.stride=32};
-    for(unsigned kind=0;kind<3;++kind)
-      for(unsigned operation=2;operation<=(kind ? 4u : 3u);++operation) for(unsigned slot=0;slot<=7;slot+=7)
+    for(unsigned kind=0;kind<9;++kind)
+      for(unsigned operation=2;operation<=((kind==1 || kind==2) ? 4u : 3u);++operation) for(unsigned slot=0;slot<=7;slot+=7)
         compile(build_fragment_storage(operation,slot,kind,false),&storage);
     for(unsigned slot=0;slot<=7;slot+=7) for(unsigned kind=0;kind<3;++kind) {
         PsbcCompileOptions mixed=storage;
@@ -257,6 +257,16 @@ int main(void) {
     assert(fragment_image_word(0,0,false)==0xc1000000 && fragment_image_word(0,32,true)==0x3e000000);
     assert(fragment_image_word(0,63,false)==0x40f80000 && fragment_image_word(1,63,true)==306);
     assert(fragment_image_word(2,0,false)==(uint32_t)-1000 && fragment_image_word(2,63,true)==(uint32_t)-1341);
+    assert(fragment_image_word(4,0,true)==185 && fragment_image_word(7,0,true)==933);
+    assert(fragment_image_word(8,0,true)==(uint32_t)-14322);
+    uint32_t vector_bits=fragment_image_word(6,0,true); float vector_value;
+    memcpy(&vector_value,&vector_bits,4); assert(vector_value==-205.875f);
+    for(unsigned kind=0;kind<9;++kind) for(unsigned lane=0;lane<4;++lane) {
+        const unsigned channels=kind<3 ? 1 : kind<6 ? 2 : 4;
+        uint32_t selector=99;
+        assert(ps5_texture_descriptor_swizzle(lane,image_formats[kind],&selector));
+        assert(selector==(lane<channels ? lane+4 : lane==3 ? 1 : 0));
+    }
     /* An incomplete legacy descriptor layout must return an error, not enter
      * RADV's unrelated bindless-heap path and abort the native application. */
     for (unsigned test=0; test<8; ++test) {
@@ -343,7 +353,8 @@ int main(void) {
 '''
 driver = (ROOT / "src/gallium/ps5/ps5_screen.c").read_text()
 swizzle_start = driver.index("static bool\nps5_texture_descriptor_swizzle(")
-swizzle = driver[swizzle_start:driver.index("static bool\nps5_texture_descriptor_wrap(",swizzle_start)]
+format_start = driver.index("static unsigned\nps5_storage_image_texel_size(")
+swizzle = driver[format_start:driver.index("static bool\nps5_compute_image_array_resource(",format_start)] + driver[swizzle_start:driver.index("static bool\nps5_texture_descriptor_wrap(",swizzle_start)]
 code = code.replace("static void compile(",swizzle+"static void compile(",1)
 usage_start = driver.index("static bool\nps5_compute_texture_usage(")
 usage = driver[usage_start:driver.index("/* Internal compute bring-up", usage_start)]

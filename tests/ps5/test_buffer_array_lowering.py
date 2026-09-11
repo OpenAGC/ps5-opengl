@@ -18,6 +18,7 @@ code = r'''
 #include <stdio.h>
 #include <string.h>
 #include "compiler/nir/nir_builder.h"
+#include "util/format/u_format.h"
 #include "psbc_compile.h"
 ''' + lowering + r'''
 static PsbcCompileOptions options(PsbcStage stage) {
@@ -141,10 +142,10 @@ static nir_shader *image_shader(unsigned operation, bool dynamic, bool manual, e
     b.shader->info.workgroup_size[1]=b.shader->info.workgroup_size[2]=1;
     b.shader->info.num_images=8;
     b.shader->info.num_ssbos=16;
-    const nir_alu_type type=format==PIPE_FORMAT_R32_UINT ? nir_type_uint32 :
-        format==PIPE_FORMAT_R32_SINT ? nir_type_int32 : nir_type_float32;
-    const enum glsl_base_type base_type=format==PIPE_FORMAT_R32_UINT ? GLSL_TYPE_UINT :
-        format==PIPE_FORMAT_R32_SINT ? GLSL_TYPE_INT : GLSL_TYPE_FLOAT;
+    const nir_alu_type type=util_format_is_pure_uint(format) ? nir_type_uint32 :
+        util_format_is_pure_sint(format) ? nir_type_int32 : nir_type_float32;
+    const enum glsl_base_type base_type=util_format_is_pure_uint(format) ? GLSL_TYPE_UINT :
+        util_format_is_pure_sint(format) ? GLSL_TYPE_INT : GLSL_TYPE_FLOAT;
     nir_def *zero=nir_imm_int(&b,0), *id=nir_channel(&b,nir_load_local_invocation_id(&b),0);
     nir_def *slot=dynamic ? nir_iand_imm(&b,nir_channel(&b,nir_load_workgroup_id(&b),0),7)
                           : nir_imm_int(&b,7);
@@ -189,10 +190,12 @@ static void image_contract(void) {
     opts.descriptor_bindings[2]=(PsbcDescriptorBinding){
         .binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
         .type=PSBC_DESCRIPTOR_STORAGE_IMAGE,.array_size=8,.offset=31*16,.stride=32};
-    const enum pipe_format formats[]={PIPE_FORMAT_R32_UINT,PIPE_FORMAT_R32_SINT,PIPE_FORMAT_R32_FLOAT};
+    const enum pipe_format formats[]={PIPE_FORMAT_R32_UINT,PIPE_FORMAT_R32_SINT,PIPE_FORMAT_R32_FLOAT,
+        PIPE_FORMAT_R32G32_UINT,PIPE_FORMAT_R32G32_SINT,PIPE_FORMAT_R32G32_FLOAT,
+        PIPE_FORMAT_R32G32B32A32_UINT,PIPE_FORMAT_R32G32B32A32_SINT,PIPE_FORMAT_R32G32B32A32_FLOAT};
     for(unsigned array=0;array<2;++array)
-    for(unsigned f=0;f<3;++f) for(unsigned op=0;op<5;++op) for(unsigned dynamic=0;dynamic<2;++dynamic) {
-        if(f==2 && (op==2 || op==3)) continue; /* Integer atomics only. */
+    for(unsigned f=0;f<9;++f) for(unsigned op=0;op<5;++op) for(unsigned dynamic=0;dynamic<2;++dynamic) {
+        if(f>=2 && (op==2 || op==3)) continue; /* Scalar integer atomics only. */
         PsbcShaderOutput out[2]={{0}};
         for(unsigned manual=0;manual<2;++manual) {
             nir_shader *nir=image_shader(op,dynamic,manual,formats[f],array);
@@ -207,8 +210,8 @@ static void image_contract(void) {
     }
     for(unsigned fault=0;fault<8;++fault) {
         PsbcCompileOptions bad=opts;
-        nir_shader *nir=image_shader(fault==7 ? 2 : 0,false,false,
-            fault>=7 ? PIPE_FORMAT_R32_FLOAT : PIPE_FORMAT_R32_UINT,false);
+        nir_shader *nir=image_shader(fault>=7 ? 2 : 0,false,false,
+            fault==7 ? PIPE_FORMAT_R32_FLOAT : PIPE_FORMAT_R32_UINT,false);
         if(fault==0) bad.gallium_buffer_arrays=false;
         if(fault==1) bad.descriptor_binding_count=2;
         if(fault==2) bad.descriptor_bindings[2].array_size=7;

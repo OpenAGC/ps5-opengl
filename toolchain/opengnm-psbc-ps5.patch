@@ -529,7 +529,7 @@ index bacbc6a..ee967cf 100644
  #include <stdarg.h>
  #include <stdio.h>
  #include <string.h>
-@@ -26,16 +27,190 @@
+@@ -26,16 +27,193 @@
  #include "ac_binary.h"
  #include "ac_nir.h"
  #include "amd_family.h"
@@ -664,8 +664,8 @@ index bacbc6a..ee967cf 100644
 +    return true;
 +}
 +
-+/* Scalar 32-bit single-sample 2D storage images. Other shapes/formats need
-+ * matching native descriptors; float image atomics are not part of this path. */
++/* 32-bit R/RG/RGBA single-sample 2D images. Atomic operations remain
++ * restricted to scalar integer formats with matching native descriptors. */
 +static bool lower_gallium_image_index(nir_builder* b, nir_instr* instruction,
 +                                     void* data) {
 +    struct gallium_buffer_state* state = data;
@@ -693,18 +693,21 @@ index bacbc6a..ee967cf 100644
 +    const enum pipe_format format = nir_intrinsic_format(intr);
 +    const bool atomic = intr->intrinsic == nir_intrinsic_image_atomic ||
 +                        intr->intrinsic == nir_intrinsic_image_atomic_swap;
++    const bool uint_format = format == PIPE_FORMAT_R32_UINT || format == PIPE_FORMAT_R32G32_UINT || format == PIPE_FORMAT_R32G32B32A32_UINT;
++    const bool sint_format = format == PIPE_FORMAT_R32_SINT || format == PIPE_FORMAT_R32G32_SINT || format == PIPE_FORMAT_R32G32B32A32_SINT;
++    const bool float_format = format == PIPE_FORMAT_R32_FLOAT || format == PIPE_FORMAT_R32G32_FLOAT || format == PIPE_FORMAT_R32G32B32A32_FLOAT;
++    const bool scalar_integer = format == PIPE_FORMAT_R32_UINT || format == PIPE_FORMAT_R32_SINT;
 +    if (!opts->gallium_buffer_arrays || !bank ||
 +        slot.ssa->num_components != 1 || slot.ssa->bit_size != 32 ||
 +        (nir_src_is_const(slot) && nir_src_as_uint(slot) >= bank->array_size) ||
 +        nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_2D ||
-+        (format != PIPE_FORMAT_R32_UINT && format != PIPE_FORMAT_R32_SINT &&
-+         format != PIPE_FORMAT_R32_FLOAT) || (atomic && format == PIPE_FORMAT_R32_FLOAT)) {
++        !(uint_format || sint_format || float_format) || (atomic && !scalar_integer)) {
 +        state->valid = false;
 +        return false;
 +    }
 +    b->cursor = nir_before_instr(instruction);
-+    const enum glsl_base_type type = format == PIPE_FORMAT_R32_UINT ? GLSL_TYPE_UINT :
-+                                    format == PIPE_FORMAT_R32_SINT ? GLSL_TYPE_INT : GLSL_TYPE_FLOAT;
++    const enum glsl_base_type type = uint_format ? GLSL_TYPE_UINT :
++                                    sint_format ? GLSL_TYPE_INT : GLSL_TYPE_FLOAT;
 +    const glsl_type* image = glsl_image_type(GLSL_SAMPLER_DIM_2D,
 +        nir_intrinsic_image_array(intr), type);
 +    nir_variable* var = nir_variable_create(b->shader, nir_var_image,

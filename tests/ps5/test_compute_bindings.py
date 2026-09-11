@@ -19,7 +19,7 @@ extent_at = source.index("static unsigned\nps5_linear_mip_storage_extent(")
 extent_helper = source[extent_at:source.index("static bool\nps5_packed_depth_sample_layout(", extent_at)]
 image_at = source.index("static int\nps5_resource_linear_image_descriptor(")
 image_descriptor = source[image_at:source.index("\nstruct pipe_resource *", image_at)]
-array_at = source.index("static bool\nps5_compute_image_array_resource(")
+array_at = source.index("static unsigned\nps5_storage_image_texel_size(")
 array_layout = source[array_at:source.index("static unsigned\nps5_texture_format_size(", array_at)]
 barrier_at = source.index("static void\nps5_memory_barrier(")
 barrier = source[barrier_at:source.index("static bool\nps5_draw_primitive(", barrier_at)]
@@ -103,7 +103,7 @@ static bool multi, with_constants, fail_upload;
 static bool fail_info;
 static struct ps5_resource *upload_resource;
 static bool ps5_texture_descriptor_format(enum pipe_format f,uint32_t *word) {
-    assert(f==PIPE_FORMAT_R32_UINT || f==PIPE_FORMAT_R32_SINT || f==PIPE_FORMAT_R32_FLOAT);
+    /* Stub only the hardware format word; actual layout/bounds helpers run below. */
     *word=f==PIPE_FORMAT_R32_UINT ? 0x1400000 : f==PIPE_FORMAT_R32_SINT ? 0x1500000 : 0x1600000;
     return true;
 }
@@ -555,6 +555,22 @@ int main(void) {
         assert(!context.compute_images_invalid && typed.base.reference.count==2);
         ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,0,1,NULL);
         assert(!context.compute_images_invalid && typed.base.reference.count==1);
+    }
+    const enum pipe_format vectors[]={PIPE_FORMAT_R32G32_UINT,PIPE_FORMAT_R32G32_SINT,PIPE_FORMAT_R32G32_FLOAT,
+        PIPE_FORMAT_R32G32B32A32_UINT,PIPE_FORMAT_R32G32B32A32_SINT,PIPE_FORMAT_R32G32B32A32_FLOAT};
+    _Alignas(256) uint8_t vector_pixels[1536];
+    for(unsigned i=0;i<6;++i) {
+        struct ps5_resource v=image; v.base.format=vectors[i]; v.data=vector_pixels;
+        unsigned bytes=i<3 ? 8 : 16, stride=(17*bytes+255)&~255u;
+        v.level_stride[0]=stride; v.size=stride*3;
+        assert(ps5_storage_image_texel_size(v.base.format)==bytes);
+        assert(!ps5_resource_storage_image_descriptor(&v.base,0,descriptor));
+        assert((descriptor[3]&4095)==(i<3 ? 0x22c : 0xfac));
+        assert(descriptor[4]==stride/bytes-1);
+        v.size--;
+        assert(ps5_resource_storage_image_descriptor(&v.base,0,descriptor)<0);
+        v.size++; v.level_stride[0]+=256;
+        assert(ps5_resource_storage_image_descriptor(&v.base,0,descriptor)<0);
     }
     for(unsigned fault=0;fault<15;++fault) {
         struct ps5_resource bad=image;
