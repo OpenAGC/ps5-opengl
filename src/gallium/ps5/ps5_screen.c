@@ -263,6 +263,8 @@ struct ps5_context {
    unsigned compute_sampler_mask;
    bool compute_samplers_invalid;
    struct pipe_shader_buffer compute_buffers[PS5_COMPUTE_BUFFER_SLOTS];
+   struct pipe_shader_buffer fragment_buffers[PS5_COMPUTE_STORAGE_SLOTS];
+   bool fragment_bindings_invalid;
    struct pipe_image_view compute_images[PS5_COMPUTE_IMAGE_SLOTS];
    bool compute_images_invalid;
    bool compute_bindings_invalid;
@@ -2213,6 +2215,53 @@ ps5_copied_constant_offset(unsigned state_slot)
    return PS5_CONSTANT_DATA_OFFSET +
           (state_slot == PS5_GEOMETRY_CONSTANT_SLOT
               ? PS5_MAX_CONSTANT_BUFFER_SIZE : 0u);
+}
+
+static unsigned
+ps5_shader_storage_count(const struct ps5_shader *shader)
+{
+   return shader ? shader->nir->info.num_ssbos : 0;
+}
+
+static bool
+ps5_prepare_fragment_storage(struct ps5_context *context, uint32_t *user_data,
+                             unsigned user_data_count)
+{
+   const unsigned count = ps5_shader_storage_count(context->fs);
+   if (!count)
+      return true;
+   const PsbcShaderMetadata *metadata = &context->fs->active->output.metadata;
+   struct ps5_resource *table = (struct ps5_resource *)context->descriptor_storage[1];
+   if (count > PS5_COMPUTE_STORAGE_SLOTS || context->fragment_bindings_invalid ||
+       !table || !table->data || table->size < PS5_COMPUTE_STORAGE_SLOTS * 16 ||
+       !metadata->descriptor_set0_valid || metadata->descriptor_binding_count != 1 ||
+       metadata->descriptor_set0_user_data_dword >= user_data_count ||
+       (uintptr_t)table->data >> 32 != metadata->address32_hi)
+      return false;
+   const PsbcDescriptorBinding *bank = &metadata->descriptor_bindings[0];
+   if (bank->set || bank->binding != PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_FRAGMENT) ||
+       bank->type != PSBC_DESCRIPTOR_STORAGE_BUFFER || bank->array_size != PS5_COMPUTE_STORAGE_SLOTS ||
+       bank->offset || bank->stride != 16)
+      return false;
+   memset(table->data, 0, PS5_COMPUTE_STORAGE_SLOTS * 16);
+   for (unsigned i = 0; i < count; ++i) {
+      const struct pipe_shader_buffer *bound = &context->fragment_buffers[i];
+      const struct ps5_resource *resource = (const struct ps5_resource *)bound->buffer;
+      /* ponytail: require the declared prefix bound; sparse-use analysis comes
+       * with public storage support. Never submit a missing descriptor. */
+      if (!resource || resource->base.screen != context->base.screen ||
+          !resource->data || bound->buffer_offset > resource->size ||
+          bound->buffer_size > resource->size - bound->buffer_offset)
+         return false;
+      uintptr_t address = (uintptr_t)resource->data + bound->buffer_offset;
+      uint32_t *srd = (uint32_t *)table->data + i * 4;
+      srd[0] = address; srd[1] = address >> 32;
+      srd[2] = bound->buffer_size; srd[3] = UINT32_C(0x31016fac);
+      ps5_flush_gpu_data((void *)address, bound->buffer_size);
+   }
+   user_data[metadata->descriptor_set0_user_data_dword] = (uintptr_t)table->data;
+   ps5_flush_gpu_data(table->data, PS5_COMPUTE_STORAGE_SLOTS * 16);
+   return true;
 }
 
 static bool
@@ -7419,6 +7468,10 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       context->last_draw_status = -15;
       return;
    }
+   if (!ps5_prepare_fragment_storage(context, pixel_user_data, pixel_user_data_count)) {
+      context->last_draw_status = -15;
+      return;
+   }
    if (!ps5_prepare_constant(context, context->fs, 1, pixel_user_data,
                              pixel_user_data_count, NULL)) {
       printf("[ps5-gallium] resource-prepare reject=fragment-constants\n");
@@ -8122,6 +8175,7 @@ ps5_multidraw_eligible(const struct ps5_context *context,
        (info->index_size && info->index_size != 2 && info->index_size != 4) ||
        (info->index_size && !info->index.resource) ||
        !context->vs || !context->fs || context->gs ||
+       ps5_shader_storage_count(context->fs) ||
        ps5_shader_texture_count(context->vs) ||
        context->stream_output_target_count || context->render_condition_query ||
        context->active_occlusion_query || context->active_primitives_generated_query ||
@@ -8527,6 +8581,15 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
     * becomes measurable and the runtime stops using process-global setters. */
    ps5_screen_submit_lock(&screen->base);
    ps5_draw_vbo_locked(base, info, drawid_offset, indirect, draws, num_draws, NULL);
+   /* ponytail: storage draws retire synchronously; batching needs retained
+    * storage resources and explicit shader-write visibility first. */
+   if (!context->last_draw_status)
+      for (unsigned i = 0; i < MIN2(ps5_shader_storage_count(context->fs), PS5_COMPUTE_STORAGE_SLOTS); ++i) {
+         const struct pipe_shader_buffer *bound = &context->fragment_buffers[i];
+         const struct ps5_resource *resource = (const struct ps5_resource *)bound->buffer;
+         if (resource)
+            ps5_flush_gpu_data(resource->data + bound->buffer_offset, bound->buffer_size);
+      }
    ps5_screen_submit_unlock(&screen->base);
    pipe_resource_reference(&uploaded_indices, NULL);
    if (context->last_draw_status != 0)
@@ -9590,6 +9653,22 @@ ps5_shader_compile_options(const struct ps5_shader *shader,
    options->primitive_type = primitive_type;
    options->provoking_vtx_last = provoking_vtx_last;
    options->address32_hi = address32_hi;
+   if (shader->nir->info.num_ssbos) {
+      /* Internal buffer-only FS path; keep the qualified 3.3 descriptor ABI. */
+      if (shader->stage != PSBC_STAGE_FRAGMENT ||
+          shader->nir->info.num_ssbos > PS5_COMPUTE_STORAGE_SLOTS ||
+          shader->nir->info.num_ubos || shader->nir->info.num_images ||
+          ps5_shader_texture_count(shader))
+         return false;
+      options->gallium_buffer_arrays = true;
+      options->descriptor_binding_count = 1;
+      options->descriptor_bindings[0] = (PsbcDescriptorBinding){
+         .binding = PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_FRAGMENT),
+         .type = PSBC_DESCRIPTOR_STORAGE_BUFFER,
+         .array_size = PS5_COMPUTE_STORAGE_SLOTS, .stride = 16,
+      };
+      return true;
+   }
    options->vertex_attribute_count = layout->count;
    memcpy(options->vertex_attributes, layout->attributes,
           layout->count * sizeof(layout->attributes[0]));
@@ -10390,9 +10469,13 @@ ps5_set_shader_buffers(struct pipe_context *base, mesa_shader_stage stage,
 {
    struct ps5_context *context = (struct ps5_context *)base;
    (void)writable; /* Conservatively flush every retained buffer for now. */
-   if (stage != MESA_SHADER_COMPUTE)
+   if (stage != MESA_SHADER_COMPUTE && stage != MESA_SHADER_FRAGMENT)
       return;
-   context->compute_bindings_invalid = true;
+   bool *invalid = stage == MESA_SHADER_COMPUTE ? &context->compute_bindings_invalid :
+                                                &context->fragment_bindings_invalid;
+   struct pipe_shader_buffer *bound_buffers = stage == MESA_SHADER_COMPUTE ?
+      context->compute_buffers : context->fragment_buffers;
+   *invalid = true;
    if (start > PS5_COMPUTE_STORAGE_SLOTS || count > PS5_COMPUTE_STORAGE_SLOTS - start)
       return;
    for (unsigned i = 0; buffers && i < count; ++i) {
@@ -10405,14 +10488,16 @@ ps5_set_shader_buffers(struct pipe_context *base, mesa_shader_stage stage,
          return;
    }
    /* Validate the entire update before releasing any previously owned buffer. */
+   if (stage == MESA_SHADER_FRAGMENT)
+      ps5_draw_batch_drain();
    for (unsigned i = 0; i < count; ++i) {
-      struct pipe_shader_buffer *bound = &context->compute_buffers[start + i];
+      struct pipe_shader_buffer *bound = &bound_buffers[start + i];
       const struct pipe_shader_buffer *b = buffers ? &buffers[i] : NULL;
       pipe_resource_reference(&bound->buffer, b ? b->buffer : NULL);
       bound->buffer_offset = b && b->buffer ? b->buffer_offset : 0;
       bound->buffer_size = b && b->buffer ? b->buffer_size : 0;
    }
-   context->compute_bindings_invalid = false;
+   *invalid = false;
 }
 
 static void
@@ -11527,6 +11612,8 @@ ps5_context_destroy(struct pipe_context *base)
    ps5_draw_batch_drain();
    for (index = 0; index < PS5_COMPUTE_BUFFER_SLOTS; ++index)
       pipe_resource_reference(&context->compute_buffers[index].buffer, NULL);
+   for (index = 0; index < PS5_COMPUTE_STORAGE_SLOTS; ++index)
+      pipe_resource_reference(&context->fragment_buffers[index].buffer, NULL);
    for (index = 0; index < PS5_COMPUTE_IMAGE_SLOTS; ++index)
       pipe_resource_reference(&context->compute_images[index].resource, NULL);
    pipe_resource_reference(&context->compute_descriptors, NULL);

@@ -18,7 +18,7 @@ code = r'''
 #include "compiler/nir/nir_builder.h"
 #include "util/format/u_format.h"
 #include "ps5_agc_package.h"
-''' + source[source.index("#define IMAGE_WORDS"):source.index("static int run_all_slots(")] + r'''
+''' + source[source.index("#define IMAGE_WORDS"):source.index("static int run_fragment_storage(")] + r'''
 static void compile(nir_shader *nir, PsbcCompileOptions *options) {
     nir_validate_shader(nir, "compute-render input");
     PsbcShaderOutput out = {0};
@@ -215,6 +215,12 @@ int main(void) {
            BITSET_TEST(fs->info.textures_used_by_txf, 0));
     compile(fs, &options);
     for(unsigned kind=1;kind<3;++kind) compile(build_fragment(kind), &options);
+    PsbcCompileOptions storage={.target=PSBC_TARGET_PS5,.stage=PSBC_STAGE_FRAGMENT,
+        .optimise=true,.address32_hi=2,.gallium_buffer_arrays=true,.descriptor_binding_count=1,
+        .descriptor_bindings={{.binding=PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_FRAGMENT),
+            .type=PSBC_DESCRIPTOR_STORAGE_BUFFER,.array_size=16,.stride=16}}};
+    for(unsigned atomic=0;atomic<2;++atomic) for(unsigned slot=0;slot<=15;slot+=15)
+        compile(build_fragment_storage(atomic,slot),&storage);
     /* An incomplete legacy descriptor layout must return an error, not enter
      * RADV's unrelated bindless-heap path and abort the native application. */
     for (unsigned test=0; test<8; ++test) {

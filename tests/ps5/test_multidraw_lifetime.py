@@ -380,6 +380,8 @@ static unsigned retained_draws;
 static unsigned unindexed_draws;
 static uint8_t expected_uniform[PS5_MULTIDRAW_BATCH_CAPACITY][3];
 static unsigned ps5_shader_texture_count(const unsigned *s) { return *s; }
+static unsigned shader_storage;
+static unsigned ps5_shader_storage_count(const unsigned *s) { (void)s; return shader_storage; }
 static bool ps5_texture_used(const struct ps5_context *c, const unsigned *s, const void *metadata, unsigned unit) {
     (void)c; (void)metadata; return (*s & (1u << unit)) != 0;
 }
@@ -528,6 +530,8 @@ int main(void) {
     REJECT(vertex_buffers[0].is_user_buffer,true); REJECT(vertex_buffer_count,PIPE_MAX_ATTRIBS+1);
     shader_textures=1; assert(!ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
     reset();
+    shader_storage=16; assert(!ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
+    shader_storage=0;
     struct pipe_depth_stencil_alpha_state dsa={0};
     for (unsigned format=77; format<=78; ++format) for (unsigned enabled=0; enabled<2; ++enabled) {
         reset(); dsa.depth_enabled=enabled;

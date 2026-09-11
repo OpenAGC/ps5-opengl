@@ -23,6 +23,8 @@ array_at = source.index("static bool\nps5_compute_image_array_resource(")
 array_layout = source[array_at:source.index("static unsigned\nps5_texture_format_size(", array_at)]
 barrier_at = source.index("static void\nps5_memory_barrier(")
 barrier = source[barrier_at:source.index("static bool\nps5_draw_primitive(", barrier_at)]
+fragment_at = source.index("static unsigned\nps5_shader_storage_count(")
+fragment = source[fragment_at:source.index("static bool\nps5_prepare_constant(", fragment_at)]
 assert "context->base.memory_barrier = ps5_memory_barrier;" in source
 code = r'''
 #include <assert.h>
@@ -50,11 +52,18 @@ struct ps5_resource {
 };
 struct ps5_compute_shader { PsbcShaderOutput output; unsigned textures, filtered_textures, texture_lod[PS5_COMPUTE_TEXTURE_SLOTS], array_textures; };
 struct ps5_sampler_state { struct pipe_sampler_state base; };
+struct test_nir { struct { unsigned num_ssbos; } info; };
+struct test_variant { PsbcShaderOutput output; };
+struct ps5_shader { struct test_nir *nir; struct test_variant *active; };
 struct ps5_context {
     struct pipe_context base;
     struct ps5_compute_shader *cs;
     struct pipe_resource *compute_descriptors;
     struct pipe_shader_buffer compute_buffers[31];
+    struct pipe_shader_buffer fragment_buffers[16];
+    bool fragment_bindings_invalid;
+    struct ps5_shader *fs;
+    struct pipe_resource *descriptor_storage[2];
     struct pipe_image_view compute_images[8];
     struct pipe_sampler_view *compute_views[PS5_COMPUTE_TEXTURE_SLOTS];
     bool compute_views_invalid;
@@ -89,7 +98,10 @@ static int ps5_resource_info(struct pipe_resource *base, void **address, size_t 
     *size=base->width0;
     return 0;
 }
-static void ps5_flush_gpu_data(const void *address, size_t size) { assert(address && size==12); }
+static bool fragment_mode;
+static unsigned fragment_drains;
+static void ps5_draw_batch_drain(void) { ++fragment_drains; }
+static void ps5_flush_gpu_data(const void *address, size_t size) { assert(address && (fragment_mode ? size==64 || size==256 : size==12)); }
 void u_upload_data_ref(struct u_upload_mgr *upload, unsigned minimum, unsigned size,
     unsigned alignment, const void *data, unsigned *offset, struct pipe_resource **buffer) {
     assert(upload && !minimum && alignment==16 && size<=64 && upload_resource);
@@ -163,8 +175,57 @@ static unsigned barrier_flushes;
 static void ps5_flush(struct pipe_context *context, struct pipe_fence_handle **fence, unsigned flags) {
     assert(context && !fence && !flags); ++barrier_flushes;
 }
-''' + barrier + '\n#define PS5_ENABLE_BORDER_COLOR_CANDIDATE 1\n' + sampler_helpers + functions + r'''
+''' + barrier + fragment + '\n#define PS5_ENABLE_BORDER_COLOR_CANDIDATE 1\n' + sampler_helpers + functions + r'''
+static void fragment_contract(void) {
+    struct pipe_screen screen={.resource_destroy=destroy};
+    uint32_t words[64]={0}, descriptors[64]={0}, userdata[16]={0};
+    struct ps5_resource data={.base={.screen=&screen,.target=PIPE_BUFFER,.width0=256},.data=(void *)words,.size=256};
+    struct ps5_resource table={.data=(void *)descriptors,.size=256};
+    pipe_reference_init(&data.base.reference,1);
+    struct test_nir nir={.info.num_ssbos=16};
+    struct test_variant variant={0};
+    struct ps5_shader shader={&nir,&variant};
+    PsbcShaderMetadata *m=&variant.output.metadata;
+    m->address32_hi=(uintptr_t)descriptors>>32;
+    m->descriptor_set0_valid=true; m->descriptor_binding_count=1;
+    m->descriptor_bindings[0]=(PsbcDescriptorBinding){.binding=PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_FRAGMENT),
+        .type=PSBC_DESCRIPTOR_STORAGE_BUFFER,.array_size=16,.stride=16};
+    struct ps5_context c={.base.screen=&screen,.fs=&shader,.descriptor_storage[1]=&table.base};
+    struct pipe_shader_buffer bindings[16];
+    for(unsigned i=0;i<16;++i) bindings[i]=(struct pipe_shader_buffer){&data.base,16,64};
+    fragment_mode=true;
+    assert(!ps5_prepare_fragment_storage(&c,userdata,16)); /* Missing bank. */
+    ps5_set_shader_buffers(&c.base,MESA_SHADER_FRAGMENT,0,16,bindings,65535);
+    assert(fragment_drains==1 && data.base.reference.count==17 && !c.compute_buffers[0].buffer);
+    assert(ps5_prepare_fragment_storage(&c,userdata,16));
+    for(unsigned i=0;i<16;++i) {
+        assert(descriptors[i*4]==(uint32_t)(uintptr_t)((uint8_t *)words+16));
+        assert(descriptors[i*4+2]==64 && descriptors[i*4+3]==0x31016fac);
+    }
+    assert(userdata[0]==(uint32_t)(uintptr_t)descriptors);
+    bindings[15].buffer_size=UINT32_MAX;
+    ps5_set_shader_buffers(&c.base,MESA_SHADER_FRAGMENT,0,16,bindings,65535);
+    assert(c.fragment_bindings_invalid && data.base.reference.count==17 && fragment_drains==1);
+    assert(!ps5_prepare_fragment_storage(&c,userdata,16));
+    bindings[15].buffer_size=64;
+    ps5_set_shader_buffers(&c.base,MESA_SHADER_FRAGMENT,0,16,bindings,65535);
+    const PsbcShaderMetadata good=*m;
+    for(unsigned fault=0;fault<5;++fault) {
+        *m=good;
+        if(fault==0) m->descriptor_set0_valid=false;
+        if(fault==1) m->descriptor_set0_user_data_dword=16;
+        if(fault==2) m->descriptor_bindings[0].offset=16;
+        if(fault==3) m->descriptor_bindings[0].array_size=15;
+        if(fault==4) m->address32_hi^=1;
+        assert(!ps5_prepare_fragment_storage(&c,userdata,16));
+    }
+    *m=good;
+    ps5_set_shader_buffers(&c.base,MESA_SHADER_FRAGMENT,0,16,NULL,0);
+    assert(data.base.reference.count==1 && !ps5_prepare_fragment_storage(&c,userdata,16));
+    fragment_mode=false;
+}
 int main(void) {
+    fragment_contract();
     assert(PS5_COMPUTE_TEXTURE_SLOTS==16 && PS5_AGC_COMPUTE_MAX_RESOURCES==55);
     struct pipe_screen screen={.resource_destroy=destroy}, other_screen={0};
     struct pipe_context barrier_context={0};

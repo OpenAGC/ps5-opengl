@@ -237,8 +237,41 @@ static void image_contract(void) {
         ralloc_free(nir);
     }
 }
+static void fragment_storage(void) {
+    for (unsigned atomic=0; atomic<2; ++atomic) for (unsigned slot=0; slot<=15; slot+=15) {
+        PsbcShaderOutput out[2]={{0}};
+        PsbcCompileOptions opts=options(PSBC_STAGE_FRAGMENT);
+        for (unsigned manual=0; manual<2; ++manual) {
+            nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
+                psbc_get_nir_options(PSBC_STAGE_FRAGMENT), "fragment-storage");
+            b.shader->info.num_ssbos=16;
+            nir_def *buffer=resource(&b,PSBC_STAGE_FRAGMENT,nir_imm_int(&b,slot),false,manual);
+            nir_def *value=nir_load_ssbo(&b,1,32,buffer,nir_imm_int(&b,0),.align_mul=4);
+            if(atomic)
+                value=nir_ssbo_atomic(&b,32,buffer,nir_imm_int(&b,4),nir_imm_int(&b,1),.atomic_op=nir_atomic_op_iadd);
+            else
+                nir_store_ssbo(&b,value,buffer,nir_imm_int(&b,4),.align_mul=4,.write_mask=1);
+            nir_variable *color=nir_variable_create(b.shader,nir_var_shader_out,glsl_vec4_type(),"color");
+            color->data.location=FRAG_RESULT_DATA0;
+            nir_store_var(&b,color,nir_vec4(&b,nir_u2f32(&b,value),nir_imm_float(&b,0),
+                nir_imm_float(&b,0),nir_imm_float(&b,1)),15);
+            nir_shader_gather_info(b.shader,nir_shader_get_entrypoint(b.shader));
+            b.shader->info.num_ssbos=16;
+            assert(b.shader->info.writes_memory);
+            nir_validate_shader(b.shader,"fragment storage input");
+            assert(psbc_compile_nir(b.shader,&opts,&out[manual])==PSBC_RESULT_OK);
+            assert(out[manual].metadata.descriptor_set0_valid && !out[manual].metadata.scratch_valid);
+            ralloc_free(b.shader);
+        }
+        assert(out[0].machine_code_size==out[1].machine_code_size);
+        assert(!memcmp(out[0].machine_code,out[1].machine_code,out[0].machine_code_size));
+        printf("Fragment storage atomic=%u slot=%u code=%zu matches resource-index reference\n",
+            atomic,slot,out[0].machine_code_size);
+        psbc_free_output(&out[0]); psbc_free_output(&out[1]);
+    }
+}
 int main(void) {
-    psbc_init(); structural(); compiled(false); compiled(true); invalid(); image_contract(); psbc_shutdown();
+    psbc_init(); structural(); compiled(false); compiled(true); invalid(); image_contract(); fragment_storage(); psbc_shutdown();
 }
 '''
 with tempfile.TemporaryDirectory() as directory:

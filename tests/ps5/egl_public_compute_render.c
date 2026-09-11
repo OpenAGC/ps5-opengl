@@ -341,6 +341,72 @@ static unsigned count_pixels(const uint8_t *pixels, unsigned stride, float sign)
    return correct;
 }
 
+static nir_shader *build_fragment_storage(unsigned atomic, unsigned slot)
+{
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
+      psbc_get_nir_options(PSBC_STAGE_FRAGMENT), "fragment-storage-native");
+   nir_def *coord = nir_load_frag_coord_xy(&b); /* Internal post-lowering NIR input. */
+   nir_def *id = nir_iadd(&b, nir_f2u32(&b, nir_channel(&b, coord, 0)),
+      nir_imul_imm(&b, nir_f2u32(&b, nir_channel(&b, coord, 1)), 8));
+   nir_def *buffer = nir_imm_int(&b, slot), *offset = nir_imul_imm(&b, id, 4);
+   nir_def *value = atomic ? nir_ssbo_atomic(&b, 32, buffer, nir_imm_int(&b, 256),
+      nir_imm_int(&b, 1), .atomic_op = nir_atomic_op_iadd) :
+      nir_iadd_imm(&b, nir_load_ssbo(&b, 1, 32, buffer, offset, .align_mul = 4), 100);
+   nir_store_ssbo(&b, value, buffer, offset, .align_mul = 4, .write_mask = 1);
+   nir_variable *color = nir_variable_create(b.shader, nir_var_shader_out, glsl_vec4_type(), "color");
+   color->data.location = FRAG_RESULT_DATA0;
+   nir_store_var(&b, color, nir_imm_vec4(&b, 0, 1, 0, 1), 15);
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   b.shader->info.num_ssbos = slot + 1;
+   return b.shader;
+}
+
+static int run_fragment_storage(struct pipe_context *pipe, struct pipe_resource *buffer,
+                                uint32_t *words, size_t bytes, struct pipe_resource *target)
+{
+   if (bytes != 80 * 4) return 1;
+   for (unsigned atomic = 0; atomic < 2; ++atomic) for (unsigned slot = 0; slot <= 15; slot += 15) {
+      memset(words, 0xcd, bytes);
+      for (unsigned i = 0; i < 64; ++i) words[8 + i] = 100 + i;
+      if (atomic) words[72] = 0;
+      struct pipe_shader_buffer bindings[16];
+      for (unsigned i = 0; i < 16; ++i)
+         bindings[i] = (struct pipe_shader_buffer){buffer, 32, (atomic ? 65u : 64u) * 4};
+      pipe->set_shader_buffers(pipe, MESA_SHADER_FRAGMENT, 0, slot + 1, bindings, 65535);
+      struct pipe_shader_state shader = {.type = PIPE_SHADER_IR_NIR, .ir.nir = build_fragment_storage(atomic, slot)};
+      void *fs = pipe->create_fs_state(pipe, &shader);
+      if (!fs) return 1;
+      pipe->bind_fs_state(pipe, fs);
+      const struct pipe_draw_info info = {.mode = MESA_PRIM_TRIANGLES, .instance_count = 1};
+      const struct pipe_draw_start_count_bias draw = {.count = 3};
+      pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+      pipe->memory_barrier(pipe, PIPE_BARRIER_ALL);
+      int rc = ps5_context_last_draw_status(pipe, NULL);
+      unsigned correct = 0;
+      bool seen[64] = {false};
+      for (unsigned i = 0; i < 80; ++i) {
+         if (i >= 8 && i < 72) {
+            const uint32_t value = words[i];
+            if (atomic) {
+               if (value < 64 && !seen[value]) { seen[value] = true; ++correct; }
+            } else correct += value == 200 + i - 8;
+         } else correct += words[i] == (atomic && i == 72 ? 64 : UINT32_C(0xcdcdcdcd));
+      }
+      struct pipe_transfer *transfer = NULL;
+      uint8_t *pixels = rc ? NULL : pipe_texture_map(pipe, target, 0, 0, PIPE_MAP_READ, 0, 0, 8, 8, &transfer);
+      unsigned pixel_ok = pixels ? count_pixels(pixels, transfer->stride, 1) : 0;
+      if (pixels) pipe->texture_unmap(pipe, transfer);
+      pipe->bind_fs_state(pipe, NULL);
+      pipe->delete_fs_state(pipe, fs);
+      pipe->set_shader_buffers(pipe, MESA_SHADER_FRAGMENT, 0, 16, NULL, 0);
+      printf("[ps5-fragment-storage] atomic=%u slot=%u rc=%d words=%u/80 pixels=%u/64\n",
+         atomic, slot, rc, correct, pixel_ok);
+      fflush(stdout);
+      if (rc || correct != 80 || pixel_ok != 64) return 1;
+   }
+   return 0;
+}
+
 static int run_all_slots(struct pipe_context *pipe, uint32_t *words, size_t bytes)
 {
    int status = 1;
@@ -769,6 +835,7 @@ int main(void)
    for (unsigned kind = 0; kind < 3; ++kind)
       if (run_mips(pipe, sample_words, sample_bytes, 8, kind)) goto cleanup;
    if (run_all_slots(pipe, sample_words, sample_bytes)) goto cleanup;
+   if (run_fragment_storage(pipe, sample_output, sample_words, sample_bytes, target)) goto cleanup;
    status = 0;
 cleanup:
    if (pipe) {
