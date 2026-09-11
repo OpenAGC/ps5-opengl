@@ -116,12 +116,10 @@ check_buffer(const char *name, GLenum target, GLuint buffer, uint32_t expected)
 }
 
 static int
-dispatch_checked(const char *name, struct pipe_context *pipe,
-                 unsigned expected_dispatches, GLbitfield barriers)
+finish_dispatch(const char *name, struct pipe_context *pipe,
+                unsigned expected_dispatches, GLbitfield barriers)
 {
    unsigned dispatches = 0;
-   printf(TAG "%s dispatch begin\n", name);
-   glDispatchCompute(1, 1, 1);
    if (!check_gl("dispatch"))
       return 0;
    glMemoryBarrier(barriers);
@@ -132,6 +130,69 @@ dispatch_checked(const char *name, struct pipe_context *pipe,
    printf(TAG "%s native status=%d dispatches=%u expected=%u\n",
           name, status, dispatches, expected_dispatches);
    return check_gl("dispatch finish") && !status && dispatches == expected_dispatches;
+}
+
+static int
+dispatch_checked(const char *name, struct pipe_context *pipe,
+                 unsigned expected_dispatches, GLbitfield barriers)
+{
+   printf(TAG "%s dispatch begin\n", name);
+   glDispatchCompute(1, 1, 1);
+   return finish_dispatch(name, pipe, expected_dispatches, barriers);
+}
+
+/* Only the bounded 192-ID, 64-shared and 3-command-word fixtures use these. */
+static int
+reset_results(GLuint buffer, unsigned count)
+{
+   uint32_t words[208];
+   if (!count || count > 192)
+      return 0;
+   for (unsigned i = 0; i < count + 16; ++i)
+      words[i] = GUARD;
+   glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
+   glBufferData(GL_SHADER_STORAGE_BUFFER, (count + 16) * sizeof(*words), words, GL_DYNAMIC_DRAW);
+   glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, buffer, 32, count * sizeof(*words));
+   return check_gl("reset array output");
+}
+
+static int
+check_words(const char *name, GLuint buffer, const uint32_t *expected, unsigned count)
+{
+   uint32_t words[208] = {0};
+   if (count > 208)
+      return 0;
+   printf(TAG "%s readback begin\n", name);
+   glBindBuffer(GL_SHADER_STORAGE_BUFFER, buffer);
+   glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, count * sizeof(*words), words);
+   if (!check_gl("array readback"))
+      return 0;
+   for (unsigned i = 0; i < count; ++i) {
+      if (words[i] != expected[i]) {
+         printf(TAG "%s word=%u actual=%08x expected=%08x\n", name, i, words[i], expected[i]);
+         return 0;
+      }
+   }
+   printf(TAG "%s words=%u (including 16 guards) PASS\n", name, count);
+   return 1;
+}
+
+static int
+reject_indirect(const char *name, struct pipe_context *pipe, GLintptr offset,
+                GLenum expected_error, unsigned expected_dispatches)
+{
+   unsigned dispatches = 0;
+   if (!check_gl("indirect negative setup"))
+      return 0;
+   printf(TAG "%s indirect offset=%ld begin\n", name, (long)offset);
+   glDispatchComputeIndirect(offset);
+   GLenum error = glGetError();
+   glFinish();
+   int status = ps5_context_last_compute_status(pipe, &dispatches);
+   printf(TAG "%s error=%x expected=%x status=%d dispatches=%u expected=%u\n",
+          name, error, expected_error, status, dispatches, expected_dispatches);
+   return check_gl("indirect negative finish") && error == expected_error &&
+          !status && dispatches == expected_dispatches;
 }
 
 int
@@ -171,6 +232,41 @@ main(void)
       "layout(binding=7, offset=12) uniform atomic_uint counter;\n"
       "layout(std430) buffer Output { uint result; };\n"
       "void main() { result = atomicCounterIncrement(counter); }\n";
+   static const char *ids_source =
+      "#version 330\n"
+      "#extension GL_ARB_compute_shader : require\n"
+      "#extension GL_ARB_shader_storage_buffer_object : require\n"
+      "layout(local_size_x=4, local_size_y=2, local_size_z=2) in;\n"
+      "layout(std430) buffer Output { uint results[]; };\n"
+      "void main() {\n"
+      "  uvec3 p = gl_WorkGroupID * gl_WorkGroupSize + gl_LocalInvocationID;\n"
+      "  uint index = p.x + 8u * p.y + 48u * p.z;\n"
+      "  uint local_index = gl_LocalInvocationID.x + 4u * (gl_LocalInvocationID.y + 2u * gl_LocalInvocationID.z);\n"
+      "  if (index < 192u) results[index] =\n"
+      "    any(notEqual(p, gl_GlobalInvocationID)) || local_index != gl_LocalInvocationIndex\n"
+      "    ? 0xbad00000u : 3u * index + 17u + 7u * gl_NumWorkGroups.x +\n"
+      "      11u * gl_NumWorkGroups.y + 13u * gl_NumWorkGroups.z;\n"
+      "}\n";
+   static const char *shared_source =
+      "#version 330\n"
+      "#extension GL_ARB_compute_shader : require\n"
+      "#extension GL_ARB_shader_storage_buffer_object : require\n"
+      "layout(local_size_x=64) in;\n"
+      "shared uint values[64];\n"
+      "layout(std430) buffer Output { uint results[]; };\n"
+      "void main() {\n"
+      "  uint id = gl_LocalInvocationIndex;\n"
+      "  values[id] = 3u * id + 17u;\n"
+      "  barrier();\n"
+      "  results[id] = values[id ^ 32u];\n"
+      "}\n";
+   static const char *commands_source =
+      "#version 330\n"
+      "#extension GL_ARB_compute_shader : require\n"
+      "#extension GL_ARB_shader_storage_buffer_object : require\n"
+      "layout(local_size_x=3) in;\n"
+      "layout(std430) buffer Output { uint commands[]; };\n"
+      "void main() { uint id = gl_LocalInvocationIndex; commands[id] = id == 1u ? 3u : 2u; }\n";
    const EGLint config_attributes[] = {
       EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
       EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
@@ -191,6 +287,7 @@ main(void)
    EGLint count = 0;
    GLuint shader = 0, program = 0, buffers[2] = {0, 0};
    GLuint extra_shaders[3] = {0}, extra_programs[3] = {0};
+   GLuint grid_shaders[3] = {0}, grid_programs[3] = {0}, grid_buffers[2] = {0};
    GLuint texture = 0, atomic_buffer = 0;
    GLint major = 0, minor = 0, profile = 0;
    GLint addend = -1, block_size = 0, ubo_alignment = 0, ssbo_alignment = 0;
@@ -384,6 +481,80 @@ main(void)
        !check_buffer("retired atomic unchanged", GL_ATOMIC_COUNTER_BUFFER, atomic_buffer, 18))
       goto cleanup;
    puts(TAG "dispatch delta=9 (original 2 + image/sampler/atomic 6 + restored 1)");
+
+   if (!compile_program("3D IDs", ids_source, &grid_shaders[0], &grid_programs[0]) ||
+       !compile_program("shared xor32", shared_source, &grid_shaders[1], &grid_programs[1]) ||
+       !compile_program("indirect arguments", commands_source, &grid_shaders[2], &grid_programs[2]))
+      goto cleanup;
+   glGenBuffers(2, grid_buffers);
+   if (!check_gl("grid buffers") || !grid_buffers[0] || !grid_buffers[1])
+      goto cleanup;
+   uint32_t ids_expected[208], shared_expected[80], commands_expected[19];
+   for (unsigned i = 0; i < 208; ++i)
+      ids_expected[i] = i >= 8 && i < 200 ? 3 * (i - 8) + 90 : GUARD;
+   for (unsigned i = 0; i < 80; ++i)
+      shared_expected[i] = i >= 8 && i < 72 ? 3 * ((i - 8) ^ 32u) + 17 : GUARD;
+   for (unsigned i = 0; i < 19; ++i)
+      commands_expected[i] = i >= 8 && i < 11 ? (i == 9 ? 3 : 2) : GUARD;
+
+   glUseProgram(grid_programs[0]);
+   if (!reset_results(grid_buffers[0], 192))
+      goto cleanup;
+   puts(TAG "3D IDs direct dispatch begin");
+   glDispatchCompute(2, 3, 2);
+   if (!finish_dispatch("3D IDs direct", mesa->pipe, baseline + 10,
+                        GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT) ||
+       !check_words("3D IDs direct", grid_buffers[0], ids_expected, 208))
+      goto cleanup;
+
+   glUseProgram(grid_programs[1]);
+   if (!reset_results(grid_buffers[0], 64) ||
+       !dispatch_checked("shared xor32", mesa->pipe, baseline + 11,
+                         GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT) ||
+       !check_words("shared xor32", grid_buffers[0], shared_expected, 80))
+      goto cleanup;
+
+   glUseProgram(grid_programs[2]);
+   if (!reset_results(grid_buffers[1], 3) ||
+       !dispatch_checked("indirect arguments", mesa->pipe, baseline + 12,
+                         GL_COMMAND_BARRIER_BIT | GL_SHADER_STORAGE_BARRIER_BIT |
+                         GL_BUFFER_UPDATE_BARRIER_BIT) ||
+       !check_words("indirect arguments", grid_buffers[1], commands_expected, 19))
+      goto cleanup;
+   /* Check the GPU-generated counts before allowing indirect submission. */
+   glUseProgram(grid_programs[0]);
+   glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, 0);
+   if (!reject_indirect("missing indirect buffer", mesa->pipe, 32,
+                        GL_INVALID_OPERATION, baseline + 12))
+      goto cleanup;
+   glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, grid_buffers[1]);
+   if (!reject_indirect("misaligned indirect offset", mesa->pipe, 2,
+                        GL_INVALID_VALUE, baseline + 12) ||
+       /* 76-byte allocation: offset 68 leaves only 8 bytes, not the required 12. */
+       !reject_indirect("short indirect command range", mesa->pipe, 68,
+                        GL_INVALID_OPERATION, baseline + 12) ||
+       !reset_results(grid_buffers[0], 192))
+      goto cleanup;
+   glMemoryBarrier(GL_COMMAND_BARRIER_BIT);
+   if (!check_gl("indirect command barrier"))
+      goto cleanup;
+   puts(TAG "3D IDs indirect offset=32 dispatch begin");
+   glDispatchComputeIndirect(32);
+   if (!finish_dispatch("3D IDs indirect", mesa->pipe, baseline + 13,
+                        GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT) ||
+       !check_words("3D IDs indirect", grid_buffers[0], ids_expected, 208) ||
+       !check_words("indirect arguments unchanged", grid_buffers[1], commands_expected, 19))
+      goto cleanup;
+
+   glUseProgram(program);
+   glUniform1ui(addend, 7);
+   glBindBufferRange(GL_UNIFORM_BUFFER, 0, buffers[0], 16, 16);
+   if (!reset_output(buffers[1]) ||
+       !dispatch_checked("post-indirect defaults+UBO", mesa->pipe, baseline + 14,
+                         GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT) ||
+       !check_buffer("post-indirect output", GL_SHADER_STORAGE_BUFFER, buffers[1], 20))
+      goto cleanup;
+   puts(TAG "dispatch delta=14 (prior 9 + IDs/shared/arguments/indirect 4 + restored 1); negatives=3 PASS");
    passed = 1;
 
 cleanup:
@@ -406,7 +577,14 @@ cleanup:
          glDeleteTextures(1, &texture);
       }
       glDeleteBuffers(2, buffers);
+      if (grid_buffers[1])
+         glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, 0);
+      glDeleteBuffers(2, grid_buffers);
       for (unsigned i = 0; i < 3; ++i) {
+         if (grid_programs[i])
+            glDeleteProgram(grid_programs[i]);
+         if (grid_shaders[i])
+            glDeleteShader(grid_shaders[i]);
          if (extra_programs[i])
             glDeleteProgram(extra_programs[i]);
          if (extra_shaders[i])
