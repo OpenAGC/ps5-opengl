@@ -28,6 +28,8 @@ enum { CONTROL, GRID, SHARED, ATOMIC, FP32, FP64, BUFFER_RANGES, BUFFER_ALIAS,
        POST_BUFFER, UBO_RANGES, UBO_COPY, POST_UBO, INDIRECT_ARGS, INDIRECT,
        POST_INDIRECT, IMAGE_STORE, IMAGE_LOAD, IMAGE_SIZE, POST_IMAGE,
        IMAGE_BANK_STORE, IMAGE_BANK_LOAD, IMAGE_ATOMIC, POST_IMAGE_ATOMIC,
+       IMAGE_SINT_STORE, IMAGE_SINT_LOAD, IMAGE_SINT_ATOMIC, POST_SINT,
+       IMAGE_FLOAT_STORE, IMAGE_FLOAT_LOAD, POST_FLOAT,
        SCRATCH, SCRATCH_GRID, POST_SCRATCH };
 static const struct {
    const char *name;
@@ -57,6 +59,13 @@ static const struct {
    {"image-banks-load-8", {16, 1, 1}, {8, 1, 1}, 128},
    {"image-atomic-contention", {16, 1, 1}, {4, 1, 1}, 64},
    {"post-image-atomic-control", {16, 1, 1}, {1, 1, 1}, 16},
+   {"image-store-r32i", {16, 1, 1}, {1, 1, 1}, 16},
+   {"image-load-r32i", {16, 1, 1}, {1, 1, 1}, 16},
+   {"image-atomic-r32i", {16, 1, 1}, {4, 1, 1}, 64},
+   {"post-image-signed-control", {16, 1, 1}, {1, 1, 1}, 16},
+   {"image-store-r32f", {16, 1, 1}, {1, 1, 1}, 16},
+   {"image-load-r32f", {16, 1, 1}, {1, 1, 1}, 16},
+   {"post-image-float-control", {16, 1, 1}, {1, 1, 1}, 16},
    {"scratch-private-16", {16, 1, 1}, {1, 1, 1}, 16},
    {"scratch-private-128-grid", {64, 1, 1}, {4, 1, 1}, 256},
    {"post-scratch-control", {16, 1, 1}, {1, 1, 1}, 16},
@@ -71,6 +80,9 @@ static nir_shader *create_probe_shader(unsigned test)
    b.shader->info.num_ssbos = 16;
    b.shader->info.num_ubos = test == UBO_RANGES ? 15 : test == UBO_COPY ? 1 : 0;
    b.shader->info.num_images = test >= IMAGE_STORE && test <= IMAGE_ATOMIC ? 8 : 0;
+   if ((test >= IMAGE_SINT_STORE && test <= IMAGE_SINT_ATOMIC) ||
+       test == IMAGE_FLOAT_STORE || test == IMAGE_FLOAT_LOAD)
+      b.shader->info.num_images = 1;
    nir_def *local = nir_load_local_invocation_id(&b);
    nir_def *id = nir_channel(&b, local, 0);
    nir_def *value;
@@ -82,6 +94,31 @@ static nir_shader *create_probe_shader(unsigned test)
       x = nir_fmul(&b, x, nir_imm_floatN_t(&b, 0.25, bits));
       nir_def *large = nir_imm_floatN_t(&b, 1099511627776.0, bits); /* 2^40 */
       value = nir_fmul(&b, nir_fsub(&b, nir_fadd(&b, large, x), large), x);
+   } else if ((test >= IMAGE_SINT_STORE && test <= IMAGE_SINT_ATOMIC) ||
+              test == IMAGE_FLOAT_STORE || test == IMAGE_FLOAT_LOAD) {
+      const bool fp = test >= IMAGE_FLOAT_STORE;
+      const bool atomic = test == IMAGE_SINT_ATOMIC;
+      const enum pipe_format format = fp ? PIPE_FORMAT_R32_FLOAT : PIPE_FORMAT_R32_SINT;
+      const nir_alu_type type = fp ? nir_type_float32 : nir_type_int32;
+      nir_def *zero = nir_imm_int(&b, 0);
+      nir_def *x = atomic ? nir_imm_int(&b, 1) : nir_iadd_imm(&b, id, 1);
+      nir_def *coord = nir_vec4(&b, x, nir_imm_int(&b, 1), zero, zero);
+      value = fp ? nir_fmul_imm(&b, nir_i2f32(&b, nir_iadd_imm(&b, id, -8)), 0.25) :
+                   nir_iadd_imm(&b, nir_imul_imm(&b, id, 7), -1000);
+      if (test == IMAGE_SINT_STORE || test == IMAGE_FLOAT_STORE)
+         nir_image_store(&b, zero, coord, zero, nir_vec4(&b, value, zero, zero, zero), zero,
+            .image_dim = GLSL_SAMPLER_DIM_2D, .format = format, .src_type = type);
+      else if (atomic) {
+         value = nir_image_atomic(&b, 32, zero, coord, zero, nir_imm_int(&b, -1),
+            .image_dim = GLSL_SAMPLER_DIM_2D, .format = format, .atomic_op = nir_atomic_op_iadd);
+         id = nir_iadd(&b, id, nir_imul_imm(&b,
+            nir_channel(&b, nir_load_workgroup_id(&b), 0), 16));
+      } else {
+         value = nir_channel(&b, nir_image_load(&b, 4, 32, zero, coord, zero, zero,
+            .image_dim = GLSL_SAMPLER_DIM_2D, .format = format, .dest_type = type), 0);
+         value = fp ? nir_fadd_imm(&b, nir_fmul_imm(&b, value, 2.0), 0.125) :
+                      nir_iadd_imm(&b, value, -100);
+      }
    } else if ((test >= IMAGE_STORE && test <= IMAGE_SIZE) ||
               (test >= IMAGE_BANK_STORE && test <= IMAGE_ATOMIC)) {
       const bool bank = test == IMAGE_BANK_STORE || test == IMAGE_BANK_LOAD;
@@ -180,9 +217,10 @@ static unsigned count_correct(unsigned test, const uint32_t *output)
    unsigned correct = 0;
    bool seen[256] = {false};
    for (unsigned i = 0; i < cases[test].words; ++i) {
-      if ((test == ATOMIC && i < 256) || test == IMAGE_ATOMIC) {
-         const uint32_t value = output[i] - (test == IMAGE_ATOMIC ? 7017 : 0);
-         if (value < (test == IMAGE_ATOMIC ? 64u : 256u) && !seen[value]) {
+      if ((test == ATOMIC && i < 256) || test == IMAGE_ATOMIC || test == IMAGE_SINT_ATOMIC) {
+         const uint32_t value = test == IMAGE_SINT_ATOMIC ? (uint32_t)-1000 - output[i] :
+            output[i] - (test == IMAGE_ATOMIC ? 7017 : 0);
+         if (value < (test == ATOMIC ? 256u : 64u) && !seen[value]) {
             seen[value] = true;
             ++correct;
          }
@@ -198,6 +236,14 @@ static unsigned count_correct(unsigned test, const uint32_t *output)
             expected = 317;
          if (test == IMAGE_BANK_STORE || test == IMAGE_BANK_LOAD)
             expected = 1000 * (i / 16) + 17 + 3 * (i % 16) + (test == IMAGE_BANK_LOAD ? 100 : 0);
+         if (test == IMAGE_SINT_STORE || test == IMAGE_SINT_LOAD)
+            expected = (uint32_t)(-1000 + 7 * (int)i - (test == IMAGE_SINT_LOAD ? 100 : 0));
+         if (test == IMAGE_FLOAT_STORE || test == IMAGE_FLOAT_LOAD) {
+            float value = ((int)i - 8) * 0.25f;
+            if (test == IMAGE_FLOAT_LOAD)
+               value = value * 2.0f + 0.125f;
+            memcpy(&expected, &value, sizeof(expected));
+         }
          if (test == BUFFER_RANGES || test == BUFFER_ALIAS) {
             expected = 1000 + 101 * (i / 4) + 7 * (i % 4);
             if (test == BUFFER_ALIAS)
@@ -228,10 +274,21 @@ static unsigned count_image_correct(unsigned test, unsigned slot, const uint32_t
 {
    unsigned correct = 0;
    for (unsigned i = 0; i < IMAGE_WORDS; ++i) {
-      uint32_t expected = i >= 65 && i < 81 ?
-         (test >= IMAGE_BANK_STORE ? slot * 1000 : 0) + 17 + 3 * (i - 65) : GUARD_WORD;
-      if (test >= IMAGE_ATOMIC && slot == 7 && i == 65)
-         expected += 64;
+      uint32_t expected = GUARD_WORD;
+      if (i >= 65 && i < 81) {
+         if (test >= IMAGE_FLOAT_STORE) {
+            const float value = ((int)i - 65 - 8) * 0.25f;
+            memcpy(&expected, &value, sizeof(expected));
+         } else if (test >= IMAGE_SINT_STORE) {
+            expected = (uint32_t)(-1000 + 7 * ((int)i - 65));
+            if (test >= IMAGE_SINT_ATOMIC && i == 65)
+               expected -= 64;
+         } else {
+            expected = (test >= IMAGE_BANK_STORE ? slot * 1000 : 0) + 17 + 3 * (i - 65);
+            if (test >= IMAGE_ATOMIC && slot == 7 && i == 65)
+               expected += 64;
+         }
+      }
       correct += pixels[i] == expected;
    }
    return correct;
@@ -241,7 +298,7 @@ int main(void)
 {
    int status = 1;
    struct pipe_screen *screen = ps5_screen_create();
-   struct pipe_resource *buffers[11] = {0};
+   struct pipe_resource *buffers[13] = {0};
    PsbcShaderOutput compiled = {0};
    if (!screen)
       return 1;
@@ -270,11 +327,12 @@ int main(void)
       .width0 = 17, .height0 = 3, .depth0 = 1, .array_size = 1,
       .bind = PIPE_BIND_SHADER_IMAGE | PIPE_BIND_SAMPLER_VIEW,
    };
-   struct pipe_resource *images[8] = {0};
-   void *image_data[8] = {0};
-   for (unsigned slot = 0; slot < 8; ++slot) {
+   struct pipe_resource *images[10] = {0};
+   void *image_data[10] = {0};
+   for (unsigned slot = 0; slot < ARRAY_SIZE(images); ++slot) {
       size_t image_size = 0;
-      images[slot] = buffers[slot == 7 ? 3 : 4 + slot] = screen->resource_create(screen, &templ);
+      templ.format = slot == 9 ? PIPE_FORMAT_R32_FLOAT : slot == 8 ? PIPE_FORMAT_R32_SINT : PIPE_FORMAT_R32_UINT;
+      images[slot] = buffers[slot < 8 ? (slot == 7 ? 3 : 4 + slot) : slot + 3] = screen->resource_create(screen, &templ);
       if (!images[slot] || ps5_resource_info(images[slot], &image_data[slot], &image_size, NULL) ||
           !image_data[slot] || image_size != IMAGE_WORDS * sizeof(uint32_t))
          goto cleanup;
@@ -372,6 +430,12 @@ int main(void)
                .format = PIPE_FORMAT_R32_UINT, .access = PIPE_IMAGE_ACCESS_READ_WRITE};
          pipe->set_shader_images(pipe, MESA_SHADER_COMPUTE, 0, 8, 0, views);
       }
+      if (test == IMAGE_SINT_STORE || test == IMAGE_FLOAT_STORE) {
+         struct pipe_resource *image = images[test == IMAGE_SINT_STORE ? 8 : 9];
+         const struct pipe_image_view view = {.resource = image,
+            .format = image->format, .access = PIPE_IMAGE_ACCESS_READ_WRITE};
+         pipe->set_shader_images(pipe, MESA_SHADER_COMPUTE, 0, 1, 7, &view);
+      }
       pipe->set_shader_buffers(pipe, MESA_SHADER_COMPUTE, 0, 16, bindings, 1u << OUTPUT_BINDING);
       for (unsigned i = 0; i < 15; ++i) {
          const struct pipe_shader_buffer *bound = &bindings[16 + i];
@@ -424,9 +488,15 @@ int main(void)
       memcpy(input + INPUT_WORDS, user_constants, sizeof(user_constants));
       memset(user_constants, 0, sizeof(user_constants));
       memset(table, 0, 31 * 16 + 8 * 32);
-      for (unsigned slot = test >= IMAGE_BANK_STORE ? 0 : 7; test >= IMAGE_STORE && slot < 8; ++slot)
-         if (ps5_resource_storage_image_descriptor(images[slot], (uint32_t *)table + 31 * 4 + slot * 8))
+      if (test >= IMAGE_SINT_STORE) {
+         if (ps5_resource_storage_image_descriptor(images[test >= IMAGE_FLOAT_STORE ? 9 : 8],
+               (uint32_t *)table + 31 * 4))
             goto cleanup;
+      } else {
+         for (unsigned slot = test >= IMAGE_BANK_STORE ? 0 : 7; test >= IMAGE_STORE && slot < 8; ++slot)
+            if (ps5_resource_storage_image_descriptor(images[slot], (uint32_t *)table + 31 * 4 + slot * 8))
+               goto cleanup;
+      }
       for (unsigned i = 0; i < ARRAY_SIZE(bindings); ++i) {
          const struct pipe_shader_buffer *bound = &bindings[i];
          if (!bound->buffer)
@@ -451,7 +521,7 @@ int main(void)
          goto cleanup;
       uint32_t direct_groups[3];
       memcpy(direct_groups, test == INDIRECT ? output : cases[test].groups, sizeof(direct_groups));
-      int rc = ps5_agc_compute_execute(screen, &compiled, buffers[0], buffers + 1, 10, direct_groups);
+      int rc = ps5_agc_compute_execute(screen, &compiled, buffers[0], buffers + 1, 12, direct_groups);
 #endif
       unsigned correct = count_correct(test, output), guards = 0;
       for (unsigned i = cases[test].words; i < OUTPUT_WORDS; ++i)
@@ -469,8 +539,11 @@ int main(void)
       }
       status |= input_correct != INPUT_WORDS;
       if (test >= IMAGE_STORE) {
-         unsigned image_correct = 0, image_expected = test >= IMAGE_BANK_STORE ? 8 * IMAGE_WORDS : IMAGE_WORDS;
-         for (unsigned slot = test >= IMAGE_BANK_STORE ? 0 : 7; slot < 8; ++slot)
+         const unsigned first = test >= IMAGE_FLOAT_STORE ? 9 : test >= IMAGE_SINT_STORE ? 8 :
+                                test >= IMAGE_BANK_STORE ? 0 : 7;
+         const unsigned end = first >= 8 ? first + 1 : 8;
+         unsigned image_correct = 0, image_expected = (end - first) * IMAGE_WORDS;
+         for (unsigned slot = first; slot < end; ++slot)
             image_correct += count_image_correct(test, slot, image_data[slot]);
          status |= image_correct != image_expected;
          printf("[ps5-compute] image-pixels-and-padding=%u/%u status=%d\n", image_correct, image_expected, status);
@@ -492,8 +565,10 @@ int main(void)
       if (test == IMAGE_STORE)
          pipe_resource_reference(&buffers[3], NULL); /* Validated binding owns the later reads. */
       if (test == IMAGE_BANK_STORE)
-         for (unsigned i = 4; i < ARRAY_SIZE(buffers); ++i)
+         for (unsigned i = 4; i < 11; ++i)
             pipe_resource_reference(&buffers[i], NULL);
+      if (test == IMAGE_SINT_STORE || test == IMAGE_FLOAT_STORE)
+         pipe_resource_reference(&buffers[test == IMAGE_SINT_STORE ? 11 : 12], NULL);
 #endif
       psbc_free_output(&compiled);
       memset(&compiled, 0, sizeof(compiled));

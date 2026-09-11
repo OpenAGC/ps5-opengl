@@ -3654,7 +3654,8 @@ ps5_resource_storage_image_descriptor(struct pipe_resource *base, uint32_t descr
    const struct ps5_resource *resource = (const struct ps5_resource *)base;
    uint32_t format;
    if (!base || !descriptor || base->target != PIPE_TEXTURE_2D ||
-       base->format != PIPE_FORMAT_R32_UINT || !base->width0 || !base->height0 ||
+       (base->format != PIPE_FORMAT_R32_UINT && base->format != PIPE_FORMAT_R32_SINT &&
+        base->format != PIPE_FORMAT_R32_FLOAT) || !base->width0 || !base->height0 ||
        base->width0 > PS5_MAX_TEXTURE_2D_SIZE || base->height0 > PS5_MAX_TEXTURE_2D_SIZE ||
        base->depth0 != 1 || base->array_size != 1 || base->last_level ||
        base->nr_samples > 1 || base->nr_storage_samples > 1 ||
@@ -10312,7 +10313,7 @@ ps5_set_shader_images(struct pipe_context *base, mesa_shader_stage stage,
       uint32_t descriptor[8];
       if (!v->resource)
          continue;
-      if (v->resource->screen != base->screen || v->format != PIPE_FORMAT_R32_UINT ||
+      if (v->resource->screen != base->screen || v->format != v->resource->format ||
           !(v->access & PIPE_IMAGE_ACCESS_READ_WRITE) ||
           ((v->access | v->shader_access) & ~(PIPE_IMAGE_ACCESS_READ_WRITE |
               PIPE_IMAGE_ACCESS_COHERENT | PIPE_IMAGE_ACCESS_VOLATILE)) ||

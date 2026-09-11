@@ -54,7 +54,9 @@ static bool multi, with_constants, fail_upload;
 static bool fail_info;
 static struct ps5_resource *upload_resource;
 static bool ps5_texture_descriptor_format(enum pipe_format f,uint32_t *word) {
-    assert(f==PIPE_FORMAT_R32_UINT); *word=0x1400000; return true;
+    assert(f==PIPE_FORMAT_R32_UINT || f==PIPE_FORMAT_R32_SINT || f==PIPE_FORMAT_R32_FLOAT);
+    *word=f==PIPE_FORMAT_R32_UINT ? 0x1400000 : f==PIPE_FORMAT_R32_SINT ? 0x1500000 : 0x1600000;
+    return true;
 }
 ''' + image_descriptor + r'''
 static int ps5_resource_info(struct pipe_resource *base, void **address, size_t *size, size_t *allocation) {
@@ -302,10 +304,22 @@ int main(void) {
     assert(descriptor[0]==(uint32_t)((uintptr_t)pixels>>8));
     assert(descriptor[2]==(4u|(2u<<14)|0x80000000u));
     assert(descriptor[3]==0x90000fac && descriptor[4]==63 && descriptor[5]==0x400000);
+    const enum pipe_format scalar_formats[]={PIPE_FORMAT_R32_UINT,PIPE_FORMAT_R32_SINT,PIPE_FORMAT_R32_FLOAT};
+    for(unsigned i=0;i<3;++i) {
+        struct ps5_resource typed=image; typed.base.format=scalar_formats[i];
+        assert(!ps5_resource_storage_image_descriptor(&typed.base,descriptor));
+        assert((descriptor[1]&0x3ff00000u)==(0x1400000u+i*0x100000u));
+        pipe_reference_init(&typed.base.reference,1);
+        struct pipe_image_view v={.resource=&typed.base,.format=typed.base.format,.access=PIPE_IMAGE_ACCESS_READ_WRITE};
+        ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,1,0,&v);
+        assert(!context.compute_images_invalid && typed.base.reference.count==2);
+        ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,0,1,NULL);
+        assert(!context.compute_images_invalid && typed.base.reference.count==1);
+    }
     for(unsigned fault=0;fault<15;++fault) {
         struct ps5_resource bad=image;
         if(fault==0) bad.base.target=PIPE_BUFFER;
-        if(fault==1) bad.base.format=PIPE_FORMAT_R32_FLOAT;
+        if(fault==1) bad.base.format=PIPE_FORMAT_R16_FLOAT;
         if(fault==2) bad.base.width0=0;
         if(fault==3) bad.base.height0=8193;
         if(fault==4) bad.base.depth0=2;
