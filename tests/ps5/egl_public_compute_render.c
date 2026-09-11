@@ -103,12 +103,21 @@ int main(void)
    int status = 1;
    struct pipe_screen *screen = ps5_screen_create();
    struct pipe_context *pipe = screen ? screen->context_create(screen, NULL, 0) : NULL;
-   struct pipe_resource *image = NULL, *target = NULL;
+   struct pipe_resource *image = NULL, *target = NULL, *render_pool = NULL;
    struct pipe_sampler_view *view = NULL;
    void *cs = NULL, *vs = NULL, *fs = NULL, *sampler = NULL;
    void *blend = NULL, *rasterizer = NULL, *depth = NULL;
    psbc_init();
    if (!pipe)
+      goto cleanup;
+   /* The graphics backend requires its normal render pool even for offscreen
+    * draws. Allocate it without opening VideoOut or presenting a frame. */
+   const struct pipe_resource pool_template = {.target = PIPE_TEXTURE_2D,
+      .format = PIPE_FORMAT_R8G8B8A8_UNORM, .width0 = PS5_SCANOUT_WIDTH,
+      .height0 = PS5_SCANOUT_HEIGHT, .depth0 = 1, .array_size = 1,
+      .bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_DISPLAY_TARGET};
+   render_pool = screen->resource_create(screen, &pool_template);
+   if (!render_pool)
       goto cleanup;
    struct pipe_resource templ = {.target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_R32_FLOAT,
       .width0 = 17, .height0 = 3, .depth0 = 1, .array_size = 1,
@@ -224,6 +233,7 @@ cleanup:
    }
    pipe_resource_reference(&image, NULL);
    pipe_resource_reference(&target, NULL);
+   pipe_resource_reference(&render_pool, NULL);
    if (screen) screen->destroy(screen);
    psbc_shutdown();
    printf("[ps5-compute-render] result=%d\n", status);
