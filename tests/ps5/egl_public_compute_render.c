@@ -148,8 +148,9 @@ static uint32_t expected_red(unsigned kind, unsigned x, float sign)
    return word;
 }
 
-static nir_shader *compute_mip(unsigned operation, unsigned unit, unsigned level, bool array)
+static nir_shader *compute_mip(unsigned operation, unsigned unit, unsigned level, unsigned layers, unsigned kind)
 {
+   const bool array = layers > 1;
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
       psbc_get_nir_options(PSBC_STAGE_COMPUTE), "compute-mip");
    b.shader->info.workgroup_size[0] = 16;
@@ -158,14 +159,14 @@ static nir_shader *compute_mip(unsigned operation, unsigned unit, unsigned level
    b.shader->info.num_textures = unit + 1;
    BITSET_SET(b.shader->info.textures_used, unit);
    nir_def *id = nir_channel(&b, nir_load_local_invocation_id(&b), 0);
-   nir_def *layer = nir_umod_imm(&b, id, 3);
+   nir_def *layer = nir_umod_imm(&b, id, layers);
    nir_tex_instr *tex = nir_tex_instr_create(b.shader, operation == 1 ? 1 : 2);
    tex->op = operation == 1 ? nir_texop_txs : operation >= 2 ? nir_texop_txl : nir_texop_txf;
    tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
    tex->is_array = array;
    tex->texture_index = tex->sampler_index = unit;
    tex->coord_components = operation == 1 ? 0 : array ? 3 : 2;
-   tex->dest_type = operation == 1 ? nir_type_int32 : nir_type_float32;
+   tex->dest_type = operation == 1 || kind == 2 ? nir_type_int32 : kind == 1 ? nir_type_uint32 : nir_type_float32;
    tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_lod, operation >= 2 ?
       nir_imm_float(&b, level + (operation == 3 ? 0.5 : 0)) : nir_imm_int(&b, level));
    if (operation != 1) {
@@ -183,7 +184,7 @@ static nir_shader *compute_mip(unsigned operation, unsigned unit, unsigned level
    return b.shader;
 }
 
-static nir_shader *write_mip(unsigned level, bool array)
+static nir_shader *write_mip(unsigned level, bool array, unsigned kind)
 {
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
       psbc_get_nir_options(PSBC_STAGE_COMPUTE), "write-mip");
@@ -198,17 +199,33 @@ static nir_shader *write_mip(unsigned level, bool array)
    nir_def *layer = array ? nir_channel(&b, nir_load_workgroup_id(&b), 1) : zero;
    nir_def *value = nir_fmul(&b, sign, nir_fadd_imm(&b,
       nir_fmul_imm(&b, nir_u2f32(&b, layer), 16), (float)(1u << level)));
+   if (kind == 1)
+      value = nir_iadd(&b, nir_bcsel(&b, nir_flt_imm(&b, sign, 0),
+         nir_imm_int(&b, 0x80000000u), nir_imm_int(&b, 0x10000000u)),
+         nir_iadd_imm(&b, nir_imul_imm(&b, layer, 0x10000), 1u << level));
+   if (kind == 2)
+      value = nir_imul(&b, nir_f2i32(&b, sign),
+         nir_iadd_imm(&b, nir_imul_imm(&b, layer, 16), 1000 + (1u << level)));
    nir_image_store(&b, zero, nir_vec4(&b, nir_iand_imm(&b, id, (16u >> level) - 1),
       nir_ushr_imm(&b, id, 4 - level), layer, zero), zero,
       nir_vec4(&b, value, zero, zero, zero), zero, .image_dim = GLSL_SAMPLER_DIM_2D,
-      .format = PIPE_FORMAT_R32_FLOAT, .src_type = nir_type_float32, .image_array = array);
+      .format = image_formats[kind], .src_type = kind == 1 ? nir_type_uint32 : kind == 2 ? nir_type_int32 : nir_type_float32,
+      .image_array = array);
    nir_pop_if(&b, NULL);
    return b.shader;
 }
 
-static unsigned count_mip(const uint32_t *words, unsigned operation, unsigned physical_level, float sign, unsigned layers)
+static uint32_t mip_word(unsigned kind, unsigned level, unsigned layer, float sign, bool linear)
 {
-   uint32_t expected[4] = {0, 0, 0, 0x3f800000};
+   if (kind == 1) return (sign < 0 ? 0x80000000u : 0x10000000u) + layer * 0x10000u + (1u << level);
+   if (kind == 2) return (uint32_t)((int)sign * (int)(1000 + layer * 16 + (1u << level)));
+   float value = sign * (layer * 16.0f + (float)(1u << level) * (linear ? 1.5f : 1.0f));
+   uint32_t bits; memcpy(&bits, &value, 4); return bits;
+}
+
+static unsigned count_mip(const uint32_t *words, unsigned operation, unsigned physical_level, float sign, unsigned layers, unsigned kind)
+{
+   uint32_t expected[4] = {0, 0, 0, kind ? 1 : 0x3f800000};
    if (operation == 1) {
       expected[0] = 16u >> physical_level;
       expected[1] = 8u >> physical_level;
@@ -219,8 +236,7 @@ static unsigned count_mip(const uint32_t *words, unsigned operation, unsigned ph
    for (unsigned i = 0; i < 80; ++i) {
       if (operation != 1 && i >= 8 && i < 72) {
          const unsigned layer = ((i - 8) / 4) % layers;
-         float value = sign * (layer * 16.0f + (float)(1u << physical_level) * (operation == 3 ? 1.5f : 1.0f));
-         memcpy(expected, &value, 4);
+         expected[0] = mip_word(kind, physical_level, layer, sign, operation == 3);
       }
       correct += words[i] == (i < 8 || i >= 72 ? GUARD_WORD : expected[(i - 8) % 4]);
    }
@@ -278,7 +294,7 @@ static unsigned count_pixels(const uint8_t *pixels, unsigned stride, float sign)
    return correct;
 }
 
-static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, unsigned layers)
+static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, unsigned layers, unsigned kind)
 {
    int status = 1;
    struct pipe_resource *image = NULL;
@@ -286,7 +302,7 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
    void *states[2] = {0}, *shaders[4][2][4] = {{{0}}}, *writers[4] = {0};
    const unsigned first[3] = {0, 1, 2}, last[3] = {3, 3, 2};
    const struct pipe_resource templ = {.target = layers > 1 ? PIPE_TEXTURE_2D_ARRAY : PIPE_TEXTURE_2D,
-      .format = PIPE_FORMAT_R32_FLOAT,
+      .format = image_formats[kind],
       .width0 = 16, .height0 = 8, .depth0 = 1, .array_size = layers, .last_level = 3,
       .bind = PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_SHADER_IMAGE};
    image = pipe->screen->resource_create(pipe->screen, &templ);
@@ -298,13 +314,13 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
       uint8_t *mapped = pipe_texture_map(pipe, image, level, layer, PIPE_MAP_WRITE,
          0, 0, 16 >> level, 8 >> level, &transfer);
       if (!mapped) goto cleanup;
-      const float value = layer * 16.0f + (float)(1u << level);
+      const uint32_t value = mip_word(kind, level, layer, 1, false);
       for (unsigned y = 0; y < (8u >> level); ++y) for (unsigned x = 0; x < (16u >> level); ++x)
          memcpy(mapped + y * transfer->stride + x * 4, &value, 4);
       pipe->texture_unmap(pipe, transfer);
    }
    for (unsigned i = 0; i < 3; ++i) {
-      struct pipe_sampler_view sv = {.target = templ.target, .format = PIPE_FORMAT_R32_FLOAT,
+      struct pipe_sampler_view sv = {.target = templ.target, .format = templ.format,
          .swizzle_r = PIPE_SWIZZLE_X, .swizzle_g = PIPE_SWIZZLE_Y,
          .swizzle_b = PIPE_SWIZZLE_Z, .swizzle_a = PIPE_SWIZZLE_W};
       sv.u.tex.first_level = first[i]; sv.u.tex.last_level = last[i];
@@ -320,15 +336,15 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
       states[i] = pipe->create_sampler_state(pipe, &ss);
       if (!states[i]) goto cleanup;
    }
-   for (unsigned op = 0; op < 4; ++op) for (unsigned unit = 0; unit < 2; ++unit)
+   for (unsigned op = 0; op < (kind ? 2u : 4u); ++op) for (unsigned unit = 0; unit < 2; ++unit)
       for (unsigned level = 0; level < (op == 3 ? 1u : 4u); ++level) {
          struct pipe_compute_state cs = {.ir_type = PIPE_SHADER_IR_NIR,
-            .prog = compute_mip(op, unit ? 7 : 0, level, layers > 1)};
+            .prog = compute_mip(op, unit ? 7 : 0, level, layers, kind)};
          shaders[op][unit][level] = pipe->create_compute_state(pipe, &cs);
          if (!shaders[op][unit][level]) goto cleanup;
       }
    for (unsigned level = 0; level < 4; ++level) {
-      struct pipe_compute_state cs = {.ir_type = PIPE_SHADER_IR_NIR, .prog = write_mip(level, layers > 1)};
+      struct pipe_compute_state cs = {.ir_type = PIPE_SHADER_IR_NIR, .prog = write_mip(level, layers > 1, kind)};
       writers[level] = pipe->create_compute_state(pipe, &cs);
       if (!writers[level]) goto cleanup;
    }
@@ -343,7 +359,7 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
       const struct pipe_grid_info writer_grid = {.work_dim = layers > 1 ? 2 : 1,
          .block = {16, 1, 1}, .grid = {8, layers, 1}};
       for (unsigned level = 0; level < 4; ++level) {
-         struct pipe_image_view iv = {.resource = image, .format = PIPE_FORMAT_R32_FLOAT,
+         struct pipe_image_view iv = {.resource = image, .format = image_formats[kind],
             .access = PIPE_IMAGE_ACCESS_WRITE};
          iv.u.tex.level = level;
          iv.u.tex.last_layer = layers - 1;
@@ -352,12 +368,12 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
          pipe->launch_grid(pipe, &writer_grid);
          unsigned dispatches = 0;
          int rc = ps5_context_last_compute_status(pipe, &dispatches);
-         printf("[ps5-compute-mip-write] layers=%u pass=%u level=%u rc=%d dispatches=%u\n", layers, pass, level, rc, dispatches);
+         printf("[ps5-compute-mip-write] kind=%u layers=%u pass=%u level=%u rc=%d dispatches=%u\n", kind, layers, pass, level, rc, dispatches);
          fflush(stdout);
          if (rc || dispatches != ++expected_dispatches) goto cleanup;
       }
    }
-   for (unsigned view = 0; view < 3; ++view) for (unsigned op = 0; op < 4; ++op)
+   for (unsigned view = 0; view < 3; ++view) for (unsigned op = 0; op < (kind ? 2u : 4u); ++op)
       for (unsigned unit = 0; unit < 2; ++unit)
          for (unsigned level = 0; level < (op == 3 ? (last[view] > first[view] ? 1u : 0u) : last[view] - first[view] + 1); ++level) {
             const unsigned slot = unit ? 7 : 0;
@@ -368,21 +384,21 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
             pipe->launch_grid(pipe, &grid);
             unsigned dispatches = 0;
             int rc = ps5_context_last_compute_status(pipe, &dispatches);
-            unsigned correct = count_mip(words, op, first[view] + level, sign, layers);
-            printf("[ps5-compute-mip] layers=%u pass=%u view=%u op=%u unit=%u lod=%u rc=%d dispatches=%u words=%u/80 first=%08x,%08x\n",
-               layers, pass, view, op, slot, level, rc, dispatches, correct, words[8], words[9]);
+            unsigned correct = count_mip(words, op, first[view] + level, sign, layers, kind);
+            printf("[ps5-compute-mip] kind=%u layers=%u pass=%u view=%u op=%u unit=%u lod=%u rc=%d dispatches=%u words=%u/80 first=%08x,%08x\n",
+               kind, layers, pass, view, op, slot, level, rc, dispatches, correct, words[8], words[9]);
             fflush(stdout);
             if (rc || dispatches != ++expected_dispatches || correct != 80) goto cleanup;
          }
    /* Check all uploaded pixels and row padding after sampling. */
    unsigned offset = 0, correct = 0;
    for (unsigned layer = 0; layer < layers; ++layer) for (unsigned level = 4; level-- > 0;) {
-      const float value = sign * (layer * 16.0f + (float)(1u << level)); uint32_t bits; memcpy(&bits, &value, 4);
+      const uint32_t bits = mip_word(kind, level, layer, sign, false);
       for (unsigned y = 0; y < (8u >> level); ++y) for (unsigned x = 0; x < 64; ++x)
          correct += ((uint32_t *)data)[offset + y * 64 + x] == (x < (16u >> level) ? bits : GUARD_WORD);
       offset += (8u >> level) * 64;
    }
-   printf("[ps5-compute-mip] layers=%u pass=%u image=%u/%u\n", layers, pass, correct, 960 * layers);
+   printf("[ps5-compute-mip] kind=%u layers=%u pass=%u image=%u/%u\n", kind, layers, pass, correct, 960 * layers);
    if (correct != 960 * layers) goto cleanup;
    }
    status = 0;
@@ -619,7 +635,9 @@ int main(void)
       printf("[ps5-compute-filtered] phase=%u image=%u/%u\n", phase, image_ok, IMAGE_WORDS);
       if (image_ok != IMAGE_WORDS) goto cleanup;
    }
-   if (run_mips(pipe, sample_words, sample_bytes, 1) || run_mips(pipe, sample_words, sample_bytes, 3)) goto cleanup;
+   if (run_mips(pipe, sample_words, sample_bytes, 1, 0) || run_mips(pipe, sample_words, sample_bytes, 3, 0)) goto cleanup;
+   for (unsigned kind = 0; kind < 3; ++kind)
+      if (run_mips(pipe, sample_words, sample_bytes, 8, kind)) goto cleanup;
    status = 0;
 cleanup:
    if (pipe) {
