@@ -24,7 +24,7 @@
 #define PREFIX_WORDS 0
 #endif
 enum { CONTROL, GRID, SHARED, ATOMIC, FP32, FP64, BUFFER_RANGES, BUFFER_ALIAS,
-       POST_BUFFER, SCRATCH, SCRATCH_GRID, POST_SCRATCH };
+       POST_BUFFER, UBO_RANGES, UBO_COPY, POST_UBO, SCRATCH, SCRATCH_GRID, POST_SCRATCH };
 static const struct {
    const char *name;
    uint32_t local[3], groups[3];
@@ -39,6 +39,9 @@ static const struct {
    {"buffer-ranges-15", {4, 1, 1}, {15, 1, 1}, 60},
    {"buffer-alias-consumer", {4, 1, 1}, {15, 1, 1}, 60},
    {"post-buffer-control", {16, 1, 1}, {1, 1, 1}, 16},
+   {"ubo-ssbo-ranges-31", {4, 1, 1}, {15, 1, 1}, 60},
+   {"ubo-copied-constants", {16, 1, 1}, {1, 1, 1}, 16},
+   {"post-ubo-control", {16, 1, 1}, {1, 1, 1}, 16},
    {"scratch-private-16", {16, 1, 1}, {1, 1, 1}, 16},
    {"scratch-private-128-grid", {64, 1, 1}, {4, 1, 1}, 256},
    {"post-scratch-control", {16, 1, 1}, {1, 1, 1}, 16},
@@ -51,6 +54,7 @@ static nir_shader *create_probe_shader(unsigned test)
    for (unsigned axis = 0; axis < 3; ++axis)
       b.shader->info.workgroup_size[axis] = cases[test].local[axis];
    b.shader->info.num_ssbos = 16;
+   b.shader->info.num_ubos = test == UBO_RANGES ? 15 : test == UBO_COPY ? 1 : 0;
    nir_def *local = nir_load_local_invocation_id(&b);
    nir_def *id = nir_channel(&b, local, 0);
    nir_def *value;
@@ -62,14 +66,22 @@ static nir_shader *create_probe_shader(unsigned test)
       x = nir_fmul(&b, x, nir_imm_floatN_t(&b, 0.25, bits));
       nir_def *large = nir_imm_floatN_t(&b, 1099511627776.0, bits); /* 2^40 */
       value = nir_fmul(&b, nir_fsub(&b, nir_fadd(&b, large, x), large), x);
-   } else if (test == BUFFER_RANGES || test == BUFFER_ALIAS) {
+   } else if (test == UBO_COPY) {
+      value = nir_load_ubo(&b, 1, 32, nir_imm_int(&b, 0), nir_imul_imm(&b, id, 4),
+         .align_mul = 4, .range = 64);
+   } else if (test == BUFFER_RANGES || test == BUFFER_ALIAS || test == UBO_RANGES) {
       nir_def *group = nir_channel(&b, nir_load_workgroup_id(&b), 0);
       nir_def *global = nir_iadd(&b, id, nir_imul_imm(&b, group, 4));
       /* Workgroup-uniform dynamic block index; all fifteen ranges are live. */
-      nir_def *slot = test == BUFFER_RANGES ? group : nir_imm_int(&b, 0);
+      nir_def *slot = test != BUFFER_ALIAS ? group : nir_imm_int(&b, 0);
       slot = nir_iadd_imm(&b, slot, OUTPUT_BINDING == 0 ? 1 : 0);
-      nir_def *offset = nir_imul_imm(&b, test == BUFFER_RANGES ? id : global, 4);
+      nir_def *offset = nir_imul_imm(&b, test != BUFFER_ALIAS ? id : global, 4);
       value = nir_load_ssbo(&b, 1, 32, slot, offset, .align_mul = 4);
+      if (test == UBO_RANGES) {
+         nir_def *constant = nir_load_ubo(&b, 1, 32, group, offset,
+            .align_mul = 4, .range = 16);
+         value = nir_iadd(&b, constant, nir_imul_imm(&b, value, 3));
+      }
       if (test == BUFFER_ALIAS)
          value = nir_iadd_imm(&b, nir_imul_imm(&b, value, 5), 2);
       id = global;
@@ -139,6 +151,10 @@ static unsigned count_correct(unsigned test, const uint32_t *output)
             if (test == BUFFER_ALIAS)
                expected = 5 * expected + 2;
          }
+         if (test == UBO_RANGES)
+            expected = 5414 + 202 * (i / 4) + 28 * (i % 4);
+         if (test == UBO_COPY)
+            expected = 700 + 11 * i;
          if (test == ATOMIC)
             expected = 256;
          if (test == FP32)
@@ -167,7 +183,8 @@ int main(void)
 #ifdef PS5_COMPUTE_PIPE_PROBE
    struct pipe_context *pipe = screen->context_create(screen, NULL, 0);
    void *state = NULL;
-   if (!pipe || !pipe->create_compute_state || !pipe->launch_grid || !pipe->set_shader_buffers)
+   if (!pipe || !pipe->create_compute_state || !pipe->launch_grid ||
+       !pipe->set_shader_buffers || !pipe->set_constant_buffer)
       goto cleanup;
 #endif
    struct pipe_resource templ = {
@@ -177,8 +194,8 @@ int main(void)
    };
    void *table = NULL, *output = NULL, *input_data = NULL;
    for (unsigned i = 0; i < ARRAY_SIZE(buffers); ++i) {
-      templ.width0 = i == 2 ? INPUT_WORDS * sizeof(uint32_t) :
-         i == 1 ? (OUTPUT_WORDS + PREFIX_WORDS) * sizeof(uint32_t) : 256;
+      templ.width0 = i == 2 ? (INPUT_WORDS + 16) * sizeof(uint32_t) :
+         i == 1 ? (OUTPUT_WORDS + PREFIX_WORDS) * sizeof(uint32_t) : 31 * 16;
       buffers[i] = screen->resource_create(screen, &templ);
       if (!buffers[i])
          goto cleanup;
@@ -198,10 +215,14 @@ int main(void)
    PsbcCompileOptions opts = {
       .target = PSBC_TARGET_PS5, .stage = PSBC_STAGE_COMPUTE,
       .optimise = true, .address32_hi = (uintptr_t)table >> 32,
-      .gallium_buffer_arrays = true, .descriptor_binding_count = 1,
+      .gallium_buffer_arrays = true, .descriptor_binding_count = 2,
       .descriptor_bindings = {{
          .binding = PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
          .type = PSBC_DESCRIPTOR_STORAGE_BUFFER, .array_size = 16, .stride = 16,
+      }, {
+         .binding = PSBC_GALLIUM_UBO_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
+         .type = PSBC_DESCRIPTOR_UNIFORM_BUFFER, .array_size = 15, .stride = 16,
+         .offset = 16 * 16,
       }},
    };
 #endif
@@ -213,17 +234,30 @@ int main(void)
          memset(prefix, 0xcd, (OUTPUT_WORDS + PREFIX_WORDS) * sizeof(uint32_t));
       if (test == ATOMIC)
          ((uint32_t *)output)[256] = 0;
-      struct pipe_shader_buffer bindings[16] = {0};
+      struct pipe_shader_buffer bindings[31] = {0};
+      uint32_t user_constants[16];
+      for (unsigned i = 0; i < ARRAY_SIZE(user_constants); ++i)
+         user_constants[i] = 700 + 11 * i;
       bindings[OUTPUT_BINDING] = (struct pipe_shader_buffer){
          output_buffer, PREFIX_WORDS * sizeof(uint32_t), cases[test].words * sizeof(uint32_t)
       };
-      if (test == BUFFER_RANGES) {
+      if (test == BUFFER_RANGES || test == UBO_RANGES) {
          for (unsigned i = 0; i < 15; ++i)
             bindings[i + (OUTPUT_BINDING == 0)] = (struct pipe_shader_buffer){
                buffers[2], (i * 16 + 4) * sizeof(uint32_t), 4 * sizeof(uint32_t)
             };
       } else if (test == BUFFER_ALIAS) {
          bindings[OUTPUT_BINDING == 0 ? 1 : 0] = bindings[OUTPUT_BINDING];
+      }
+      if (test == UBO_RANGES) {
+         for (unsigned i = 0; i < 15; ++i)
+            bindings[16 + i] = (struct pipe_shader_buffer){
+               buffers[2], ((14 - i) * 16 + 4) * sizeof(uint32_t), 4 * sizeof(uint32_t)
+            };
+      } else if (test == UBO_COPY) {
+         bindings[16] = (struct pipe_shader_buffer){
+            buffers[2], INPUT_WORDS * sizeof(uint32_t), sizeof(user_constants)
+         };
       }
       psbc_init();
       nir_shader *nir = create_probe_shader(test);
@@ -242,6 +276,19 @@ int main(void)
          goto cleanup;
       pipe->bind_compute_state(pipe, state);
       pipe->set_shader_buffers(pipe, MESA_SHADER_COMPUTE, 0, 16, bindings, 1u << OUTPUT_BINDING);
+      for (unsigned i = 0; i < 15; ++i) {
+         const struct pipe_shader_buffer *bound = &bindings[16 + i];
+         struct pipe_constant_buffer cb = {
+            .buffer = bound->buffer, .buffer_offset = bound->buffer_offset,
+            .buffer_size = bound->buffer_size,
+         };
+         if (test == UBO_COPY && i == 0)
+            cb = (struct pipe_constant_buffer){
+               .user_buffer = user_constants, .buffer_size = sizeof(user_constants)
+            };
+         pipe->set_constant_buffer(pipe, MESA_SHADER_COMPUTE, i, &cb);
+      }
+      memset(user_constants, 0, sizeof(user_constants)); /* Upload must have copied. */
       /* The binding now owns the last reference; rebinding must preserve it. */
       pipe_resource_reference(&buffers[1], NULL);
       struct pipe_grid_info grid = {.work_dim = 3};
@@ -266,7 +313,9 @@ int main(void)
       if (dispatches != test + 1)
          rc = -1;
 #else
-      memset(table, 0, 256);
+      memcpy(input + INPUT_WORDS, user_constants, sizeof(user_constants));
+      memset(user_constants, 0, sizeof(user_constants));
+      memset(table, 0, 31 * 16);
       for (unsigned i = 0; i < ARRAY_SIZE(bindings); ++i) {
          const struct pipe_shader_buffer *bound = &bindings[i];
          if (!bound->buffer)

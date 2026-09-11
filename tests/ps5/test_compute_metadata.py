@@ -143,9 +143,10 @@ code = r'''
 #include "ps5_agc_package.h"
 ''' + types + mock + parsers + compute + "\n" + probe + r'''
 static void submission_contract(PsbcShaderOutput *out) {
-    _Alignas(16) uint32_t table_data[64]={0}, output[16]={0};
+    _Alignas(16) uint32_t table_data[31*4]={0}, output[16]={0};
     table_data[0]=(uintptr_t)output; table_data[1]=(uintptr_t)output>>32;
     table_data[2]=sizeof(output); table_data[3]=0x31016fac;
+    memcpy(table_data+30*4,table_data,16); /* Highest UBO uses the same owned range. */
     struct pipe_screen screen={0};
     struct pipe_resource table={table_data, sizeof(table_data)}, buffer={output, sizeof(output)};
     struct pipe_resource *buffers[]={&buffer};
@@ -167,7 +168,7 @@ static void submission_contract(PsbcShaderOutput *out) {
     assert(saved_userdata[2]==(uint32_t)(uintptr_t)table_data && !memcmp(saved_groups, groups, 12));
     if (out->metadata.compute_grid_size_valid) assert(!memcmp(saved_userdata+3, groups, 12));
     const unsigned old_dispatches=dispatches;
-    for (unsigned fault=0; fault<11; ++fault) {
+    for (unsigned fault=0; fault<13; ++fault) {
         if (fault==0) groups[0]=0;
         if (fault==1) table.size=16;
         if (fault==2) table_data[2]=sizeof(output)+1;
@@ -179,18 +180,23 @@ static void submission_contract(PsbcShaderOutput *out) {
         if (fault==8) direct_size=0;
         if (fault==9) direct_size=-1;
         if (fault==10) direct_size=0x4000; /* Reject an arena larger than the heap. */
+        if (fault==11) table_data[30*4+2]=sizeof(output)+1;
+        if (fault==12) table.size=sizeof(table_data)-1;
         assert(ps5_agc_compute_execute(&screen, out, &table, buffers, 1, groups)<0);
         assert(!locked && !allocations && submissions==old_submits+1 && dispatches==old_dispatches);
         groups[0]=2; table.size=sizeof(table_data); table_data[2]=sizeof(output); table_data[3]=0x31016fac;
         out->metadata.address32_hi=(uintptr_t)table_data>>32; fail_map=fail_emit=fail_alloc=0;
         direct_size=1024*1024;
+        memcpy(table_data+30*4,table_data,16);
     }
 }
 static const PsbcCompileOptions opts = {
     .target=PSBC_TARGET_PS5, .stage=PSBC_STAGE_COMPUTE, .optimise=true,
-    .address32_hi=2, .gallium_buffer_arrays=true, .descriptor_binding_count=1,
+    .address32_hi=2, .gallium_buffer_arrays=true, .descriptor_binding_count=2,
     .descriptor_bindings={{.binding=PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
-        .type=PSBC_DESCRIPTOR_STORAGE_BUFFER, .array_size=16, .stride=16}},
+        .type=PSBC_DESCRIPTOR_STORAGE_BUFFER, .array_size=16, .stride=16},
+        {.binding=PSBC_GALLIUM_UBO_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
+        .type=PSBC_DESCRIPTOR_UNIFORM_BUFFER, .array_size=15, .stride=16, .offset=16*16}},
 };
 static nir_shader *shader(bool grid, bool shared) {
     nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
@@ -312,6 +318,11 @@ static void native_cases(void) {
                 output[i]=1000+101*(i/4)+7*(i%4);
                 if (test==BUFFER_ALIAS) output[i]=5*output[i]+2;
             }
+            if (test==UBO_RANGES) {
+                unsigned ubo=1000+101*(14-i/4)+7*(i%4), ssbo=1000+101*(i/4)+7*(i%4);
+                output[i]=ubo+3*ssbo;
+            }
+            if (test==UBO_COPY) output[i]=700+11*i;
             if (test==ATOMIC) output[i]=i<256 ? 255-i : 256;
             if (test==FP32) output[i]=0;
             if (test==FP64) {

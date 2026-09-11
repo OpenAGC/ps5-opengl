@@ -22,29 +22,43 @@ code = r'''
 #include "util/u_inlines.h"
 #include "psbc_compile.h"
 #define PS5_COMPUTE_STORAGE_SLOTS 16
+#define PS5_COMPUTE_CONSTANT_SLOTS 15
+#define PS5_COMPUTE_BUFFER_SLOTS 31
+#define PS5_MAX_CONSTANT_BUFFER_SIZE 0x4000u
 struct ps5_resource { struct pipe_resource base; uint8_t *data; };
 struct ps5_compute_shader { PsbcShaderOutput output; };
 struct ps5_context {
     struct pipe_context base;
     struct ps5_compute_shader *cs;
     struct pipe_resource *compute_descriptors;
-    struct pipe_shader_buffer compute_buffers[16];
+    struct pipe_shader_buffer compute_buffers[31];
     bool compute_bindings_invalid;
+    uint32_t compute_constants_invalid;
     int last_compute_status;
     unsigned dispatches;
 };
 static unsigned submitted, destroyed;
-static bool multi;
+static bool multi, with_constants, fail_upload;
+static struct ps5_resource *upload_resource;
+void u_upload_data_ref(struct u_upload_mgr *upload, unsigned minimum, unsigned size,
+    unsigned alignment, const void *data, unsigned *offset, struct pipe_resource **buffer) {
+    assert(upload && !minimum && alignment==16 && size<=64 && upload_resource);
+    if (fail_upload) return;
+    *offset=32;
+    memcpy(upload_resource->data+32,data,size);
+    pipe_resource_reference(buffer,&upload_resource->base);
+}
+void u_upload_unmap(struct u_upload_mgr *upload) { assert(upload); }
 static void destroy(struct pipe_screen *s, struct pipe_resource *r) {
     assert(s && r && !r->reference.count); ++destroyed;
 }
 static int ps5_agc_compute_execute(struct pipe_screen *s, const PsbcShaderOutput *shader,
     struct pipe_resource *table, struct pipe_resource *const *buffers, unsigned count,
     const uint32_t groups[3]) {
-    assert(s && shader && count==(multi ? 16 : 1) && groups[0]==2 && groups[1]==1 && groups[2]==1);
+    assert(s && shader && count==(with_constants ? 31 : multi ? 16 : 1) && groups[0]==2 && groups[1]==1 && groups[2]==1);
     struct ps5_resource *t=(struct ps5_resource *)table, *b=(struct ps5_resource *)buffers[0];
     if (multi) {
-        assert(b->base.reference.count==15 && !destroyed);
+        assert(b->base.reference.count==(with_constants ? 30 : 15) && !destroyed);
         for (unsigned i=0; i<16; ++i) {
             struct ps5_resource *r=(struct ps5_resource *)buffers[i];
             const uint32_t *d=(uint32_t *)t->data+i*4;
@@ -52,6 +66,15 @@ static int ps5_agc_compute_execute(struct pipe_screen *s, const PsbcShaderOutput
             assert(i==15 ? r->base.reference.count==1 : r==b);
             assert(d[0]==(uint32_t)address && d[1]==address>>32);
             assert(d[2]==(i==15 ? 64 : 16) && d[3]==0x31016fac);
+        }
+        for (unsigned i=0; i<15; ++i) {
+            const uint32_t *d=(uint32_t *)t->data+(16+i)*4;
+            if (with_constants) {
+                const uintptr_t address=(uintptr_t)b->data+i*16;
+                assert(buffers[16+i]==&b->base);
+                assert(d[0]==(uint32_t)address && d[1]==address>>32);
+                assert(d[2]==16 && d[3]==0x31016fac);
+            } else assert(!(d[0]|d[1]|d[2]|d[3]));
         }
         ++submitted; return 0;
     }
@@ -65,7 +88,7 @@ static int ps5_agc_compute_execute(struct pipe_screen *s, const PsbcShaderOutput
 ''' + functions + r'''
 int main(void) {
     struct pipe_screen screen={.resource_destroy=destroy}, other_screen={0};
-    uint8_t table_data[256], output[256];
+    uint8_t table_data[31*16], output[256];
     struct ps5_resource table={.data=table_data};
     struct ps5_resource buffer={.base={.screen=&screen,.target=PIPE_BUFFER,.width0=256},.data=output};
     pipe_reference_init(&buffer.base.reference, 1);
@@ -141,8 +164,65 @@ int main(void) {
     caller=&buffer.base; pipe_resource_reference(&caller,NULL);
     ps5_launch_grid(&context.base,&good);
     assert(!context.last_compute_status && submitted==2 && context.dispatches==2);
+    for (unsigned i=0; i<15; ++i) {
+        struct pipe_constant_buffer cb={.buffer=&ranges.base,.buffer_offset=i*16,.buffer_size=16};
+        ps5_set_compute_constant_buffer(&context.base,i,&cb);
+    }
+    with_constants=true;
+    ps5_launch_grid(&context.base,&good);
+    assert(!context.last_compute_status && submitted==3 && context.dispatches==3);
+    for (unsigned fault=0; fault<7; ++fault) {
+        struct pipe_constant_buffer cb={.buffer=&ranges.base,.buffer_offset=224,.buffer_size=16};
+        if (fault==0) cb.buffer_offset=UINT32_MAX;
+        if (fault==1) cb.buffer_offset=1;
+        if (fault==2) cb.buffer_size=UINT32_MAX;
+        if (fault==3) cb.buffer_size=0;
+        if (fault==4) ranges.base.target=PIPE_TEXTURE_2D;
+        if (fault==5) ranges.base.screen=&other_screen;
+        if (fault==6) cb.user_buffer=input; /* Ambiguous resource plus user pointer. */
+        ps5_set_compute_constant_buffer(&context.base,14,&cb);
+        assert(context.compute_constants_invalid==(1u<<14) && ranges.base.reference.count==30);
+        assert(context.compute_buffers[30].buffer_offset==224 && context.compute_buffers[30].buffer_size==16);
+        ranges.base.target=PIPE_BUFFER; ranges.base.screen=&screen;
+        const struct pipe_constant_buffer other={.buffer=&ranges.base,.buffer_size=16};
+        ps5_set_compute_constant_buffer(&context.base,0,&other);
+        assert(context.compute_constants_invalid==(1u<<14));
+        ps5_launch_grid(&context.base,&good);
+        assert(context.last_compute_status<0 && submitted==3);
+        cb=(struct pipe_constant_buffer){.buffer=&ranges.base,.buffer_offset=224,.buffer_size=16};
+        ps5_set_compute_constant_buffer(&context.base,14,&cb);
+        assert(!context.compute_constants_invalid);
+    }
+    for (unsigned i=0; i<15; ++i)
+        ps5_set_compute_constant_buffer(&context.base,i,NULL);
+    assert(ranges.base.reference.count==15);
     ps5_set_shader_buffers(&context.base,MESA_SHADER_COMPUTE,0,16,NULL,0);
     assert(destroyed==2);
+    /* The binding must own a copy after the caller changes stack constants. */
+    uint8_t upload_data[256], constants[64]; memset(constants,0x57,sizeof(constants));
+    struct ps5_resource uploaded={.base={.screen=&screen,.target=PIPE_BUFFER,.width0=256},.data=upload_data};
+    pipe_reference_init(&uploaded.base.reference,1);
+    upload_resource=&uploaded;
+    context.base.const_uploader=(void *)(uintptr_t)1;
+    const struct pipe_constant_buffer user={.user_buffer=constants,.buffer_size=sizeof(constants)};
+    ps5_set_compute_constant_buffer(&context.base,0,&user);
+    assert(!context.compute_constants_invalid && uploaded.base.reference.count==2);
+    assert(context.compute_buffers[16].buffer_offset==32 && context.compute_buffers[16].buffer_size==64);
+    memset(constants,0,sizeof(constants));
+    for (unsigned i=32; i<96; ++i) assert(upload_data[i]==0x57);
+    fail_upload=true;
+    ps5_set_compute_constant_buffer(&context.base,0,&user);
+    assert(context.compute_constants_invalid==1 && uploaded.base.reference.count==2);
+    assert(context.compute_buffers[16].buffer==&uploaded.base);
+    ps5_launch_grid(&context.base,&good);
+    assert(context.last_compute_status<0 && submitted==3);
+    fail_upload=false;
+    ps5_set_compute_constant_buffer(&context.base,0,&user);
+    assert(!context.compute_constants_invalid && uploaded.base.reference.count==2);
+    ps5_set_compute_constant_buffer(&context.base,0,NULL);
+    assert(uploaded.base.reference.count==1);
+    caller=&uploaded.base; pipe_resource_reference(&caller,NULL);
+    assert(destroyed==3);
 }
 '''
 with tempfile.TemporaryDirectory() as directory:
@@ -160,4 +240,4 @@ with tempfile.TemporaryDirectory() as directory:
         "-I", str(ROOT / "third_party/opengnm-psbc/libpsbc"),
         "-x", "c", "-o", executable, "-"], input=code, text=True, check=True)
     subprocess.run([executable], check=True, timeout=10)
-print("PASS: actual Gallium binding/grid guards, 16 descriptors/range aliases, retained lifetime and unbind")
+print("PASS: actual Gallium binding/grid guards, 31 SSBO/UBO descriptors, upload failure, retained lifetime/unbind")
