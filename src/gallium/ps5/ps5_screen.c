@@ -1243,6 +1243,17 @@ ps5_mutable_sampled_resource_bind(unsigned bind)
           !(bind & ~(PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET));
 }
 
+static bool
+ps5_compute_image_array_resource(const struct pipe_resource *resource)
+{
+   return resource && resource->target == PIPE_TEXTURE_2D_ARRAY &&
+          resource->array_size > 0 && resource->array_size <= 8 &&
+          resource->nr_samples <= 1 && resource->nr_storage_samples <= 1 &&
+          resource->bind == (PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_SHADER_IMAGE) &&
+          (resource->format == PIPE_FORMAT_R32_FLOAT ||
+           resource->format == PIPE_FORMAT_R32_UINT || resource->format == PIPE_FORMAT_R32_SINT);
+}
+
 static unsigned
 ps5_texture_format_size(enum pipe_format format)
 {
@@ -2973,7 +2984,8 @@ ps5_resource_layout(const struct pipe_resource *templ, size_t *size,
                      templ->array_size > PS5_MAX_TEXTURE_ARRAY_LAYERS ||
                      !ps5_sampled_texture_format(templ->format) ||
                      (!depth_target &&
-                      !ps5_mutable_sampled_resource_bind(templ->bind)))) ||
+                      !ps5_mutable_sampled_resource_bind(templ->bind) &&
+                      !ps5_compute_image_array_resource(templ)))) ||
        (texture_3d && (templ->array_size != 1 || !templ->depth0 ||
                        templ->depth0 > PS5_MAX_TEXTURE_3D_SIZE ||
                        templ->width0 > PS5_MAX_TEXTURE_3D_SIZE ||

@@ -19,6 +19,8 @@ extent_at = source.index("static unsigned\nps5_linear_mip_storage_extent(")
 extent_helper = source[extent_at:source.index("static bool\nps5_packed_depth_sample_layout(", extent_at)]
 image_at = source.index("static int\nps5_resource_linear_image_descriptor(")
 image_descriptor = source[image_at:source.index("\nstruct pipe_resource *", image_at)]
+array_at = source.index("static bool\nps5_compute_image_array_resource(")
+array_layout = source[array_at:source.index("static unsigned\nps5_texture_format_size(", array_at)]
 code = r'''
 #include <assert.h>
 #include <stdint.h>
@@ -75,7 +77,7 @@ static bool ps5_texture_descriptor_format(enum pipe_format f,uint32_t *word) {
     *word=f==PIPE_FORMAT_R32_UINT ? 0x1400000 : f==PIPE_FORMAT_R32_SINT ? 0x1500000 : 0x1600000;
     return true;
 }
-''' + extent_helper + image_descriptor + r'''
+''' + extent_helper + array_layout + image_descriptor + r'''
 static int ps5_resource_info(struct pipe_resource *base, void **address, size_t *size, size_t *allocation) {
     (void)allocation;
     if (fail_info) return -1;
@@ -359,6 +361,18 @@ int main(void) {
     layered.data=array_pixels;
     layered.base.target=PIPE_TEXTURE_2D_ARRAY; layered.base.array_size=3;
     layered.size=sizeof(array_pixels); layered.layer_stride=3840;
+    assert(ps5_compute_image_array_resource(&layered.base));
+    for(unsigned fault=0;fault<7;++fault) {
+        struct pipe_resource bad=layered.base;
+        if(fault==0) bad.target=PIPE_TEXTURE_3D;
+        if(fault==1) bad.array_size=9;
+        if(fault==2) bad.nr_samples=4;
+        if(fault==3) bad.nr_storage_samples=4;
+        if(fault==4) bad.bind|=PIPE_BIND_RENDER_TARGET;
+        if(fault==5) bad.format=PIPE_FORMAT_R16_FLOAT;
+        if(fault==6) bad.bind=PIPE_BIND_SHADER_IMAGE;
+        assert(!ps5_compute_image_array_resource(&bad));
+    }
     assert(!ps5_resource_sampled_image_descriptor(&layered.base,1,2,descriptor));
     assert(descriptor[3]==0xd0021204 && descriptor[4]==2);
     for(unsigned fault=0;fault<4;++fault) {
