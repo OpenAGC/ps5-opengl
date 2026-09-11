@@ -173,7 +173,7 @@ check_words(const char *name, GLuint buffer, const uint32_t *expected, unsigned 
          return 0;
       }
    }
-   printf(TAG "%s words=%u (including 16 guards) PASS\n", name, count);
+   printf(TAG "%s words=%u PASS\n", name, count);
    return 1;
 }
 
@@ -267,6 +267,23 @@ main(void)
       "layout(local_size_x=3) in;\n"
       "layout(std430) buffer Output { uint commands[]; };\n"
       "void main() { uint id = gl_LocalInvocationIndex; commands[id] = id == 1u ? 3u : 2u; }\n";
+   static const char *rgba16_store_source =
+      "#version 330\n"
+      "#extension GL_ARB_compute_shader : require\n"
+      "#extension GL_ARB_shader_image_load_store : require\n"
+      "layout(local_size_x=1) in;\n"
+      "layout(rgba16) uniform writeonly image2D destination;\n"
+      "uniform vec4 value;\n"
+      "void main() { imageStore(destination, ivec2(1, 1), value); }\n";
+   static const char *rgba16_load_source =
+      "#version 330\n"
+      "#extension GL_ARB_compute_shader : require\n"
+      "#extension GL_ARB_shader_image_load_store : require\n"
+      "#extension GL_ARB_shader_storage_buffer_object : require\n"
+      "layout(local_size_x=1) in;\n"
+      "layout(rgba16) uniform readonly image2D source_image;\n"
+      "layout(std430) buffer Output { uvec4 result; };\n"
+      "void main() { result = floatBitsToUint(imageLoad(source_image, ivec2(1, 1))); }\n";
    const EGLint config_attributes[] = {
       EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
       EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
@@ -288,6 +305,7 @@ main(void)
    GLuint shader = 0, program = 0, buffers[2] = {0, 0};
    GLuint extra_shaders[3] = {0}, extra_programs[3] = {0};
    GLuint grid_shaders[3] = {0}, grid_programs[3] = {0}, grid_buffers[2] = {0};
+   GLuint rgba16_shaders[2] = {0}, rgba16_programs[2] = {0}, rgba16_texture = 0;
    GLuint texture = 0, atomic_buffer = 0;
    GLint major = 0, minor = 0, profile = 0;
    GLint addend = -1, block_size = 0, ubo_alignment = 0, ssbo_alignment = 0;
@@ -555,6 +573,72 @@ main(void)
        !check_buffer("post-indirect output", GL_SHADER_STORAGE_BUFFER, buffers[1], 20))
       goto cleanup;
    puts(TAG "dispatch delta=14 (prior 9 + IDs/shared/arguments/indirect 4 + restored 1); negatives=3 PASS");
+
+   if (!compile_program("RGBA16 store", rgba16_store_source, &rgba16_shaders[0], &rgba16_programs[0]) ||
+       !compile_program("RGBA16 load", rgba16_load_source, &rgba16_shaders[1], &rgba16_programs[1]))
+      goto cleanup;
+   GLint rgba16_destination = glGetUniformLocation(rgba16_programs[0], "destination");
+   GLint rgba16_value = glGetUniformLocation(rgba16_programs[0], "value");
+   GLint rgba16_source = glGetUniformLocation(rgba16_programs[1], "source_image");
+   if (!check_gl("RGBA16 uniforms") || rgba16_destination < 0 || rgba16_value < 0 || rgba16_source < 0)
+      goto cleanup;
+   GLushort rgba16_initial[3 * 3 * 4];
+   for (unsigned i = 0; i < 36; ++i)
+      rgba16_initial[i] = (GLushort)(0x1234u + i * 0x101u);
+   glGenTextures(1, &rgba16_texture);
+   glActiveTexture(GL_TEXTURE0);
+   glBindTexture(GL_TEXTURE_2D, rgba16_texture);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
+   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16, 3, 3, 0, GL_RGBA, GL_UNSIGNED_SHORT, rgba16_initial);
+   if (!check_gl("RGBA16 sentinel texture") || !rgba16_texture)
+      goto cleanup;
+   for (unsigned pass = 0; pass < 2; ++pass) {
+      GLushort raw[36] = {0};
+      uint32_t expected[80];
+      printf(TAG "RGBA16 pass=%u begin\n", pass);
+      glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+      glUseProgram(rgba16_programs[0]);
+      glUniform1i(rgba16_destination, 0);
+      glUniform4f(rgba16_value, pass ? 1.0f : 0.0f, pass ? 0.0f : 1.0f,
+                  pass ? 1.0f : 0.0f, pass ? 0.0f : 1.0f);
+      glBindImageTexture(0, rgba16_texture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16);
+      if (!check_gl("RGBA16 store binding") ||
+          !dispatch_checked("RGBA16 store", mesa->pipe, baseline + 15 + pass * 2,
+                            GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT))
+         goto cleanup;
+      puts(TAG "RGBA16 raw texture readback begin");
+      glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_SHORT, raw);
+      if (!check_gl("RGBA16 raw texture readback"))
+         goto cleanup;
+      for (unsigned i = 0; i < 36; ++i) {
+         /* Pixel (1,1) is texel 4, lanes 16..19; all eight neighbors stay intact. */
+         GLushort wanted = i >= 16 && i < 20
+            ? (((i - 16) & 1u) != pass ? 0xffffu : 0u) : rgba16_initial[i];
+         if (raw[i] != wanted) {
+            printf(TAG "RGBA16 pass=%u raw lane=%u actual=%04x expected=%04x\n",
+                   pass, i, (unsigned)raw[i], (unsigned)wanted);
+            goto cleanup;
+         }
+      }
+      printf(TAG "RGBA16 pass=%u raw lanes=36/36 neighbors=8/8 PASS\n", pass);
+      for (unsigned i = 0; i < 80; ++i)
+         expected[i] = i >= 8 && i < 12
+            ? (((i - 8) & 1u) != pass ? UINT32_C(0x3f800000) : 0) : GUARD;
+      glUseProgram(rgba16_programs[1]);
+      glUniform1i(rgba16_source, 0);
+      glBindImageTexture(0, rgba16_texture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16);
+      if (!reset_output(buffers[1]) ||
+          !dispatch_checked("RGBA16 load", mesa->pipe, baseline + 16 + pass * 2,
+                            GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT |
+                            GL_SHADER_IMAGE_ACCESS_BARRIER_BIT) ||
+          !check_words("RGBA16 imageLoad float bits", buffers[1], expected, 80))
+         goto cleanup;
+      printf(TAG "RGBA16 pass=%u channels=4/4 SSBO guards=76/76 PASS\n", pass);
+   }
+   puts(TAG "dispatch delta=18 (prior 14 + RGBA16 store/load 4); negatives=3 PASS");
    passed = 1;
 
 cleanup:
@@ -571,15 +655,22 @@ cleanup:
          glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 7, 0);
          glDeleteBuffers(1, &atomic_buffer);
       }
-      if (texture) {
+      if (texture || rgba16_texture) {
          glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
          glBindTexture(GL_TEXTURE_2D, 0);
          glDeleteTextures(1, &texture);
+         glDeleteTextures(1, &rgba16_texture);
       }
       glDeleteBuffers(2, buffers);
       if (grid_buffers[1])
          glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, 0);
       glDeleteBuffers(2, grid_buffers);
+      for (unsigned i = 0; i < 2; ++i) {
+         if (rgba16_programs[i])
+            glDeleteProgram(rgba16_programs[i]);
+         if (rgba16_shaders[i])
+            glDeleteShader(rgba16_shaders[i]);
+      }
       for (unsigned i = 0; i < 3; ++i) {
          if (grid_programs[i])
             glDeleteProgram(grid_programs[i]);

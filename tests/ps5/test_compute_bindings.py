@@ -29,6 +29,8 @@ format_at = source.index("static bool\nps5_core_sampled_texture_format(")
 linear_helpers += source[format_at:source.index("static bool\nps5_packed_vertex_format(", format_at)]
 linear_at = source.index("static bool\nps5_linear_sampled_layout(")
 linear_helpers += source[linear_at:source.index("static bool\nps5_color_render_target(", linear_at)]
+encoding_at = source.index("static bool\nps5_texture_descriptor_format(")
+format_encoding = source[encoding_at:source.index("static bool\nps5_texture_descriptor_swizzle(", encoding_at)]
 barrier_at = source.index("static void\nps5_memory_barrier(")
 barrier = source[barrier_at:source.index("static bool\nps5_draw_primitive(", barrier_at)]
 fragment_at = source.index("static unsigned\nps5_shader_storage_count(")
@@ -60,6 +62,7 @@ code = r'''
 #include "psbc_compile.h"
 #include "ps5_agc_package.h"
 #include "amd/common/amdgfxregs.h"
+#include "amd/common/gfx10_format_table.h"
 #define PS5_ENABLE_UBO_CANDIDATE 1
 #define PS5_ENABLE_RENDER_TO_TEXTURE_CANDIDATE 1
 #define PS5_ENABLE_DYNAMIC_COLOR_TARGET_CANDIDATE 1
@@ -143,12 +146,7 @@ static unsigned with_filtered;
 static bool multi, with_constants, fail_upload;
 static bool fail_info;
 static struct ps5_resource *upload_resource;
-static bool ps5_texture_descriptor_format(enum pipe_format f,uint32_t *word) {
-    /* Stub only the hardware format word; actual layout/bounds helpers run below. */
-    *word=f==PIPE_FORMAT_R32_UINT ? 0x1400000 : f==PIPE_FORMAT_R32_SINT ? 0x1500000 : 0x1600000;
-    return true;
-}
-''' + extent_helper + array_layout + linear_helpers + image_descriptor + r'''
+''' + extent_helper + array_layout + linear_helpers + format_encoding + image_descriptor + r'''
 static int ps5_resource_info(struct pipe_resource *base, void **address, size_t *size, size_t *allocation) {
     (void)allocation;
     if (fail_info) return -1;
@@ -796,6 +794,46 @@ int main(void) {
     canonical.render_staging_offset=canonical.render_staging_size=0;
     assert(!ps5_resource_storage_image_descriptor(&canonical.base,0,descriptor));
     assert(!memcmp(descriptor,canonical_srd,sizeof(descriptor)));
+    /* GL_RGBA16 / layout(rgba16), not RGBA16F or RGBA16UI. Use the actual
+     * Mesa-generated table and driver encoder: GFX10 16_16_16_16_UNORM=65. */
+    struct ps5_resource normalized=canonical;
+    normalized.base.format=PIPE_FORMAT_R16G16B16A16_UNORM;
+    assert(ps5_storage_image_texel_size(normalized.base.format)==8);
+    assert(ps5_storage_image_channels(normalized.base.format)==4);
+    assert(gfx10_format_table[normalized.base.format].img_format==65 &&
+        !gfx10_format_table[normalized.base.format].buffers_only);
+    for(unsigned staged=0;staged<2;++staged) {
+        normalized.base.bind=PIPE_BIND_SAMPLER_VIEW | (staged ? PIPE_BIND_RENDER_TARGET : 0);
+        normalized.render_staging_offset=normalized.render_staging_size=staged ? 65536 : 0;
+        assert(!ps5_resource_storage_image_descriptor(&normalized.base,0,descriptor));
+        assert(descriptor[1]==(0x04100000u | (uint32_t)((uintptr_t)normalized.data>>40)));
+        assert(descriptor[3]==0x90000facu && descriptor[4]==31);
+        assert(!ps5_resource_sampled_image_descriptor(&normalized.base,0,0,sampled_srd));
+        assert(!memcmp(descriptor,sampled_srd,sizeof(descriptor)));
+        for(unsigned stage=0;stage<2;++stage) {
+            mesa_shader_stage which=stage ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
+            struct pipe_image_view v={.resource=&normalized.base,.format=normalized.base.format,
+                .access=PIPE_IMAGE_ACCESS_READ_WRITE,.u.tex.single_layer_view=true};
+            ps5_set_shader_images(&context.base,which,7,1,0,&v);
+            assert(!(stage ? context.fragment_images_invalid : context.compute_images_invalid));
+            assert(normalized.base.reference.count==2);
+            v.format=PIPE_FORMAT_R16G16B16A16_UINT;
+            ps5_set_shader_images(&context.base,which,7,1,0,&v);
+            assert(stage ? context.fragment_images_invalid : context.compute_images_invalid);
+            assert(normalized.base.reference.count==2);
+            ps5_set_shader_images(&context.base,which,7,0,1,NULL);
+            assert(normalized.base.reference.count==1);
+        }
+    }
+    const enum pipe_format still_gated[]={PIPE_FORMAT_R16G16B16A16_SNORM,
+        PIPE_FORMAT_R8G8B8A8_UNORM,PIPE_FORMAT_R16_UNORM,PIPE_FORMAT_R16G16_UNORM};
+    for(unsigned i=0;i<ARRAY_SIZE(still_gated);++i) {
+        struct ps5_resource bad=normalized; bad.base.format=still_gated[i];
+        assert(!ps5_storage_image_texel_size(bad.base.format));
+        memset(descriptor,0xa5,sizeof(descriptor));
+        assert(ps5_resource_storage_image_descriptor(&bad.base,0,descriptor)<0);
+        for(unsigned j=0;j<8;++j) assert(descriptor[j]==0xa5a5a5a5u);
+    }
     _Alignas(256) uint8_t mip_pixels[3840];
     struct ps5_resource mip=image;
     mip.data=mip_pixels; mip.size=mip.allocation_size=sizeof(mip_pixels);
@@ -884,9 +922,10 @@ int main(void) {
     }
     const enum pipe_format vectors[]={PIPE_FORMAT_R32G32_UINT,PIPE_FORMAT_R32G32_SINT,PIPE_FORMAT_R32G32_FLOAT,
         PIPE_FORMAT_R32G32B32A32_UINT,PIPE_FORMAT_R32G32B32A32_SINT,PIPE_FORMAT_R32G32B32A32_FLOAT,
-        PIPE_FORMAT_R16G16B16A16_UINT,PIPE_FORMAT_R16G16B16A16_SINT,PIPE_FORMAT_R16G16B16A16_FLOAT};
+        PIPE_FORMAT_R16G16B16A16_UINT,PIPE_FORMAT_R16G16B16A16_SINT,PIPE_FORMAT_R16G16B16A16_FLOAT,
+        PIPE_FORMAT_R16G16B16A16_UNORM};
     _Alignas(256) uint8_t vector_pixels[1536];
-    for(unsigned i=0;i<9;++i) {
+    for(unsigned i=0;i<ARRAY_SIZE(vectors);++i) {
         struct ps5_resource v=image; v.base.format=vectors[i]; v.data=vector_pixels;
         unsigned bytes=i>=3 && i<6 ? 16 : 8, stride=(17*bytes+255)&~255u;
         v.level_stride[0]=stride; v.size=stride*3; v.allocation_size=sizeof(vector_pixels);
@@ -902,7 +941,7 @@ int main(void) {
     /* Odd extents cross the RGBA row-alignment boundary; explicit offsets are
      * independent of the driver's layout helper. Host layout proof, not GPU proof. */
     _Alignas(256) uint8_t vector_array_pixels[8*7168];
-    for(unsigned i=0;i<9;++i) {
+    for(unsigned i=0;i<ARRAY_SIZE(vectors);++i) {
         struct ps5_resource v=layered;
         v.base.format=vectors[i]; v.base.width0=17; v.base.height0=9;
         v.base.array_size=8; v.data=vector_array_pixels;
@@ -1199,6 +1238,12 @@ with tempfile.TemporaryDirectory() as directory:
         subprocess.run([sys.executable, str(MESA / "src/util/format/u_format_table.py"),
             str(MESA / "src/util/format/u_format.yaml"), "--enums"], stdout=generated, check=True)
     executable = str(Path(directory) / "compute-bindings")
+    table = Path(directory) / "gfx10_format_table.c"
+    with table.open("w") as generated:
+        subprocess.run([sys.executable, "-B", str(MESA / "src/amd/common/gfx10_format_table.py"),
+            str(MESA / "src/util/format/u_format.yaml"),
+            str(MESA / "src/amd/registers/gfx10-rsrc.json"),
+            str(MESA / "src/amd/registers/gfx11-rsrc.json")], stdout=generated, check=True)
     subprocess.run(["clang-18", "-std=gnu11", "-O2", "-Wall", "-Werror",
         "-DHAVE_ENDIAN_H=1", "-DHAVE_FUNC_ATTRIBUTE_PACKED=1", "-D_GNU_SOURCE",
         "-I", str(MESA / "include"), "-I", str(MESA / "src"),
@@ -1207,10 +1252,13 @@ with tempfile.TemporaryDirectory() as directory:
         "-I", str(ROOT / "third_party/opengnm-psbc/libpsbc"),
         "-I", str(ROOT / "third_party/opengnm-psbc/src"),
         "-I", str(ROOT / "src/platform"),
-        "-x", "c", "-o", executable, "-"], input=code, text=True, check=True)
+        "-I", str(MESA / "src/amd/common"),
+        "-I", str(ROOT / "third_party/opengnm-psbc/src/amd/common"),
+        "-x", "c", "-o", executable, "-", str(table)], input=code, text=True, check=True)
     subprocess.run([executable], check=True, timeout=10)
 print("PASS: Gallium 39-resource bindings, image descriptors/lifetime, upload failure, direct/indirect guards and unbind")
 print("PASS: Mesa sampler+render canonical SRDs without image hint; staging/allocation/layout guards, CS/FS refs and format mismatch")
 print("PASS: R/RG X001/XY01 and identity views, arbitrary remap rejection, atomic replacement/trailing unbind and references")
+print("PASS: RGBA16_UNORM real GFX10 encoding, canonical/staged CS/FS bindings, mip/array bounds; other normalized formats gated")
 print("PASS: Mesa atomic handoff CS/FS, SSBO counts 0/1/8 + bindings 0/7, alignment/offset state, refs, isolation, replacement/unbind")
 print("PASS: Mesa CS/FS zero-initialized 0-to-16-to-2-to-0 tracking, stale cleanup, reference counts and stage isolation")
