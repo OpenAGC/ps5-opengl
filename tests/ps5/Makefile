@@ -691,6 +691,10 @@ egl_public_compute_pipe.o: egl_public_compute_probe.c $(DRIVER)/ps5_screen.h \
 	$(CC) $(CFLAGS) $(PSBC_CFLAGS) -I$(PROJECT)/src/platform \
 		-DPS5_COMPUTE_PIPE_PROBE=1 -Wno-unreachable-code-generic-assoc -c -o $@ $<
 
+egl_public_compute_render.o: egl_public_compute_render.c $(DRIVER)/ps5_screen.h \
+	$(PSBC)/libpsbc/psbc_compile.h
+	$(CC) $(CFLAGS) $(PSBC_CFLAGS) -Wno-unreachable-code-generic-assoc -c -o $@ $<
+
 psbc_nir_runtime.elf: psbc_nir_runtime.o $(PSBC)/libpsbc.ps5.a
 	$(CXX) -o $@ psbc_nir_runtime.o $(PSBC)/libpsbc.ps5.a $(LDFLAGS)
 
