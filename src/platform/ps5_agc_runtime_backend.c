@@ -716,10 +716,12 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
       for (unsigned i = 0; i < m->descriptor_binding_count; ++i) {
          const PsbcDescriptorBinding *bank = &m->descriptor_bindings[i];
          const bool image = bank->type == PSBC_DESCRIPTOR_STORAGE_IMAGE;
-         if (bank->set || bank->stride != (image ? 32u : 16u) || !bank->array_size ||
+         const bool sampled = bank->type == PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER;
+         if (bank->set || bank->stride != (sampled ? 48u : image ? 32u : 16u) || !bank->array_size ||
+             (sampled && (bank->array_size != 1 || bank->binding >= 8)) ||
              bank->array_size > (image ? 8u : 32u) ||
              (bank->type != PSBC_DESCRIPTOR_STORAGE_BUFFER &&
-              bank->type != PSBC_DESCRIPTOR_UNIFORM_BUFFER && !image) || (bank->offset & 15u) ||
+              bank->type != PSBC_DESCRIPTOR_UNIFORM_BUFFER && !image && !sampled) || (bank->offset & 15u) ||
              (uint64_t)bank->offset + (uint64_t)bank->array_size * bank->stride > table_size)
             goto cleanup;
          for (unsigned slot = 0; slot < bank->array_size; ++slot) {
@@ -729,11 +731,16 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
                nonzero |= srd[word];
             if (!nonzero)
                continue;
-            if (image) {
+            if (image || sampled) {
+               /* Fetch/size shaders cannot consume sampler state yet. */
+               if (sampled && (srd[8] || srd[9] || srd[10] || srd[11]))
+                  goto cleanup;
                bool owned = false;
                for (unsigned j = 0; j < buffer_count; ++j) {
                   uint32_t expected[8];
-                  if (!ps5_resource_storage_image_descriptor(buffers[j], expected) &&
+                  int rc = sampled ? ps5_resource_sampled_image_descriptor(buffers[j], expected) :
+                                     ps5_resource_storage_image_descriptor(buffers[j], expected);
+                  if (!rc &&
                       !memcmp(srd, expected, sizeof(expected)))
                      owned = true;
                }

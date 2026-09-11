@@ -13,7 +13,7 @@ MESA = ROOT / "third_party/mesa-26.2.0"
 source = (ROOT / "src/gallium/ps5/ps5_screen.c").read_text()
 begin = source.index("static void\nps5_set_shader_buffers(")
 functions = source[begin:source.index("\n#endif", begin)]
-image_at = source.index("int\nps5_resource_storage_image_descriptor(")
+image_at = source.index("static int\nps5_resource_linear_image_descriptor(")
 image_descriptor = source[image_at:source.index("\nstruct pipe_resource *", image_at)]
 code = r'''
 #include <assert.h>
@@ -27,7 +27,10 @@ code = r'''
 #define PS5_COMPUTE_CONSTANT_SLOTS 15
 #define PS5_COMPUTE_BUFFER_SLOTS 31
 #define PS5_COMPUTE_IMAGE_SLOTS 8
-#define PS5_COMPUTE_DESCRIPTOR_BYTES (31*16+8*32)
+#define PS5_COMPUTE_TEXTURE_SLOTS 8
+#define PS5_COMPUTE_TEXTURE_OFFSET (31*16+8*32)
+#define PS5_COMPUTE_DESCRIPTOR_BYTES (PS5_COMPUTE_TEXTURE_OFFSET+8*48)
+#define PS5_AGC_COMPUTE_MAX_RESOURCES 47
 #define PS5_MAX_TEXTURE_2D_SIZE 8192
 #define PS5_MAX_CONSTANT_BUFFER_SIZE 0x4000u
 struct ps5_resource {
@@ -35,13 +38,15 @@ struct ps5_resource {
     size_t size, render_staging_size, depth_staging_size;
     unsigned level_stride[1];
 };
-struct ps5_compute_shader { PsbcShaderOutput output; };
+struct ps5_compute_shader { PsbcShaderOutput output; unsigned textures; };
 struct ps5_context {
     struct pipe_context base;
     struct ps5_compute_shader *cs;
     struct pipe_resource *compute_descriptors;
     struct pipe_shader_buffer compute_buffers[31];
     struct pipe_image_view compute_images[8];
+    struct pipe_sampler_view *compute_views[8];
+    bool compute_views_invalid;
     bool compute_images_invalid;
     bool compute_bindings_invalid;
     uint32_t compute_constants_invalid;
@@ -50,6 +55,7 @@ struct ps5_context {
 };
 static unsigned submitted, destroyed;
 static unsigned with_images;
+static bool with_sampled;
 static bool multi, with_constants, fail_upload;
 static bool fail_info;
 static struct ps5_resource *upload_resource;
@@ -83,6 +89,16 @@ static int ps5_agc_compute_execute(struct pipe_screen *s, const PsbcShaderOutput
     struct pipe_resource *table, struct pipe_resource *const *buffers, unsigned count,
     const uint32_t groups[3]) {
     assert(s && shader && groups[0]==2 && groups[1]==1 && groups[2]==1);
+    if(with_sampled) {
+        assert(count==8);
+        const struct ps5_resource *t=(const struct ps5_resource *)table;
+        for(unsigned i=0;i<8;++i) {
+            uint32_t expected[12]={0};
+            assert(!ps5_resource_sampled_image_descriptor(buffers[i],expected));
+            assert(!memcmp(t->data+PS5_COMPUTE_TEXTURE_OFFSET+i*48,expected,48));
+        }
+        ++submitted; return 0;
+    }
     if(with_images) {
         assert(count==with_images);
         struct ps5_resource *t=(struct ps5_resource *)table;
@@ -380,6 +396,43 @@ int main(void) {
     ps5_set_shader_buffers(&context.base,MESA_SHADER_COMPUTE,0,16,NULL,0);
     for(unsigned i=0;i<15;++i) ps5_set_compute_constant_buffer(&context.base,i,NULL);
     assert(destroyed==2);
+    /* Sampled views are retained, validated atomically, and cannot be missing. */
+    struct pipe_sampler_view sampled={.texture=&image.base,.target=PIPE_TEXTURE_2D,
+        .format=PIPE_FORMAT_R32_UINT,.swizzle_r=PIPE_SWIZZLE_X,.swizzle_g=PIPE_SWIZZLE_Y,
+        .swizzle_b=PIPE_SWIZZLE_Z,.swizzle_a=PIPE_SWIZZLE_W};
+    pipe_reference_init(&sampled.reference,1);
+    pipe_reference_init(&image.base.reference,1);
+    struct pipe_sampler_view *sampled_views[8];
+    for(unsigned i=0;i<8;++i) sampled_views[i]=&sampled;
+    ps5_set_compute_sampler_views(&context.base,0,8,0,sampled_views);
+    assert(!context.compute_views_invalid && sampled.reference.count==9);
+    cs.textures=255; with_sampled=true; with_images=0;
+    unsigned before_sampled=submitted;
+    ps5_launch_grid(&context.base,&good);
+    assert(!context.last_compute_status && submitted==before_sampled+1);
+    for(unsigned fault=0;fault<7;++fault) {
+        struct pipe_sampler_view bad=sampled;
+        if(fault==0) bad.u.tex.first_level=1;
+        if(fault==1) bad.u.tex.last_layer=1;
+        if(fault==2) bad.swizzle_a=PIPE_SWIZZLE_1;
+        if(fault==3) bad.format=PIPE_FORMAT_R32_FLOAT;
+        if(fault==4) bad.target=PIPE_TEXTURE_2D_ARRAY;
+        if(fault==5) image.base.screen=&other_screen;
+        struct pipe_sampler_view *pair[2]={&sampled,&bad};
+        ps5_set_compute_sampler_views(&context.base,fault==6 ? 8 : 0,2,0,pair);
+        assert(context.compute_views_invalid && sampled.reference.count==9);
+        ps5_launch_grid(&context.base,&good);
+        assert(context.last_compute_status<0 && submitted==before_sampled+1);
+        image.base.screen=&screen;
+        ps5_set_compute_sampler_views(&context.base,0,8,0,sampled_views);
+    }
+    ps5_set_compute_sampler_views(&context.base,7,0,1,NULL);
+    assert(sampled.reference.count==8);
+    ps5_launch_grid(&context.base,&good);
+    assert(context.last_compute_status<0 && submitted==before_sampled+1);
+    ps5_set_compute_sampler_views(&context.base,0,0,8,NULL);
+    assert(sampled.reference.count==1 && !context.compute_views_invalid);
+    cs.textures=0; with_sampled=false;
 }
 '''
 with tempfile.TemporaryDirectory() as directory:

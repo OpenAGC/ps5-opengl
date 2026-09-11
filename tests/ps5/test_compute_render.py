@@ -29,38 +29,6 @@ static void compile(nir_shader *nir, PsbcCompileOptions *options) {
     printf("stage=%u code=%zu package=%zu\n", options->stage, out.machine_code_size, size);
     free(package); psbc_free_output(&out); ralloc_free(nir);
 }
-static nir_shader *compute_sample(unsigned test, unsigned unit) {
-    nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
-        psbc_get_nir_options(PSBC_STAGE_COMPUTE),"compute-sampled-input");
-    b.shader->info.workgroup_size[0]=16;
-    b.shader->info.workgroup_size[1]=b.shader->info.workgroup_size[2]=1;
-    b.shader->info.num_ssbos=1;
-    b.shader->info.num_textures=unit+1;
-    BITSET_SET(b.shader->info.textures_used,unit);
-    nir_def *id=nir_channel(&b,nir_load_local_invocation_id(&b),0);
-    nir_tex_instr *tex=nir_tex_instr_create(b.shader,test==3 ? 1 : 2);
-    tex->op=test==3 ? nir_texop_txs : test==4 ? nir_texop_txl : nir_texop_txf;
-    tex->sampler_dim=GLSL_SAMPLER_DIM_2D;
-    tex->texture_index=tex->sampler_index=unit;
-    tex->coord_components=test==3 ? 0 : 2;
-    tex->dest_type=test==1 ? nir_type_uint32 :
-                   test==2 || test==3 ? nir_type_int32 : nir_type_float32;
-    if(test==3) {
-        tex->src[0]=nir_tex_src_for_ssa(nir_tex_src_lod,nir_imm_int(&b,0));
-    } else {
-        tex->src[0]=nir_tex_src_for_ssa(nir_tex_src_coord,test==4 ?
-            nir_imm_vec2(&b,0.25,0.5) : nir_vec2(&b,id,nir_imm_int(&b,1)));
-        tex->src[1]=nir_tex_src_for_ssa(nir_tex_src_lod,test==4 ?
-            nir_imm_float(&b,0) : nir_imm_int(&b,0));
-    }
-    nir_def_init(&tex->instr,&tex->def,test==3 ? 2 : 4,32);
-    nir_builder_instr_insert(&b,&tex->instr);
-    nir_def *value=test==3 ? nir_vec4(&b,nir_channel(&b,&tex->def,0),
-        nir_channel(&b,&tex->def,1),nir_imm_int(&b,0),nir_imm_int(&b,1)) : &tex->def;
-    nir_store_ssbo(&b,value,nir_imm_int(&b,0),nir_imul_imm(&b,id,16),
-        .write_mask=0xf,.align_mul=16);
-    return b.shader;
-}
 int main(void) {
     psbc_init();
     PsbcCompileOptions options = {.target=PSBC_TARGET_PS5, .stage=PSBC_STAGE_COMPUTE,
@@ -76,6 +44,11 @@ int main(void) {
     /* Sampled descriptors coexist with the three existing compute banks.
      * This is compiler/package coverage, not native sampler qualification. */
     for(unsigned unit=0;unit<=7;unit+=7) for(unsigned test=0;test<5;++test) {
+        nir_shader *checked=compute_sample(test,unit);
+        unsigned used=0;
+        assert(ps5_compute_texture_usage(checked,&used)==(test<4));
+        if(test<4) assert(used==(1u<<unit));
+        ralloc_free(checked);
         PsbcCompileOptions sampled=options;
         sampled.descriptor_binding_count=4;
         sampled.descriptor_bindings[3]=(PsbcDescriptorBinding){.binding=unit,
@@ -87,6 +60,26 @@ int main(void) {
         assert(psbc_compile_nir(missing,&options,&rejected)!=PSBC_RESULT_OK);
         assert(!rejected.machine_code);
         psbc_free_output(&rejected); ralloc_free(missing);
+    }
+    for(unsigned fault=0;fault<5;++fault) {
+        nir_shader *checked=compute_sample(0,0);
+        nir_tex_instr *tex=NULL;
+        nir_foreach_block(block,nir_shader_get_entrypoint(checked))
+            nir_foreach_instr(instr,block)
+                if(instr->type==nir_instr_type_tex) tex=nir_instr_as_tex(instr);
+        assert(tex);
+        if(fault==0) tex->texture_index=8;
+        if(fault==1) tex->is_array=true;
+        if(fault==2) tex->sampler_dim=GLSL_SAMPLER_DIM_3D;
+        if(fault==3) tex->src[1].src_type=nir_tex_src_texture_offset;
+        if(fault==4) {
+            nir_builder b=nir_builder_create(nir_shader_get_entrypoint(checked));
+            b.cursor=nir_before_instr(&tex->instr);
+            nir_src_rewrite(&tex->src[1].src,nir_imm_int(&b,1));
+        }
+        unsigned used=0;
+        assert(!ps5_compute_texture_usage(checked,&used));
+        ralloc_free(checked);
     }
     options = (PsbcCompileOptions){.target=PSBC_TARGET_PS5, .stage=PSBC_STAGE_VERTEX,
         .optimise=true, .address32_hi=2, .ngg=true, .primitive_type=6};
@@ -144,6 +137,22 @@ int main(void) {
     psbc_shutdown();
     for (unsigned phase=0; phase<4; ++phase) {
         float sign=phase&1 ? 1 : -1;
+        for(unsigned size_query=0;size_query<2;++size_query) {
+            uint32_t sampled[80]; memset(sampled,0xcd,sizeof(sampled));
+            for(unsigned i=0;i<16;++i) {
+                if(size_query) {
+                    const uint32_t size[4]={17,3,0,1};
+                    memcpy(sampled+8+i*4,size,16);
+                } else {
+                    const float value[4]={(i+1)*0.25f*sign,0,0,1};
+                    memcpy(sampled+8+i*4,value,16);
+                }
+            }
+            assert(count_sampled(sampled,sign,size_query)==80);
+            if(!size_query) assert(count_sampled(sampled,-sign,false)==64);
+            sampled[0]=0; sampled[71]^=1;
+            assert(count_sampled(sampled,sign,size_query)==78);
+        }
         uint32_t words[IMAGE_WORDS];
         uint8_t pixels[8*256];
         memset(words,0xcd,sizeof(words));
@@ -165,6 +174,11 @@ int main(void) {
     }
 }
 '''
+driver = (ROOT / "src/gallium/ps5/ps5_screen.c").read_text()
+usage_start = driver.index("static bool\nps5_compute_texture_usage(")
+usage = driver[usage_start:driver.index("/* Internal compute bring-up", usage_start)]
+code = code.replace("static nir_shader *compute_sample(",
+    "#define PS5_COMPUTE_TEXTURE_SLOTS 8\n" + usage + "static nir_shader *compute_sample(", 1)
 with tempfile.TemporaryDirectory() as directory:
     obj = str(Path(directory) / "compute-render.o")
     package = str(Path(directory) / "package.o")

@@ -32,6 +32,9 @@ static int ps5_resource_storage_image_descriptor(struct pipe_resource *r,uint32_
     const uint32_t srd[8]={(uintptr_t)r->data>>8,0,0x80000000,0x90000fac,63,0x400000,0,0};
     memcpy(d,srd,sizeof(srd)); return 0;
 }
+static int ps5_resource_sampled_image_descriptor(struct pipe_resource *r,uint32_t d[8]) {
+    return ps5_resource_storage_image_descriptor(r,d);
+}
 static unsigned locked, allocations, submissions, dispatches, flushes, userdata_count;
 static unsigned out_of_space;
 static int runtime_agc_initialized, fail_map, fail_emit, fail_alloc;
@@ -148,7 +151,7 @@ code = r'''
 #include "ps5_agc_package.h"
 ''' + types + mock + parsers + compute + "\n" + probe + r'''
 static void submission_contract(PsbcShaderOutput *out) {
-    _Alignas(16) uint32_t table_data[31*4+8*8]={0}, output[16]={0};
+    _Alignas(16) uint32_t table_data[31*4+8*8+8*12]={0}, output[16]={0};
     table_data[0]=(uintptr_t)output; table_data[1]=(uintptr_t)output>>32;
     table_data[2]=sizeof(output); table_data[3]=0x31016fac;
     memcpy(table_data+30*4,table_data,16); /* Highest UBO uses the same owned range. */
@@ -213,9 +216,26 @@ static void submission_contract(PsbcShaderOutput *out) {
         assert(!allocations && !locked && submissions==after);
         table_data[31*4+7*8+word]^=1;
     }
-    assert(ps5_agc_compute_execute(&screen,out,&table,all,40,groups)<0);
+    assert(ps5_agc_compute_execute(&screen,out,&table,all,PS5_AGC_COMPUTE_MAX_RESOURCES+1,groups)<0);
     assert(ps5_agc_compute_execute(&screen,out,&table,buffers,1,groups)<0); /* Image not owned. */
     assert(!allocations && !locked && submissions==after);
+    out->metadata.descriptor_binding_count=4;
+    out->metadata.descriptor_bindings[3]=(PsbcDescriptorBinding){.binding=7,
+        .type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,.array_size=1,.stride=48,
+        .offset=31*16+8*32+7*48};
+    uint32_t *sampled=table_data+31*4+8*8+7*12;
+    memcpy(sampled,expected,32);
+    assert(!ps5_agc_compute_execute(&screen,out,&table,all,47,groups));
+    const unsigned sampled_submissions=submissions;
+    for(unsigned word=0;word<12;++word) {
+        sampled[word]^=1;
+        assert(ps5_agc_compute_execute(&screen,out,&table,all,47,groups)<0);
+        assert(!allocations && !locked && submissions==sampled_submissions);
+        sampled[word]^=1;
+    }
+    memset(table_data+31*4,0,8*32);
+    assert(ps5_agc_compute_execute(&screen,out,&table,buffers,1,groups)<0);
+    assert(!allocations && !locked && submissions==sampled_submissions);
     out->metadata=saved;
 }
 static const PsbcCompileOptions opts = {

@@ -74,6 +74,60 @@ static nir_shader *build_fragment(void)
    return b.shader;
 }
 
+static nir_shader *compute_sample(unsigned test, unsigned unit)
+{
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
+      psbc_get_nir_options(PSBC_STAGE_COMPUTE), "compute-sampled-input");
+   b.shader->info.workgroup_size[0] = 16;
+   b.shader->info.workgroup_size[1] = b.shader->info.workgroup_size[2] = 1;
+   b.shader->info.num_ssbos = 1;
+   b.shader->info.num_textures = unit + 1;
+   BITSET_SET(b.shader->info.textures_used, unit);
+   nir_def *id = nir_channel(&b, nir_load_local_invocation_id(&b), 0);
+   nir_tex_instr *tex = nir_tex_instr_create(b.shader, test == 3 ? 1 : 2);
+   tex->op = test == 3 ? nir_texop_txs : test == 4 ? nir_texop_txl : nir_texop_txf;
+   tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
+   tex->texture_index = tex->sampler_index = unit;
+   tex->coord_components = test == 3 ? 0 : 2;
+   tex->dest_type = test == 1 ? nir_type_uint32 :
+                   test == 2 || test == 3 ? nir_type_int32 : nir_type_float32;
+   if (test == 3) {
+      tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_lod, nir_imm_int(&b, 0));
+   } else {
+      tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_coord, test == 4 ?
+         nir_imm_vec2(&b, 0.25, 0.5) : nir_vec2(&b, nir_iadd_imm(&b, id, 1), nir_imm_int(&b, 1)));
+      tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, test == 4 ?
+         nir_imm_float(&b, 0) : nir_imm_int(&b, 0));
+   }
+   nir_def_init(&tex->instr, &tex->def, test == 3 ? 2 : 4, 32);
+   nir_builder_instr_insert(&b, &tex->instr);
+   nir_def *value = test == 3 ? nir_vec4(&b, nir_channel(&b, &tex->def, 0),
+      nir_channel(&b, &tex->def, 1), nir_imm_int(&b, 0), nir_imm_int(&b, 1)) : &tex->def;
+   nir_store_ssbo(&b, value, nir_imm_int(&b, 0), nir_imul_imm(&b, id, 16),
+      .write_mask = 0xf, .align_mul = 16);
+   return b.shader;
+}
+
+static unsigned count_sampled(const uint32_t *words, float sign, bool size_query)
+{
+   unsigned correct = 0;
+   for (unsigned i = 0; i < 80; ++i) {
+      uint32_t expected = GUARD_WORD;
+      if (i >= 8 && i < 72) {
+         unsigned lane = (i - 8) % 4, invocation = (i - 8) / 4;
+         if (size_query) {
+            const uint32_t size[4] = {17, 3, 0, 1};
+            expected = size[lane];
+         } else {
+            float value = lane == 0 ? (invocation + 1) * 0.25f * sign : lane == 3 ? 1 : 0;
+            memcpy(&expected, &value, 4);
+         }
+      }
+      correct += words[i] == expected;
+   }
+   return correct;
+}
+
 static unsigned count_image(const uint32_t *words, float sign)
 {
    unsigned correct = 0;
@@ -104,6 +158,8 @@ int main(void)
    struct pipe_screen *screen = ps5_screen_create();
    struct pipe_context *pipe = screen ? screen->context_create(screen, NULL, 0) : NULL;
    struct pipe_resource *image = NULL, *target = NULL, *render_pool = NULL;
+   struct pipe_resource *sample_output = NULL;
+   void *sample_cs[4] = {0};
    struct pipe_sampler_view *view = NULL;
    void *cs = NULL, *vs = NULL, *fs = NULL, *sampler = NULL;
    void *blend = NULL, *rasterizer = NULL, *depth = NULL;
@@ -170,6 +226,25 @@ int main(void)
    depth = pipe->create_depth_stencil_alpha_state(pipe, &ds);
    if (!view || !sampler || !blend || !rasterizer || !depth)
       goto cleanup;
+   const struct pipe_resource output_template = {.target = PIPE_BUFFER,
+      .format = PIPE_FORMAT_R8_UNORM, .width0 = 80 * 4, .height0 = 1,
+      .depth0 = 1, .array_size = 1, .bind = PIPE_BIND_SHADER_BUFFER};
+   sample_output = screen->resource_create(screen, &output_template);
+   uint32_t *sample_words = NULL;
+   size_t sample_bytes = 0;
+   if (!sample_output || ps5_resource_info(sample_output, (void **)&sample_words, &sample_bytes, NULL) ||
+       !sample_words || sample_bytes != 80 * 4)
+      goto cleanup;
+   const struct pipe_shader_buffer output_binding = {sample_output, 8 * 4, 64 * 4};
+   pipe->set_shader_buffers(pipe, MESA_SHADER_COMPUTE, 0, 1, &output_binding, 1);
+   pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 1, 0, &view);
+   pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 7, 1, 0, &view);
+   for (unsigned i = 0; i < 4; ++i) {
+      compute.prog = compute_sample(i & 1 ? 3 : 0, i >= 2 ? 7 : 0);
+      sample_cs[i] = pipe->create_compute_state(pipe, &compute);
+      if (!sample_cs[i])
+         goto cleanup;
+   }
    pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &view);
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, &sampler);
    pipe->bind_blend_state(pipe, blend);
@@ -189,10 +264,11 @@ int main(void)
       const struct pipe_grid_info grid = {.work_dim = 1, .block = {16, 1, 1}, .grid = {1, 1, 1}};
       printf("[ps5-compute-render] phase=%u dispatch-start\n", phase);
       fflush(stdout);
+      pipe->bind_compute_state(pipe, cs);
       pipe->launch_grid(pipe, &grid);
       unsigned dispatches = 0, draws = 0;
       int compute_rc = ps5_context_last_compute_status(pipe, &dispatches);
-      if (compute_rc || dispatches != phase + 1)
+      if (compute_rc || dispatches != phase * 5 + 1)
          goto cleanup;
       /* No CPU image map/read/copy between its GPU producer and sampler consumer. */
       const struct pipe_draw_info info = {.mode = MESA_PRIM_TRIANGLES, .instance_count = 1};
@@ -205,6 +281,20 @@ int main(void)
       unsigned pixel_ok = pixels ? count_pixels(pixels, transfer->stride, sign) : 0;
       if (pixels)
          pipe->texture_unmap(pipe, transfer);
+      if (draw_rc || pixel_ok != 64)
+         goto cleanup;
+      for (unsigned i = 0; i < 4; ++i) {
+         memset(sample_words, 0xcd, sample_bytes); /* Output only; source stays GPU-written. */
+         pipe->bind_compute_state(pipe, sample_cs[i]);
+         pipe->launch_grid(pipe, &grid);
+         unsigned sampled_dispatches = 0;
+         int rc = ps5_context_last_compute_status(pipe, &sampled_dispatches);
+         unsigned correct = count_sampled(sample_words, sign, i & 1);
+         printf("[ps5-compute-sampled] phase=%u case=%u rc=%d dispatches=%u words=%u/80\n",
+            phase, i, rc, sampled_dispatches, correct);
+         if (rc || sampled_dispatches != phase * 5 + i + 2 || correct != 80)
+            goto cleanup;
+      }
       unsigned image_ok = count_image(image_data, sign);
       printf("[ps5-compute-render] phase=%u compute=%d/%u draw=%d/%u pixels=%u/64 image=%u/%u\n",
          phase, compute_rc, dispatches, draw_rc, draws, pixel_ok, image_ok, IMAGE_WORDS);
@@ -224,8 +314,11 @@ cleanup:
       void *none = NULL;
       pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, &none);
       pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 1, NULL);
+      pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 0, 8, NULL);
       pipe_sampler_view_reference(&view, NULL);
       if (cs) pipe->delete_compute_state(pipe, cs);
+      for (unsigned i = 0; i < 4; ++i)
+         if (sample_cs[i]) pipe->delete_compute_state(pipe, sample_cs[i]);
       if (vs) pipe->delete_vs_state(pipe, vs);
       if (fs) pipe->delete_fs_state(pipe, fs);
       if (sampler) pipe->delete_sampler_state(pipe, sampler);
@@ -236,6 +329,7 @@ cleanup:
    }
    pipe_resource_reference(&image, NULL);
    pipe_resource_reference(&target, NULL);
+   pipe_resource_reference(&sample_output, NULL);
    pipe_resource_reference(&render_pool, NULL);
    if (screen) screen->destroy(screen);
    psbc_shutdown();
