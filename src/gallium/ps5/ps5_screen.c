@@ -10449,8 +10449,13 @@ ps5_create_compute_state(struct pipe_context *base,
       return NULL;
    nir_shader *nir = (nir_shader *)templ->prog; /* Gallium transfers ownership. */
    unsigned textures = 0, filtered = 0, max_lod[PS5_COMPUTE_TEXTURE_SLOTS], arrays = 0;
-   if (nir->info.stage != MESA_SHADER_COMPUTE || nir->num_uniforms ||
-       nir->info.num_ubos > PS5_COMPUTE_CONSTANT_SLOTS ||
+   if (nir->info.stage != MESA_SHADER_COMPUTE)
+      goto cleanup;
+   /* Match graphics: Mesa's unpacked default uniforms occupy CB0. Check the
+    * resulting count after lowering, including the newly reserved slot. */
+   if (nir->num_uniforms)
+      nir_lower_uniforms_to_ubo(nir, false, false);
+   if (nir->info.num_ubos > PS5_COMPUTE_CONSTANT_SLOTS ||
        nir->info.num_images > PS5_COMPUTE_IMAGE_SLOTS ||
        nir->info.num_textures > PS5_COMPUTE_TEXTURE_SLOTS ||
        nir->info.num_ssbos > PS5_COMPUTE_STORAGE_SLOTS ||
@@ -11929,6 +11934,7 @@ ps5_screen_create(void)
    struct nir_shader_compiler_options *vs_options;
    struct nir_shader_compiler_options *gs_options;
    struct nir_shader_compiler_options *fs_options;
+   struct nir_shader_compiler_options *cs_options;
    struct pipe_caps *caps;
    struct pipe_shader_caps *vs_caps;
    struct pipe_shader_caps *gs_caps;
@@ -12136,11 +12142,15 @@ ps5_screen_create(void)
       psbc_get_nir_options(PSBC_STAGE_FRAGMENT);
    gs_options = (struct nir_shader_compiler_options *)(uintptr_t)
       psbc_get_nir_options(PSBC_STAGE_GEOMETRY);
+   cs_options = (struct nir_shader_compiler_options *)(uintptr_t)
+      psbc_get_nir_options(PSBC_STAGE_COMPUTE);
    vs_options->io_options |= nir_io_has_intrinsics;
    gs_options->io_options |= nir_io_has_intrinsics;
    fs_options->io_options |= nir_io_has_intrinsics;
+   cs_options->io_options |= nir_io_has_intrinsics;
    screen->base.nir_options[MESA_SHADER_VERTEX] = vs_options;
    screen->base.nir_options[MESA_SHADER_GEOMETRY] = gs_options;
    screen->base.nir_options[MESA_SHADER_FRAGMENT] = fs_options;
+   screen->base.nir_options[MESA_SHADER_COMPUTE] = cs_options;
    return &screen->base;
 }

@@ -68,6 +68,32 @@ int main(void) {
            .type=PSBC_DESCRIPTOR_UNIFORM_BUFFER, .array_size=15, .stride=16, .offset=256},
           {.binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
            .type=PSBC_DESCRIPTOR_STORAGE_IMAGE, .array_size=8, .stride=32, .offset=496}}};
+    PsbcShaderOutput uniform_out[2]={{0}};
+    for(unsigned explicit_ubo=0;explicit_ubo<2;++explicit_ubo) {
+        nir_shader *nir=build_compute_uniforms(explicit_ubo);
+        assert(prepare_compute_nir(nir) && nir->info.num_ubos==2 && nir->info.first_ubo_is_default_ubo);
+        assert(prepare_compute_nir(nir) && nir->info.num_ubos==2); /* No second shift/reservation. */
+        nir_foreach_function_impl(impl,nir) nir_foreach_block(block,impl) nir_foreach_instr(instr,block)
+            if(instr->type==nir_instr_type_intrinsic)
+                assert(nir_instr_as_intrinsic(instr)->intrinsic!=nir_intrinsic_load_uniform);
+        nir_validate_shader(nir,"prepared compute defaults");
+        assert(psbc_compile_nir(nir,&options,&uniform_out[explicit_ubo])==PSBC_RESULT_OK);
+        assert(!uniform_out[explicit_ubo].metadata.scratch_valid);
+        ralloc_free(nir);
+    }
+    assert(uniform_out[0].machine_code_size==uniform_out[1].machine_code_size);
+    assert(!memcmp(uniform_out[0].machine_code,uniform_out[1].machine_code,uniform_out[0].machine_code_size));
+    for(unsigned i=0;i<2;++i) psbc_free_output(&uniform_out[i]);
+    for(unsigned blocks=14;blocks<=15;++blocks) {
+        nir_shader *nir=build_compute_uniforms(false); nir->info.num_ubos=blocks;
+        assert(prepare_compute_nir(nir)==(blocks==14));
+        assert(nir->info.num_ubos==blocks+1);
+        ralloc_free(nir);
+    }
+    nir_shader *wrong_stage=build_compute_uniforms(false);
+    wrong_stage->info.stage=MESA_SHADER_FRAGMENT;
+    assert(!prepare_compute_nir(wrong_stage) && wrong_stage->info.num_ubos==1);
+    ralloc_free(wrong_stage);
     for(unsigned kind=0;kind<3;++kind) compile(build_compute(kind), &options);
     PsbcCompileOptions all_slots=options;
     for(unsigned unit=0;unit<16;++unit)
@@ -363,6 +389,14 @@ swizzle_start = driver.index("static bool\nps5_texture_descriptor_swizzle(")
 format_start = driver.index("static unsigned\nps5_storage_image_texel_size(")
 swizzle = driver[format_start:driver.index("static bool\nps5_compute_image_array_resource(",format_start)] + driver[swizzle_start:driver.index("static bool\nps5_texture_descriptor_wrap(",swizzle_start)]
 code = code.replace("static void compile(",swizzle+"static void compile(",1)
+prepare_start = driver.index("   unsigned textures = 0", driver.index("ps5_create_compute_state("))
+prepare_end = driver.index("   if (!context->compute_descriptors)", prepare_start)
+prepare = "\n".join(line for line in driver.splitlines() if line.startswith((
+    "#define PS5_COMPUTE_CONSTANT_SLOTS ", "#define PS5_COMPUTE_STORAGE_SLOTS ", "#define PS5_COMPUTE_IMAGE_SLOTS ")))
+prepare += "\nstatic bool prepare_compute_nir(nir_shader *nir) {\n" + driver[prepare_start:prepare_end]
+prepare += "return true; cleanup: return false;\n}\n"
+code = code.replace("static void compile(",prepare+"static void compile(",1)
+assert "screen->base.nir_options[MESA_SHADER_COMPUTE] = cs_options;" in driver
 usage_start = driver.index("static bool\nps5_compute_texture_usage(")
 usage = driver[usage_start:driver.index("/* Internal compute bring-up", usage_start)]
 code = code.replace("static nir_shader *compute_sample(",
