@@ -267,7 +267,7 @@
   "scope": "parsed GLSL + selected ST passes; not st_link_shader or a stable NIR format",
   "serialization_audited_sha256": "0aecf87e19e14164981710895204b7a64414719a4343c99911a70a6e2789f12e",
   "source_sha256": {
-    "src/gallium/ps5/ps5_screen.c": "4bc62065302db648c547318317fb75c0c2f00d80467b536de93f993b11f12129",
+    "src/gallium/ps5/ps5_screen.c": "b27b6ec2169271924920b80e146e156d85400cb6de02f685d22ed23aeae594df",
     "tests/ps5/glsl_handoff/abi.c": "f97e326a3d612d72dfc7348c46bafc40f5da203c8c97479c9e5762d06bfff4cf",
     "tests/ps5/glsl_handoff/backend.c": "53a9a725ce0d3c270bb71bc05e896ae68c4b089204fe0af56f7508e7c946398f",
     "tests/ps5/glsl_handoff/check_target_abi.py": "df9d77a410bf3443f3bb752bf36ba69068d4ff1cf3f1cf503172823df8d28e86",
@@ -283,7 +283,7 @@
     "third_party/mesa-26.2.0/src/compiler/shader_info.h": "b7c0ffcdc60db695854fa596171c8bffe7928598fe93d1cb17939114b7f4e74b",
     "third_party/mesa-26.2.0/src/mesa/program/prog_statevars.c": "3c5d09c2d5f5a0747ea77e3c413a2f5661e54d2787bd4183a61c602001537643",
     "third_party/mesa-26.2.0/src/mesa/state_tracker/st_glsl_to_nir.cpp": "f8e1695bd04d4f304be651aa49b9ae1150997aa025cce7a489127a0c718c7d2e",
-    "third_party/opengnm-psbc/libpsbc/psbc_compile.c": "b7ca41d7c239119e76f438d01437c0229da357d21811c6503501e3251e3e5957",
+    "third_party/opengnm-psbc/libpsbc/psbc_compile.c": "3fc107df53be461fd366202519cdc8e2651ae951f773ff853ed9ce7f99eee2f6",
     "third_party/opengnm-psbc/libpsbc/psbc_compile.h": "b1cd4e747c22a11f0ff588fca29c82eb8c4e6346b5f89b78f0db277975944954",
     "third_party/opengnm-psbc/src/amd/common/nir/ac_nir.c": "bf93d76a158bfbf5fd955be5c3e01e198de20d0782404e7f4eba64a2d29f71bc",
     "third_party/opengnm-psbc/src/compiler/nir/nir_intrinsics.h": "2d6f9e713863ce5a5fa51d4ed684896ce62fd347f289ae7a6c458d4b0069c8ee",
@@ -300,7 +300,7 @@
   }
 }
 PS5_GLSL_RECEIPT_END */
-#define PS5_GLSL_RECEIPT_SHA256 "080e8b3f2fee6787fa1109565d074a7153a0f8ae55d48d0e0173fee084b83fa1"
+#define PS5_GLSL_RECEIPT_SHA256 "508c08e16bd8c04eb302aa296fa0f4a3ba21e9daf6e26a60703d0bb15cdf1a20"
 #define PS5_GLSL_DEFAULT_BYTES 16u
 #define PS5_GLSL_ADDEND_OFFSET 0u
 _Static_assert(PS5_GLSL_DEFAULT_BYTES > 0 && PS5_GLSL_DEFAULT_BYTES <= 64 &&

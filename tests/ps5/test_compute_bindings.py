@@ -794,20 +794,38 @@ int main(void) {
     canonical.render_staging_offset=canonical.render_staging_size=0;
     assert(!ps5_resource_storage_image_descriptor(&canonical.base,0,descriptor));
     assert(!memcmp(descriptor,canonical_srd,sizeof(descriptor)));
-    /* GL_RGBA16 / layout(rgba16), not RGBA16F or RGBA16UI. Use the actual
-     * Mesa-generated table and driver encoder: GFX10 16_16_16_16_UNORM=65. */
+    /* Actual Mesa-generated table/driver encoding: RGBA16=65, RGBA8=56. */
+    const enum pipe_format normalized_formats[]={PIPE_FORMAT_R16G16B16A16_UNORM,PIPE_FORMAT_R8G8B8A8_UNORM};
+    for(unsigned f=0;f<ARRAY_SIZE(normalized_formats);++f) {
     struct ps5_resource normalized=canonical;
-    normalized.base.format=PIPE_FORMAT_R16G16B16A16_UNORM;
-    assert(ps5_storage_image_texel_size(normalized.base.format)==8);
+    normalized.base.format=normalized_formats[f];
+    const unsigned bytes=f ? 4 : 8, encoding=f ? 56 : 65;
+    assert(ps5_storage_image_texel_size(normalized.base.format)==bytes);
     assert(ps5_storage_image_channels(normalized.base.format)==4);
-    assert(gfx10_format_table[normalized.base.format].img_format==65 &&
+    assert(gfx10_format_table[normalized.base.format].img_format==encoding &&
         !gfx10_format_table[normalized.base.format].buffers_only);
     for(unsigned staged=0;staged<2;++staged) {
         normalized.base.bind=PIPE_BIND_SAMPLER_VIEW | (staged ? PIPE_BIND_RENDER_TARGET : 0);
         normalized.render_staging_offset=normalized.render_staging_size=staged ? 65536 : 0;
+        if(f && staged) {
+            /* Single-mip RGBA8 render/sample backing is native tiled. Even
+             * plausible linear strides/staging cannot authorize a linear SRD. */
+            memset(descriptor,0xa5,sizeof(descriptor));
+            assert(!ps5_linear_sampled_layout(&normalized.base));
+            assert(ps5_resource_storage_image_descriptor(&normalized.base,0,descriptor)<0);
+            assert(ps5_resource_sampled_image_descriptor(&normalized.base,0,0,descriptor)<0);
+            for(unsigned i=0;i<8;++i) assert(descriptor[i]==0xa5a5a5a5u);
+            /* Two levels select existing canonical-linear render staging:
+             * ceil(17/2)xceil(3/2) -> 512 bytes, then 768-byte level zero. */
+            normalized.base.last_level=1;
+            normalized.level_stride[1]=256;
+            normalized.level_offset[0]=512;
+            normalized.size=1280;
+        }
+        assert(ps5_linear_sampled_layout(&normalized.base));
         assert(!ps5_resource_storage_image_descriptor(&normalized.base,0,descriptor));
-        assert(descriptor[1]==(0x04100000u | (uint32_t)((uintptr_t)normalized.data>>40)));
-        assert(descriptor[3]==0x90000facu && descriptor[4]==31);
+        assert(descriptor[1]==((encoding<<20) | (uint32_t)((uintptr_t)normalized.data>>40)));
+        assert(descriptor[3]==0x90000facu && descriptor[4]==(normalized.base.last_level ? 0 : 256/bytes-1));
         assert(!ps5_resource_sampled_image_descriptor(&normalized.base,0,0,sampled_srd));
         assert(!memcmp(descriptor,sampled_srd,sizeof(descriptor)));
         for(unsigned stage=0;stage<2;++stage) {
@@ -824,11 +842,23 @@ int main(void) {
             ps5_set_shader_images(&context.base,which,7,0,1,NULL);
             assert(normalized.base.reference.count==1);
         }
+        for(unsigned fault=0;fault<5;++fault) {
+            struct ps5_resource bad=normalized;
+            if(fault==0) bad.size--;
+            if(fault==1) bad.level_offset[0]++;
+            if(fault==2) bad.level_stride[0]+=256;
+            if(fault==3) bad.allocation_size=bad.size-1;
+            if(fault==4) { bad.base.bind|=PIPE_BIND_RENDER_TARGET; bad.render_staging_size=1; bad.render_staging_offset=0; }
+            memset(descriptor,0xa5,sizeof(descriptor));
+            assert(ps5_resource_storage_image_descriptor(&bad.base,0,descriptor)<0);
+            for(unsigned i=0;i<8;++i) assert(descriptor[i]==0xa5a5a5a5u);
+        }
+    }
     }
     const enum pipe_format still_gated[]={PIPE_FORMAT_R16G16B16A16_SNORM,
-        PIPE_FORMAT_R8G8B8A8_UNORM,PIPE_FORMAT_R16_UNORM,PIPE_FORMAT_R16G16_UNORM};
+        PIPE_FORMAT_R8G8B8A8_SNORM,PIPE_FORMAT_R16_UNORM,PIPE_FORMAT_R16G16_UNORM};
     for(unsigned i=0;i<ARRAY_SIZE(still_gated);++i) {
-        struct ps5_resource bad=normalized; bad.base.format=still_gated[i];
+        struct ps5_resource bad=canonical; bad.base.format=still_gated[i];
         assert(!ps5_storage_image_texel_size(bad.base.format));
         memset(descriptor,0xa5,sizeof(descriptor));
         assert(ps5_resource_storage_image_descriptor(&bad.base,0,descriptor)<0);
@@ -923,11 +953,12 @@ int main(void) {
     const enum pipe_format vectors[]={PIPE_FORMAT_R32G32_UINT,PIPE_FORMAT_R32G32_SINT,PIPE_FORMAT_R32G32_FLOAT,
         PIPE_FORMAT_R32G32B32A32_UINT,PIPE_FORMAT_R32G32B32A32_SINT,PIPE_FORMAT_R32G32B32A32_FLOAT,
         PIPE_FORMAT_R16G16B16A16_UINT,PIPE_FORMAT_R16G16B16A16_SINT,PIPE_FORMAT_R16G16B16A16_FLOAT,
-        PIPE_FORMAT_R16G16B16A16_UNORM};
+        PIPE_FORMAT_R16G16B16A16_UNORM,PIPE_FORMAT_R8G8B8A8_UNORM};
     _Alignas(256) uint8_t vector_pixels[1536];
     for(unsigned i=0;i<ARRAY_SIZE(vectors);++i) {
         struct ps5_resource v=image; v.base.format=vectors[i]; v.data=vector_pixels;
-        unsigned bytes=i>=3 && i<6 ? 16 : 8, stride=(17*bytes+255)&~255u;
+        unsigned bytes=v.base.format==PIPE_FORMAT_R8G8B8A8_UNORM ? 4 : i>=3 && i<6 ? 16 : 8;
+        unsigned stride=(17*bytes+255)&~255u;
         v.level_stride[0]=stride; v.size=stride*3; v.allocation_size=sizeof(vector_pixels);
         assert(ps5_storage_image_texel_size(v.base.format)==bytes);
         assert(!ps5_resource_storage_image_descriptor(&v.base,0,descriptor));
@@ -1259,6 +1290,6 @@ with tempfile.TemporaryDirectory() as directory:
 print("PASS: Gallium 39-resource bindings, image descriptors/lifetime, upload failure, direct/indirect guards and unbind")
 print("PASS: Mesa sampler+render canonical SRDs without image hint; staging/allocation/layout guards, CS/FS refs and format mismatch")
 print("PASS: R/RG X001/XY01 and identity views, arbitrary remap rejection, atomic replacement/trailing unbind and references")
-print("PASS: RGBA16_UNORM real GFX10 encoding, canonical/staged CS/FS bindings, mip/array bounds; other normalized formats gated")
+print("PASS: RGBA16/RGBA8_UNORM real GFX10 encoding, canonical/staged CS/FS bindings, mip/array bounds; tiled and other normalized formats gated")
 print("PASS: Mesa atomic handoff CS/FS, SSBO counts 0/1/8 + bindings 0/7, alignment/offset state, refs, isolation, replacement/unbind")
 print("PASS: Mesa CS/FS zero-initialized 0-to-16-to-2-to-0 tracking, stale cleanup, reference counts and stage isolation")

@@ -71,7 +71,7 @@ static void compile(nir_shader *nir, PsbcCompileOptions *options) {
 }
 /* Reuse actual image-store builders; mutate only format/op and retain an
  * observable SSBO sink for loads/size/atomics. Compiler-only, not GL parsing. */
-static nir_shader *normalized_image(nir_shader *nir, unsigned operation) {
+static nir_shader *normalized_image(nir_shader *nir, unsigned operation, enum pipe_format format) {
     unsigned changed=0;
     nir_foreach_function_impl(impl,nir) {
         nir_builder b=nir_builder_create(impl);
@@ -80,17 +80,17 @@ static nir_shader *normalized_image(nir_shader *nir, unsigned operation) {
             nir_intrinsic_instr *intr=nir_instr_as_intrinsic(instr);
             if(intr->intrinsic!=nir_intrinsic_image_store) continue;
             ++changed;
-            nir_intrinsic_set_format(intr,PIPE_FORMAT_R16G16B16A16_UNORM);
+            nir_intrinsic_set_format(intr,format);
             if(!operation) continue;
             b.cursor=nir_before_instr(instr);
             nir_def *slot=intr->src[0].ssa, *zero=nir_imm_int(&b,0), *value;
             if(operation==1)
                 value=nir_image_load(&b,4,32,slot,intr->src[1].ssa,zero,zero,
-                    .image_dim=GLSL_SAMPLER_DIM_2D,.format=PIPE_FORMAT_R16G16B16A16_UNORM,
+                    .image_dim=GLSL_SAMPLER_DIM_2D,.format=format,
                     .dest_type=nir_type_float32);
             else if(operation==2)
                 value=nir_image_size(&b,2,32,slot,zero,.image_dim=GLSL_SAMPLER_DIM_2D,
-                    .format=PIPE_FORMAT_R16G16B16A16_UNORM);
+                    .format=format);
             else
                 value=nir_image_atomic(&b,32,slot,intr->src[1].ssa,zero,nir_imm_int(&b,1),
                     .image_dim=GLSL_SAMPLER_DIM_2D,.format=PIPE_FORMAT_R32_UINT,
@@ -130,7 +130,8 @@ int main(void) {
            .type=PSBC_DESCRIPTOR_UNIFORM_BUFFER, .array_size=15, .stride=16, .offset=256},
           {.binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
            .type=PSBC_DESCRIPTOR_STORAGE_IMAGE, .array_size=8, .stride=32, .offset=496}}};
-    for(unsigned stage=0;stage<2;++stage) {
+    const enum pipe_format normalized_formats[]={PIPE_FORMAT_R16G16B16A16_UNORM,PIPE_FORMAT_R8G8B8A8_UNORM};
+    for(unsigned f=0;f<ARRAY_SIZE(normalized_formats);++f) for(unsigned stage=0;stage<2;++stage) {
         PsbcCompileOptions normalized=options;
         normalized.stage=stage ? PSBC_STAGE_FRAGMENT : PSBC_STAGE_COMPUTE;
         normalized.spi_shader_col_format=stage ? 4 : 0;
@@ -139,8 +140,8 @@ int main(void) {
         normalized.descriptor_bindings[2].binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(normalized.stage);
         for(unsigned operation=0;operation<4;++operation) {
             nir_shader *nir=normalized_image(stage ? build_fragment_storage(2,7,9,false,false,0) :
-                build_compute(0),operation);
-            nir_validate_shader(nir,"RGBA16_UNORM compiler regression");
+                build_compute(0),operation,normalized_formats[f]);
+            nir_validate_shader(nir,"normalized RGBA compiler regression");
             if(operation==3) {
                 /* Normalized atomics are invalid NIR, so test the exact
                  * extracted admission guard, not an invalid compile pipeline. */
@@ -149,7 +150,7 @@ int main(void) {
                     if(instr->type!=nir_instr_type_intrinsic) continue;
                     nir_intrinsic_instr *intr=nir_instr_as_intrinsic(instr);
                     if(intr->intrinsic==nir_intrinsic_image_atomic) {
-                        nir_intrinsic_set_format(intr,PIPE_FORMAT_R16G16B16A16_UNORM);
+                        nir_intrinsic_set_format(intr,normalized_formats[f]);
                         struct gallium_buffer_state state={.options=&normalized,.valid=true};
                         nir_builder b=nir_builder_create(impl);
                         assert(!lower_gallium_image_index(&b,instr,&state) && !state.valid);
@@ -159,13 +160,13 @@ int main(void) {
                 }
                 assert(changed==1);
                 nir_validate_shader(nir,"restored R32UI atomic control");
-                fprintf(stderr,"RGBA16_UNORM stage=%u atomic admission guard rejected\n",normalized.stage);
+                fprintf(stderr,"RGBA%u_UNORM stage=%u atomic admission guard rejected\n",f ? 8 : 16,normalized.stage);
                 ralloc_free(nir);
                 continue;
             }
             PsbcShaderOutput out={0};
             PsbcResult result=psbc_compile_nir(nir,&normalized,&out);
-            fprintf(stderr,"RGBA16_UNORM stage=%u op=%s result=%d bytes=%zu\n",normalized.stage,
+            fprintf(stderr,"RGBA%u_UNORM stage=%u op=%s result=%d bytes=%zu\n",f ? 8 : 16,normalized.stage,
                 operation==0 ? "store" : operation==1 ? "load" : operation==2 ? "size" : "atomic-reject",
                 result,out.machine_code_size);
             assert(result==PSBC_RESULT_OK && out.machine_code_size && !out.metadata.scratch_size_per_thread);
@@ -632,4 +633,4 @@ with tempfile.TemporaryDirectory() as directory:
         "-pthread", "-lm"], check=True)
     subprocess.run([executable], check=True, timeout=30)
 print("PASS: CS/VS/FS packages; typed, filtered, mip/array sampling and writers; descriptor rejections and readback/guard oracles (host only)")
-print("PASS: RGBA16_UNORM CS/FS store/load/size compile+package; exact source guard rejects normalized atomics (NIR, not parsed GLSL)")
+print("PASS: RGBA16/RGBA8_UNORM CS/FS store/load/size compile+package; exact source guard rejects normalized atomics (NIR, not parsed GLSL)")

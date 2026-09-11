@@ -267,23 +267,31 @@ main(void)
       "layout(local_size_x=3) in;\n"
       "layout(std430) buffer Output { uint commands[]; };\n"
       "void main() { uint id = gl_LocalInvocationIndex; commands[id] = id == 1u ? 3u : 2u; }\n";
-   static const char *rgba16_store_source =
+   static const char *normalized_store_template =
       "#version 330\n"
       "#extension GL_ARB_compute_shader : require\n"
       "#extension GL_ARB_shader_image_load_store : require\n"
       "layout(local_size_x=1) in;\n"
-      "layout(rgba16) uniform writeonly image2D destination;\n"
+      "layout(%s) uniform writeonly image2D destination;\n"
       "uniform vec4 value;\n"
       "void main() { imageStore(destination, ivec2(1, 1), value); }\n";
-   static const char *rgba16_load_source =
+   static const char *normalized_load_template =
       "#version 330\n"
       "#extension GL_ARB_compute_shader : require\n"
       "#extension GL_ARB_shader_image_load_store : require\n"
       "#extension GL_ARB_shader_storage_buffer_object : require\n"
       "layout(local_size_x=1) in;\n"
-      "layout(rgba16) uniform readonly image2D source_image;\n"
+      "layout(%s) uniform readonly image2D source_image;\n"
       "layout(std430) buffer Output { uvec4 result; };\n"
       "void main() { result = floatBitsToUint(imageLoad(source_image, ivec2(1, 1))); }\n";
+   static const struct {
+      const char *name, *layout;
+      GLenum internal_format, raw_type;
+      unsigned endpoint;
+   } normalized_formats[] = {
+      {"RGBA16", "rgba16", GL_RGBA16, GL_UNSIGNED_SHORT, 0xffffu},
+      {"RGBA8 mipmapped-linear", "rgba8", GL_RGBA8, GL_UNSIGNED_BYTE, 0xffu},
+   };
    static const char *capacity_source =
       "#version 330\n"
       "#extension GL_ARB_compute_shader : require\n"
@@ -320,7 +328,8 @@ main(void)
    GLuint shader = 0, program = 0, buffers[2] = {0, 0};
    GLuint extra_shaders[3] = {0}, extra_programs[3] = {0};
    GLuint grid_shaders[3] = {0}, grid_programs[3] = {0}, grid_buffers[2] = {0};
-   GLuint rgba16_shaders[2] = {0}, rgba16_programs[2] = {0}, rgba16_texture = 0;
+   GLuint normalized_shaders[2][2] = {{0}}, normalized_programs[2][2] = {{0}};
+   GLuint normalized_textures[2] = {0};
    GLuint capacity_shader = 0, capacity_program = 0, capacity_buffer = 0;
    GLuint texture = 0, atomic_buffer = 0;
    GLint major = 0, minor = 0, profile = 0;
@@ -590,71 +599,136 @@ main(void)
       goto cleanup;
    puts(TAG "dispatch delta=14 (prior 9 + IDs/shared/arguments/indirect 4 + restored 1); negatives=3 PASS");
 
-   if (!compile_program("RGBA16 store", rgba16_store_source, &rgba16_shaders[0], &rgba16_programs[0]) ||
-       !compile_program("RGBA16 load", rgba16_load_source, &rgba16_shaders[1], &rgba16_programs[1]))
-      goto cleanup;
-   GLint rgba16_destination = glGetUniformLocation(rgba16_programs[0], "destination");
-   GLint rgba16_value = glGetUniformLocation(rgba16_programs[0], "value");
-   GLint rgba16_source = glGetUniformLocation(rgba16_programs[1], "source_image");
-   if (!check_gl("RGBA16 uniforms") || rgba16_destination < 0 || rgba16_value < 0 || rgba16_source < 0)
-      goto cleanup;
-   GLushort rgba16_initial[3 * 3 * 4];
-   for (unsigned i = 0; i < 36; ++i)
-      rgba16_initial[i] = (GLushort)(0x1234u + i * 0x101u);
-   glGenTextures(1, &rgba16_texture);
-   glActiveTexture(GL_TEXTURE0);
-   glBindTexture(GL_TEXTURE_2D, rgba16_texture);
-   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
-   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16, 3, 3, 0, GL_RGBA, GL_UNSIGNED_SHORT, rgba16_initial);
-   if (!check_gl("RGBA16 sentinel texture") || !rgba16_texture)
-      goto cleanup;
-   for (unsigned pass = 0; pass < 2; ++pass) {
-      GLushort raw[36] = {0};
-      uint32_t expected[80];
-      printf(TAG "RGBA16 pass=%u begin\n", pass);
-      glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
-      glUseProgram(rgba16_programs[0]);
-      glUniform1i(rgba16_destination, 0);
-      glUniform4f(rgba16_value, pass ? 1.0f : 0.0f, pass ? 0.0f : 1.0f,
-                  pass ? 1.0f : 0.0f, pass ? 0.0f : 1.0f);
-      glBindImageTexture(0, rgba16_texture, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16);
-      if (!check_gl("RGBA16 store binding") ||
-          !dispatch_checked("RGBA16 store", mesa->pipe, baseline + 15 + pass * 2,
-                            GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT))
+   for (unsigned format = 0; format < 2; ++format) {
+      const char *name = normalized_formats[format].name;
+      const GLenum internal_format = normalized_formats[format].internal_format;
+      const GLenum raw_type = normalized_formats[format].raw_type;
+      const int byte_format = raw_type == GL_UNSIGNED_BYTE;
+      char store_source[512], load_source[512], store_name[32], load_name[32];
+      int store_length = snprintf(store_source, sizeof(store_source), normalized_store_template,
+                                  normalized_formats[format].layout);
+      int load_length = snprintf(load_source, sizeof(load_source), normalized_load_template,
+                                 normalized_formats[format].layout);
+      if (store_length < 0 || (size_t)store_length >= sizeof(store_source) ||
+          load_length < 0 || (size_t)load_length >= sizeof(load_source))
          goto cleanup;
-      puts(TAG "RGBA16 raw texture readback begin");
-      glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_SHORT, raw);
-      if (!check_gl("RGBA16 raw texture readback"))
+      snprintf(store_name, sizeof(store_name), "%s store", name);
+      snprintf(load_name, sizeof(load_name), "%s load", name);
+      if (!compile_program(store_name, store_source, &normalized_shaders[format][0], &normalized_programs[format][0]) ||
+          !compile_program(load_name, load_source, &normalized_shaders[format][1], &normalized_programs[format][1]))
          goto cleanup;
+      GLint destination = glGetUniformLocation(normalized_programs[format][0], "destination");
+      GLint value = glGetUniformLocation(normalized_programs[format][0], "value");
+      GLint source_image = glGetUniformLocation(normalized_programs[format][1], "source_image");
+      if (!check_gl("normalized image uniforms") || destination < 0 || value < 0 || source_image < 0)
+         goto cleanup;
+      GLushort initial16[36];
+      GLubyte initial8[36];
+      const GLubyte mip1_initial[4] = {0x16, 0x47, 0x98, 0xdb};
       for (unsigned i = 0; i < 36; ++i) {
-         /* Pixel (1,1) is texel 4, lanes 16..19; all eight neighbors stay intact. */
-         GLushort wanted = i >= 16 && i < 20
-            ? (((i - 16) & 1u) != pass ? 0xffffu : 0u) : rgba16_initial[i];
-         if (raw[i] != wanted) {
-            printf(TAG "RGBA16 pass=%u raw lane=%u actual=%04x expected=%04x\n",
-                   pass, i, (unsigned)raw[i], (unsigned)wanted);
+         initial16[i] = (GLushort)(0x1234u + i * 0x101u);
+         initial8[i] = (GLubyte)(0x23u + i * 5u);
+      }
+      glGenTextures(1, &normalized_textures[format]);
+      glActiveTexture(GL_TEXTURE0);
+      glBindTexture(GL_TEXTURE_2D, normalized_textures[format]);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, byte_format ? 1 : 0);
+      /* Rows are 12/24 bytes, both aligned to the unchanged default pack/unpack 4. */
+      if (byte_format) {
+         /* Base-only RGBA8 render backing is native tiled and remains unsupported
+          * by the linear image SRD. Immutable two-level storage selects the
+          * existing canonical-linear mip path without an intermediate allocation. */
+         if (!has_extension("GL_ARB_texture_storage"))
+            goto cleanup;
+         PFNGLTEXSTORAGE2DPROC texture_storage =
+            (PFNGLTEXSTORAGE2DPROC)eglGetProcAddress("glTexStorage2D");
+         if (!texture_storage) {
+            puts(TAG "missing glTexStorage2D entrypoint");
             goto cleanup;
          }
+         puts(TAG "RGBA8 mipmapped-linear immutable levels=2; base-only tiled image gap remains");
+         texture_storage(GL_TEXTURE_2D, 2, GL_RGBA8, 3, 3);
+         if (!check_gl("RGBA8 immutable allocation"))
+            goto cleanup;
+         glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 3, 3, GL_RGBA, GL_UNSIGNED_BYTE, initial8);
+         glTexSubImage2D(GL_TEXTURE_2D, 1, 0, 0, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, mip1_initial);
+         GLint immutable = 0, mip_width = 0, mip_height = 0;
+         glGetTexParameteriv(GL_TEXTURE_2D, GL_TEXTURE_IMMUTABLE_FORMAT, &immutable);
+         glGetTexLevelParameteriv(GL_TEXTURE_2D, 1, GL_TEXTURE_WIDTH, &mip_width);
+         glGetTexLevelParameteriv(GL_TEXTURE_2D, 1, GL_TEXTURE_HEIGHT, &mip_height);
+         if (!check_gl("RGBA8 two-level storage") || !immutable || mip_width != 1 || mip_height != 1)
+            goto cleanup;
+      } else {
+         glTexImage2D(GL_TEXTURE_2D, 0, internal_format, 3, 3, 0, GL_RGBA, raw_type, initial16);
       }
-      printf(TAG "RGBA16 pass=%u raw lanes=36/36 neighbors=8/8 PASS\n", pass);
-      for (unsigned i = 0; i < 80; ++i)
-         expected[i] = i >= 8 && i < 12
-            ? (((i - 8) & 1u) != pass ? UINT32_C(0x3f800000) : 0) : GUARD;
-      glUseProgram(rgba16_programs[1]);
-      glUniform1i(rgba16_source, 0);
-      glBindImageTexture(0, rgba16_texture, 0, GL_FALSE, 0, GL_READ_ONLY, GL_RGBA16);
-      if (!reset_output(buffers[1]) ||
-          !dispatch_checked("RGBA16 load", mesa->pipe, baseline + 16 + pass * 2,
-                            GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT |
-                            GL_SHADER_IMAGE_ACCESS_BARRIER_BIT) ||
-          !check_words("RGBA16 imageLoad float bits", buffers[1], expected, 80))
+      if (!check_gl("normalized sentinel texture") || !normalized_textures[format])
          goto cleanup;
-      printf(TAG "RGBA16 pass=%u channels=4/4 SSBO guards=76/76 PASS\n", pass);
+      for (unsigned pass = 0; pass < 2; ++pass) {
+         GLushort raw16[36] = {0};
+         GLubyte raw8[36] = {0};
+         uint32_t expected[80];
+         printf(TAG "%s pass=%u begin\n", name, pass);
+         glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT);
+         glUseProgram(normalized_programs[format][0]);
+         glUniform1i(destination, 0);
+         glUniform4f(value, pass ? 1.0f : 0.0f, pass ? 0.0f : 1.0f,
+                     pass ? 1.0f : 0.0f, pass ? 0.0f : 1.0f);
+         glBindImageTexture(0, normalized_textures[format], 0, GL_FALSE, 0, GL_WRITE_ONLY, internal_format);
+         if (!check_gl("normalized store binding") ||
+             !dispatch_checked(store_name, mesa->pipe, baseline + 15 + format * 4 + pass * 2,
+                               GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_UPDATE_BARRIER_BIT))
+            goto cleanup;
+         printf(TAG "%s raw texture readback begin\n", name);
+         glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, raw_type,
+                       byte_format ? (void *)raw8 : (void *)raw16);
+         if (!check_gl("normalized raw texture readback"))
+            goto cleanup;
+         for (unsigned i = 0; i < 36; ++i) {
+            /* Pixel (1,1) is texel 4, lanes 16..19; all eight neighbors stay intact. */
+            unsigned wanted = i >= 16 && i < 20
+               ? (((i - 16) & 1u) != pass ? normalized_formats[format].endpoint : 0u)
+               : (byte_format ? initial8[i] : initial16[i]);
+            unsigned actual = byte_format ? raw8[i] : raw16[i];
+            if (actual != wanted) {
+               printf(TAG "%s pass=%u raw lane=%u actual=%04x expected=%04x\n",
+                      name, pass, i, actual, wanted);
+               goto cleanup;
+            }
+         }
+         printf(TAG "%s pass=%u raw lanes=36/36 neighbors=8/8 PASS\n", name, pass);
+         if (byte_format) {
+            GLubyte mip1_raw[4] = {0};
+            glGetTexImage(GL_TEXTURE_2D, 1, GL_RGBA, GL_UNSIGNED_BYTE, mip1_raw);
+            if (!check_gl("RGBA8 mip1 readback"))
+               goto cleanup;
+            for (unsigned i = 0; i < 4; ++i) {
+               if (mip1_raw[i] != mip1_initial[i]) {
+                  printf(TAG "RGBA8 pass=%u mip1 lane=%u actual=%02x expected=%02x\n",
+                         pass, i, (unsigned)mip1_raw[i], (unsigned)mip1_initial[i]);
+                  goto cleanup;
+               }
+            }
+            printf(TAG "RGBA8 mipmapped-linear pass=%u mip1 sentinel=4/4 unchanged PASS\n", pass);
+         }
+         for (unsigned i = 0; i < 80; ++i)
+            expected[i] = i >= 8 && i < 12
+               ? (((i - 8) & 1u) != pass ? UINT32_C(0x3f800000) : 0) : GUARD;
+         glUseProgram(normalized_programs[format][1]);
+         glUniform1i(source_image, 0);
+         glBindImageTexture(0, normalized_textures[format], 0, GL_FALSE, 0, GL_READ_ONLY, internal_format);
+         if (!reset_output(buffers[1]) ||
+             !dispatch_checked(load_name, mesa->pipe, baseline + 16 + format * 4 + pass * 2,
+                               GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT |
+                               GL_SHADER_IMAGE_ACCESS_BARRIER_BIT) ||
+             !check_words(load_name, buffers[1], expected, 80))
+            goto cleanup;
+         printf(TAG "%s pass=%u channels=4/4 SSBO guards=76/76 PASS\n", name, pass);
+      }
    }
-   puts(TAG "dispatch delta=18 (prior 14 + RGBA16 store/load 4); negatives=3 PASS");
+   puts(TAG "dispatch delta=22 (prior 14 + RGBA16 base-only 4 + RGBA8 mipmapped-linear 4); negatives=3 PASS");
 
    GLint advertised_ssbo_size = 0;
    glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &advertised_ssbo_size);
@@ -706,7 +780,7 @@ main(void)
    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, capacity_buffer, 32, capacity_bytes);
    glUseProgram(capacity_program);
    if (!check_gl("capacity ranges") ||
-       !dispatch_checked("128MiB unsized capacity", mesa->pipe, baseline + 19,
+       !dispatch_checked("128MiB unsized capacity", mesa->pipe, baseline + 23,
                          GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT) ||
        !check_buffer("capacity length", GL_SHADER_STORAGE_BUFFER, buffers[1], UINT32_C(33554432)))
       goto cleanup;
@@ -735,7 +809,7 @@ main(void)
    capacity_buffer = 0;
    if (!check_gl("capacity buffer delete"))
       goto cleanup;
-   puts(TAG "dispatch delta=19 (prior 18 + capacity 1); negatives=3 PASS; capacity interior unchecked");
+   puts(TAG "dispatch delta=23 (prior 22 + capacity 1); negatives=3 PASS; capacity interior unchecked");
    passed = 1;
 
 cleanup:
@@ -760,21 +834,23 @@ cleanup:
          glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 7, 0);
          glDeleteBuffers(1, &atomic_buffer);
       }
-      if (texture || rgba16_texture) {
+      if (texture || normalized_textures[0] || normalized_textures[1]) {
          glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
          glBindTexture(GL_TEXTURE_2D, 0);
          glDeleteTextures(1, &texture);
-         glDeleteTextures(1, &rgba16_texture);
+         glDeleteTextures(2, normalized_textures);
       }
       glDeleteBuffers(2, buffers);
       if (grid_buffers[1])
          glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, 0);
       glDeleteBuffers(2, grid_buffers);
       for (unsigned i = 0; i < 2; ++i) {
-         if (rgba16_programs[i])
-            glDeleteProgram(rgba16_programs[i]);
-         if (rgba16_shaders[i])
-            glDeleteShader(rgba16_shaders[i]);
+         for (unsigned operation = 0; operation < 2; ++operation) {
+            if (normalized_programs[i][operation])
+               glDeleteProgram(normalized_programs[i][operation]);
+            if (normalized_shaders[i][operation])
+               glDeleteShader(normalized_shaders[i][operation]);
+         }
       }
       for (unsigned i = 0; i < 3; ++i) {
          if (grid_programs[i])
