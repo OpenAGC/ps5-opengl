@@ -221,6 +221,12 @@ int main(void) {
             .type=PSBC_DESCRIPTOR_STORAGE_BUFFER,.array_size=16,.stride=16}}};
     for(unsigned atomic=0;atomic<2;++atomic) for(unsigned slot=0;slot<=15;slot+=15)
         compile(build_fragment_storage(atomic,slot),&storage);
+    storage.descriptor_binding_count=2;
+    storage.descriptor_bindings[1]=(PsbcDescriptorBinding){
+        .binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_FRAGMENT),
+        .type=PSBC_DESCRIPTOR_STORAGE_IMAGE,.array_size=8,.offset=256,.stride=32};
+    for(unsigned operation=2;operation<=4;++operation) for(unsigned slot=0;slot<=7;slot+=7)
+        compile(build_fragment_storage(operation,slot),&storage);
     /* An incomplete legacy descriptor layout must return an error, not enter
      * RADV's unrelated bindless-heap path and abort the native application. */
     for (unsigned test=0; test<8; ++test) {

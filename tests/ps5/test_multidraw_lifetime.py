@@ -381,7 +381,7 @@ static unsigned unindexed_draws;
 static uint8_t expected_uniform[PS5_MULTIDRAW_BATCH_CAPACITY][3];
 static unsigned ps5_shader_texture_count(const unsigned *s) { return *s; }
 static unsigned shader_storage;
-static unsigned ps5_shader_storage_count(const unsigned *s) { (void)s; return shader_storage; }
+static unsigned ps5_shader_uses_storage(const unsigned *s) { (void)s; return shader_storage; }
 static bool ps5_texture_used(const struct ps5_context *c, const unsigned *s, const void *metadata, unsigned unit) {
     (void)c; (void)metadata; return (*s & (1u << unit)) != 0;
 }

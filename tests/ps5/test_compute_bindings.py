@@ -52,7 +52,7 @@ struct ps5_resource {
 };
 struct ps5_compute_shader { PsbcShaderOutput output; unsigned textures, filtered_textures, texture_lod[PS5_COMPUTE_TEXTURE_SLOTS], array_textures; };
 struct ps5_sampler_state { struct pipe_sampler_state base; };
-struct test_nir { struct { unsigned num_ssbos; } info; };
+struct test_nir { struct { unsigned num_ssbos, num_images; } info; };
 struct test_variant { PsbcShaderOutput output; };
 struct ps5_shader { struct test_nir *nir; struct test_variant *active; };
 struct ps5_context {
@@ -65,6 +65,8 @@ struct ps5_context {
     struct ps5_shader *fs;
     struct pipe_resource *descriptor_storage[2];
     struct pipe_image_view compute_images[8];
+    struct pipe_image_view fragment_images[8];
+    bool fragment_images_invalid;
     struct pipe_sampler_view *compute_views[PS5_COMPUTE_TEXTURE_SLOTS];
     bool compute_views_invalid;
     uint32_t compute_samplers[PS5_COMPUTE_TEXTURE_SLOTS][4];
@@ -101,7 +103,7 @@ static int ps5_resource_info(struct pipe_resource *base, void **address, size_t 
 static bool fragment_mode;
 static unsigned fragment_drains;
 static void ps5_draw_batch_drain(void) { ++fragment_drains; }
-static void ps5_flush_gpu_data(const void *address, size_t size) { assert(address && (fragment_mode ? size==64 || size==256 : size==12)); }
+static void ps5_flush_gpu_data(const void *address, size_t size) { assert(address && (fragment_mode ? size==64 || size==256 || size==512 || size==768 : size==12)); }
 void u_upload_data_ref(struct u_upload_mgr *upload, unsigned minimum, unsigned size,
     unsigned alignment, const void *data, unsigned *offset, struct pipe_resource **buffer) {
     assert(upload && !minimum && alignment==16 && size<=64 && upload_resource);
@@ -178,9 +180,9 @@ static void ps5_flush(struct pipe_context *context, struct pipe_fence_handle **f
 ''' + barrier + fragment + '\n#define PS5_ENABLE_BORDER_COLOR_CANDIDATE 1\n' + sampler_helpers + functions + r'''
 static void fragment_contract(void) {
     struct pipe_screen screen={.resource_destroy=destroy};
-    uint32_t words[64]={0}, descriptors[64]={0}, userdata[16]={0};
+    uint32_t words[64]={0}, descriptors[128]={0}, userdata[16]={0};
     struct ps5_resource data={.base={.screen=&screen,.target=PIPE_BUFFER,.width0=256},.data=(void *)words,.size=256};
-    struct ps5_resource table={.data=(void *)descriptors,.size=256};
+    struct ps5_resource table={.data=(void *)descriptors,.size=512};
     pipe_reference_init(&data.base.reference,1);
     struct test_nir nir={.info.num_ssbos=16};
     struct test_variant variant={0};
@@ -222,6 +224,34 @@ static void fragment_contract(void) {
     *m=good;
     ps5_set_shader_buffers(&c.base,MESA_SHADER_FRAGMENT,0,16,NULL,0);
     assert(data.base.reference.count==1 && !ps5_prepare_fragment_storage(&c,userdata,16));
+    nir.info.num_ssbos=0; nir.info.num_images=8;
+    m->descriptor_binding_count=2;
+    m->descriptor_bindings[1]=(PsbcDescriptorBinding){.binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_FRAGMENT),
+        .type=PSBC_DESCRIPTOR_STORAGE_IMAGE,.array_size=8,.offset=256,.stride=32};
+    _Alignas(256) uint8_t pixels[768];
+    struct ps5_resource image={.base={.screen=&screen,.target=PIPE_TEXTURE_2D,
+        .format=PIPE_FORMAT_R32_UINT,.width0=17,.height0=3,.depth0=1,.array_size=1,
+        .bind=PIPE_BIND_SHADER_IMAGE|PIPE_BIND_SAMPLER_VIEW},.data=pixels,.size=768,.level_stride={256}};
+    pipe_reference_init(&image.base.reference,1);
+    struct pipe_image_view views[8];
+    for(unsigned i=0;i<8;++i) views[i]=(struct pipe_image_view){.resource=&image.base,
+        .format=PIPE_FORMAT_R32_UINT,.access=PIPE_IMAGE_ACCESS_READ_WRITE};
+    assert(!ps5_prepare_fragment_storage(&c,userdata,16));
+    ps5_set_shader_images(&c.base,MESA_SHADER_FRAGMENT,0,8,0,views);
+    assert(image.base.reference.count==9 && !c.compute_images[0].resource);
+    assert(ps5_prepare_fragment_storage(&c,userdata,16));
+    for(unsigned i=0;i<8;++i) assert(descriptors[64+i*8]==(uint32_t)((uintptr_t)pixels>>8));
+    views[7].u.tex.level=1;
+    ps5_set_shader_images(&c.base,MESA_SHADER_FRAGMENT,0,8,0,views);
+    assert(c.fragment_images_invalid && image.base.reference.count==9);
+    assert(!ps5_prepare_fragment_storage(&c,userdata,16));
+    views[7].u.tex.level=0;
+    ps5_set_shader_images(&c.base,MESA_SHADER_FRAGMENT,0,8,0,views);
+    m->descriptor_bindings[1].offset=128;
+    assert(!ps5_prepare_fragment_storage(&c,userdata,16));
+    m->descriptor_bindings[1].offset=256;
+    ps5_set_shader_images(&c.base,MESA_SHADER_FRAGMENT,0,0,8,NULL);
+    assert(image.base.reference.count==1 && !ps5_prepare_fragment_storage(&c,userdata,16));
     fragment_mode=false;
 }
 int main(void) {
