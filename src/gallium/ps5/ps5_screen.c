@@ -196,6 +196,7 @@ struct ps5_constant_state {
 struct ps5_compute_shader {
    PsbcShaderOutput output;
    unsigned textures;
+   unsigned filtered_textures;
 };
 
 struct ps5_context {
@@ -256,6 +257,9 @@ struct ps5_context {
    struct pipe_resource *compute_descriptors;
    struct pipe_sampler_view *compute_views[PS5_COMPUTE_TEXTURE_SLOTS];
    bool compute_views_invalid;
+   uint32_t compute_samplers[PS5_COMPUTE_TEXTURE_SLOTS][4];
+   unsigned compute_sampler_mask;
+   bool compute_samplers_invalid;
    struct pipe_shader_buffer compute_buffers[PS5_COMPUTE_BUFFER_SLOTS];
    struct pipe_image_view compute_images[PS5_COMPUTE_IMAGE_SLOTS];
    bool compute_images_invalid;
@@ -10147,28 +10151,32 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
 }
 
 #ifdef PS5_NATIVE_TITLE_RUNTIME
-/* ponytail: base-level fetch/size only; filtering needs a validated sampler
- * descriptor and mip/view contract before accepting further operations. */
+/* ponytail: base-level fetch/size and explicit-LOD float sampling only;
+ * expanded operations need their own sampler and mip/view qualification. */
 static bool
-ps5_compute_texture_usage(nir_shader *nir, unsigned *used)
+ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *filtered)
 {
    *used = 0;
+   *filtered = 0;
    nir_foreach_function_impl(impl, nir) {
       nir_foreach_block(block, impl) {
          nir_foreach_instr(instr, block) {
             if (instr->type != nir_instr_type_tex)
                continue;
             nir_tex_instr *tex = nir_instr_as_tex(instr);
-            if ((tex->op != nir_texop_txf && tex->op != nir_texop_txs) ||
+            if ((tex->op != nir_texop_txf && tex->op != nir_texop_txs && tex->op != nir_texop_txl) ||
                 tex->sampler_dim != GLSL_SAMPLER_DIM_2D || tex->is_array ||
                 tex->is_shadow || tex->texture_index >= PS5_COMPUTE_TEXTURE_SLOTS ||
                 tex->def.bit_size != 32 ||
                 tex->num_srcs != (tex->op == nir_texop_txs ? 1 : 2))
                return false;
+            if (tex->op == nir_texop_txl && (tex->sampler_index != tex->texture_index ||
+                tex->dest_type != nir_type_float32))
+               return false;
             unsigned coords = 0, lods = 0;
             for (unsigned i = 0; i < tex->num_srcs; ++i) {
                if (tex->src[i].src_type == nir_tex_src_coord) {
-                  if (tex->op != nir_texop_txf || tex->coord_components != 2)
+                  if (tex->op == nir_texop_txs || tex->coord_components != 2)
                      return false;
                   ++coords;
                } else if (tex->src[i].src_type == nir_tex_src_lod) {
@@ -10179,9 +10187,11 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used)
                   return false;
                }
             }
-            if (lods != 1 || coords != (tex->op == nir_texop_txf ? 1u : 0u))
+            if (lods != 1 || coords != (tex->op == nir_texop_txs ? 0u : 1u))
                return false;
             *used |= 1u << tex->texture_index;
+            if (tex->op == nir_texop_txl)
+               *filtered |= 1u << tex->texture_index;
          }
       }
    }
@@ -10200,13 +10210,13 @@ ps5_create_compute_state(struct pipe_context *base,
    if (!templ || templ->ir_type != PIPE_SHADER_IR_NIR || !templ->prog)
       return NULL;
    nir_shader *nir = (nir_shader *)templ->prog; /* Gallium transfers ownership. */
-   unsigned textures = 0;
+   unsigned textures = 0, filtered = 0;
    if (nir->info.stage != MESA_SHADER_COMPUTE || nir->num_uniforms ||
        nir->info.num_ubos > PS5_COMPUTE_CONSTANT_SLOTS ||
        nir->info.num_images > PS5_COMPUTE_IMAGE_SLOTS ||
        nir->info.num_textures > PS5_COMPUTE_TEXTURE_SLOTS ||
        nir->info.num_ssbos > PS5_COMPUTE_STORAGE_SLOTS ||
-       !ps5_compute_texture_usage(nir, &textures))
+       !ps5_compute_texture_usage(nir, &textures, &filtered))
       goto cleanup;
    if (!context->compute_descriptors) {
       struct pipe_resource desc = {
@@ -10251,6 +10261,7 @@ ps5_create_compute_state(struct pipe_context *base,
    shader = calloc(1, sizeof(*shader));
    if (shader) {
       shader->textures = textures;
+      shader->filtered_textures = filtered;
       uint8_t *package = NULL;
       size_t package_size = 0;
       if (psbc_compile_nir(nir, &options, &shader->output) != PSBC_RESULT_OK ||
@@ -10437,6 +10448,40 @@ ps5_set_compute_sampler_views(struct pipe_context *base, unsigned start, unsigne
 }
 
 static void
+ps5_set_compute_sampler_states(struct pipe_context *base, unsigned start, unsigned count,
+                               void **states)
+{
+   struct ps5_context *context = (struct ps5_context *)base;
+   uint32_t descriptors[PS5_COMPUTE_TEXTURE_SLOTS][4] = {{0}};
+   context->compute_samplers_invalid = true;
+   if (start > PS5_COMPUTE_TEXTURE_SLOTS || count > PS5_COMPUTE_TEXTURE_SLOTS - start ||
+       (count && !states))
+      return;
+   for (unsigned i = 0; i < count; ++i) {
+      if (!states[i]) continue;
+      const struct pipe_sampler_state *s = &((const struct ps5_sampler_state *)states[i])->base;
+      uint32_t wrap, min_filter, mag_filter;
+      /* ponytail: base-level clamp-only sampling; expand with mip/view qualification. */
+      if (s->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE || s->wrap_t != s->wrap_s ||
+          s->wrap_r != s->wrap_s || s->compare_mode || s->unnormalized_coords ||
+          s->max_anisotropy > 1 || s->min_mip_filter != PIPE_TEX_MIPFILTER_NONE ||
+          s->min_lod != 0 || s->max_lod != 0 || s->lod_bias != 0 ||
+          !ps5_texture_descriptor_wrap(s->wrap_s, &wrap) ||
+          !ps5_texture_descriptor_filter(s->min_img_filter, &min_filter) ||
+          !ps5_texture_descriptor_filter(s->mag_img_filter, &mag_filter))
+         return;
+      descriptors[i][0] = wrap | (wrap << 3) | (wrap << 6);
+      descriptors[i][2] = (mag_filter << 20) | (min_filter << 22);
+   }
+   for (unsigned i = 0; i < count; ++i) {
+      memcpy(context->compute_samplers[start + i], descriptors[i], sizeof(descriptors[i]));
+      context->compute_sampler_mask &= ~(1u << (start + i));
+      if (states[i]) context->compute_sampler_mask |= 1u << (start + i);
+   }
+   context->compute_samplers_invalid = false;
+}
+
+static void
 ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
 {
    struct ps5_context *context = (struct ps5_context *)base;
@@ -10446,7 +10491,7 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
    context->last_compute_status = -1;
    if (!context->cs || !context->compute_descriptors || context->compute_bindings_invalid ||
        context->compute_constants_invalid || context->compute_images_invalid ||
-       context->compute_views_invalid || !grid ||
+       context->compute_views_invalid || context->compute_samplers_invalid || !grid ||
        grid->work_dim > 3 || grid->variable_shared_mem || grid->num_globals ||
        grid->draw_count || grid->indirect_draw_count)
       return;
@@ -10510,6 +10555,12 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
       if (!view || ps5_resource_sampled_image_descriptor(view->texture,
             (uint32_t *)(table->data + PS5_COMPUTE_TEXTURE_OFFSET + i * 48)))
          return;
+      if (context->cs->filtered_textures & (1u << i)) {
+         if (!(context->compute_sampler_mask & (1u << i)) || view->format != PIPE_FORMAT_R32_FLOAT)
+            return;
+         memcpy(table->data + PS5_COMPUTE_TEXTURE_OFFSET + i * 48 + 32,
+                context->compute_samplers[i], 16);
+      }
       buffers[buffer_count++] = view->texture;
    }
    context->last_compute_status = ps5_agc_compute_execute(base->screen, &context->cs->output,
@@ -10877,6 +10928,13 @@ ps5_bind_sampler_states(struct pipe_context *base, mesa_shader_stage shader,
 {
    struct ps5_context *context = (struct ps5_context *)base;
    unsigned slot;
+
+#ifdef PS5_NATIVE_TITLE_RUNTIME
+   if (shader == MESA_SHADER_COMPUTE) {
+      ps5_set_compute_sampler_states(base, start, count, states);
+      return;
+   }
+#endif
 
    if (shader == MESA_SHADER_VERTEX)
       slot = 0;

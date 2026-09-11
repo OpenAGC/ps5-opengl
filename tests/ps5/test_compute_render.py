@@ -60,9 +60,9 @@ int main(void) {
      * This is compiler/package coverage, not native sampler qualification. */
     for(unsigned unit=0;unit<=7;unit+=7) for(unsigned test=0;test<5;++test) {
         nir_shader *checked=compute_sample(test,unit);
-        unsigned used=0;
-        assert(ps5_compute_texture_usage(checked,&used)==(test<4));
-        if(test<4) assert(used==(1u<<unit));
+        unsigned used=0, filtered=0;
+        assert(ps5_compute_texture_usage(checked,&used,&filtered));
+        assert(used==(1u<<unit) && filtered==(test==4 ? 1u<<unit : 0));
         ralloc_free(checked);
         PsbcCompileOptions sampled=options;
         sampled.descriptor_binding_count=4;
@@ -76,8 +76,8 @@ int main(void) {
         assert(!rejected.machine_code);
         psbc_free_output(&rejected); ralloc_free(missing);
     }
-    for(unsigned fault=0;fault<5;++fault) {
-        nir_shader *checked=compute_sample(0,0);
+    for(unsigned fault=0;fault<7;++fault) {
+        nir_shader *checked=compute_sample(fault>=5 ? 4 : 0,0);
         nir_tex_instr *tex=NULL;
         nir_foreach_block(block,nir_shader_get_entrypoint(checked))
             nir_foreach_instr(instr,block)
@@ -87,13 +87,15 @@ int main(void) {
         if(fault==1) tex->is_array=true;
         if(fault==2) tex->sampler_dim=GLSL_SAMPLER_DIM_3D;
         if(fault==3) tex->src[1].src_type=nir_tex_src_texture_offset;
+        if(fault==5) tex->sampler_index=1;
+        if(fault==6) tex->dest_type=nir_type_uint32;
         if(fault==4) {
             nir_builder b=nir_builder_create(nir_shader_get_entrypoint(checked));
             b.cursor=nir_before_instr(&tex->instr);
             nir_src_rewrite(&tex->src[1].src,nir_imm_int(&b,1));
         }
-        unsigned used=0;
-        assert(!ps5_compute_texture_usage(checked,&used));
+        unsigned used=0, filtered=0;
+        assert(!ps5_compute_texture_usage(checked,&used,&filtered));
         ralloc_free(checked);
     }
     options = (PsbcCompileOptions){.target=PSBC_TARGET_PS5, .stage=PSBC_STAGE_VERTEX,
@@ -153,19 +155,23 @@ int main(void) {
     psbc_shutdown();
     for (unsigned kind=0;kind<3;++kind) for (unsigned phase=0; phase<4; ++phase) {
         float sign=phase&1 ? 1 : -1;
-        for(unsigned size_query=0;size_query<2;++size_query) {
+        for(unsigned size_query=0;size_query<(kind==0 ? 4u : 2u);++size_query) {
             uint32_t sampled[80]; memset(sampled,0xcd,sizeof(sampled));
             for(unsigned i=0;i<16;++i) {
-                if(size_query) {
+                if(size_query==1) {
                     const uint32_t size[4]={17,3,0,1};
                     memcpy(sampled+8+i*4,size,16);
                 } else {
                     const uint32_t value[4]={expected_red(kind,i+1,sign),0,0,kind==0 ? 0x3f800000u : 1};
                     memcpy(sampled+8+i*4,value,16);
+                    if(size_query>=2) {
+                        const uint32_t bits[2][2]={{0x3f800000,0x40400000},{0x3f700000,0x40440000}};
+                        sampled[8+i*4]=bits[size_query-2][i&1] ^ (sign<0 ? 0x80000000u : 0);
+                    }
                 }
             }
             assert(count_sampled(sampled,sign,size_query,kind)==80);
-            if(!size_query) assert(count_sampled(sampled,-sign,false,kind)==64);
+            if(size_query!=1) assert(count_sampled(sampled,-sign,size_query,kind)==64);
             sampled[0]=0; sampled[71]^=1;
             assert(count_sampled(sampled,sign,size_query,kind)==78);
         }

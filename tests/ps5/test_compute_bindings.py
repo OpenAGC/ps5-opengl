@@ -13,6 +13,8 @@ MESA = ROOT / "third_party/mesa-26.2.0"
 source = (ROOT / "src/gallium/ps5/ps5_screen.c").read_text()
 begin = source.index("static void\nps5_set_shader_buffers(")
 functions = source[begin:source.index("\n#endif", begin)]
+sampler_at = source.index("static bool\nps5_texture_descriptor_wrap(")
+sampler_helpers = source[sampler_at:source.index("static bool\nps5_texture_descriptor_mip_filter(", sampler_at)]
 image_at = source.index("static int\nps5_resource_linear_image_descriptor(")
 image_descriptor = source[image_at:source.index("\nstruct pipe_resource *", image_at)]
 code = r'''
@@ -38,7 +40,8 @@ struct ps5_resource {
     size_t size, render_staging_size, depth_staging_size;
     unsigned level_stride[1];
 };
-struct ps5_compute_shader { PsbcShaderOutput output; unsigned textures; };
+struct ps5_compute_shader { PsbcShaderOutput output; unsigned textures, filtered_textures; };
+struct ps5_sampler_state { struct pipe_sampler_state base; };
 struct ps5_context {
     struct pipe_context base;
     struct ps5_compute_shader *cs;
@@ -47,6 +50,9 @@ struct ps5_context {
     struct pipe_image_view compute_images[8];
     struct pipe_sampler_view *compute_views[8];
     bool compute_views_invalid;
+    uint32_t compute_samplers[8][4];
+    unsigned compute_sampler_mask;
+    bool compute_samplers_invalid;
     bool compute_images_invalid;
     bool compute_bindings_invalid;
     uint32_t compute_constants_invalid;
@@ -56,6 +62,8 @@ struct ps5_context {
 static unsigned submitted, destroyed;
 static unsigned with_images;
 static bool with_sampled;
+static uint32_t expected_sampler[4];
+static unsigned with_filtered;
 static bool multi, with_constants, fail_upload;
 static bool fail_info;
 static struct ps5_resource *upload_resource;
@@ -95,6 +103,8 @@ static int ps5_agc_compute_execute(struct pipe_screen *s, const PsbcShaderOutput
         for(unsigned i=0;i<8;++i) {
             uint32_t expected[12]={0};
             assert(!ps5_resource_sampled_image_descriptor(buffers[i],expected));
+            if (with_filtered & (1u<<i))
+                memcpy(expected+8,expected_sampler,16);
             assert(!memcmp(t->data+PS5_COMPUTE_TEXTURE_OFFSET+i*48,expected,48));
         }
         ++submitted; return 0;
@@ -140,7 +150,7 @@ static int ps5_agc_compute_execute(struct pipe_screen *s, const PsbcShaderOutput
     for (unsigned i=0; i<15*4; ++i) assert(((uint32_t *)t->data)[i]==0);
     ++submitted; return 0;
 }
-''' + functions + r'''
+''' + '\n#define PS5_ENABLE_BORDER_COLOR_CANDIDATE 1\n' + sampler_helpers + functions + r'''
 int main(void) {
     struct pipe_screen screen={.resource_destroy=destroy}, other_screen={0};
     uint8_t table_data[PS5_COMPUTE_DESCRIPTOR_BYTES], output[256];
@@ -432,6 +442,54 @@ int main(void) {
     assert(context.last_compute_status<0 && submitted==before_sampled+1);
     ps5_set_compute_sampler_views(&context.base,0,0,8,NULL);
     assert(sampled.reference.count==1 && !context.compute_views_invalid);
+    ps5_set_compute_sampler_views(&context.base,0,8,0,sampled_views);
+    cs.filtered_textures=with_filtered=255;
+    unsigned before_filter=submitted;
+    ps5_launch_grid(&context.base,&good); /* Missing sampler must not submit. */
+    assert(context.last_compute_status<0 && submitted==before_filter);
+    image.base.format=sampled.format=PIPE_FORMAT_R32_FLOAT;
+    struct ps5_sampler_state sampler={.base={.wrap_s=PIPE_TEX_WRAP_CLAMP_TO_EDGE,
+        .wrap_t=PIPE_TEX_WRAP_CLAMP_TO_EDGE,.wrap_r=PIPE_TEX_WRAP_CLAMP_TO_EDGE,
+        .min_mip_filter=PIPE_TEX_MIPFILTER_NONE}};
+    void *states[8]; for(unsigned i=0;i<8;++i) states[i]=&sampler;
+    expected_sampler[0]=0x92;
+    for(unsigned filter=0;filter<4;++filter) {
+        sampler.base.min_img_filter=filter&1 ? PIPE_TEX_FILTER_LINEAR : PIPE_TEX_FILTER_NEAREST;
+        sampler.base.mag_img_filter=filter&2 ? PIPE_TEX_FILTER_LINEAR : PIPE_TEX_FILTER_NEAREST;
+        ps5_set_compute_sampler_states(&context.base,0,8,states);
+        expected_sampler[2]=((filter&1)!=0)<<22 | ((filter&2)!=0)<<20;
+        assert(!context.compute_samplers_invalid && context.compute_sampler_mask==255);
+        ps5_launch_grid(&context.base,&good);
+        assert(!context.last_compute_status && submitted==++before_filter);
+    }
+    struct ps5_sampler_state valid=sampler;
+    for(unsigned fault=0;fault<12;++fault) {
+        sampler=valid;
+        if(fault==0) sampler.base.wrap_s=PIPE_TEX_WRAP_REPEAT;
+        if(fault==1) sampler.base.wrap_t=PIPE_TEX_WRAP_REPEAT;
+        if(fault==2) sampler.base.wrap_r=PIPE_TEX_WRAP_REPEAT;
+        if(fault==3) sampler.base.compare_mode=1;
+        if(fault==4) sampler.base.unnormalized_coords=1;
+        if(fault==5) sampler.base.max_anisotropy=2;
+        if(fault==6) sampler.base.min_mip_filter=PIPE_TEX_MIPFILTER_LINEAR;
+        if(fault==7) sampler.base.min_lod=1;
+        if(fault==8) sampler.base.max_lod=1;
+        if(fault==9) sampler.base.lod_bias=1;
+        ps5_set_compute_sampler_states(&context.base,fault==10 ? 8 : 0,8,fault==11 ? NULL : states);
+        assert(context.compute_samplers_invalid && context.compute_sampler_mask==255);
+        ps5_launch_grid(&context.base,&good);
+        assert(context.last_compute_status<0 && submitted==before_filter);
+    }
+    sampler=valid;
+    ps5_set_compute_sampler_states(&context.base,0,8,states);
+    image.base.format=sampled.format=PIPE_FORMAT_R32_UINT;
+    ps5_launch_grid(&context.base,&good);
+    assert(context.last_compute_status<0 && submitted==before_filter);
+    for(unsigned i=0;i<8;++i) states[i]=NULL;
+    ps5_set_compute_sampler_states(&context.base,0,8,states);
+    assert(!context.compute_sampler_mask && !context.compute_samplers_invalid);
+    ps5_set_compute_sampler_views(&context.base,0,0,8,NULL);
+    cs.filtered_textures=with_filtered=0;
     cs.textures=0; with_sampled=false;
 }
 '''

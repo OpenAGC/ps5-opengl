@@ -226,6 +226,12 @@ static void submission_contract(PsbcShaderOutput *out) {
     uint32_t *sampled=table_data+31*4+8*8+7*12;
     memcpy(sampled,expected,32);
     assert(!ps5_agc_compute_execute(&screen,out,&table,all,47,groups));
+    for(unsigned filters=0;filters<4;++filters) {
+        sampled[8]=0x92;
+        sampled[10]=((filters&1)!=0)<<20 | ((filters&2)!=0)<<22;
+        assert(!ps5_agc_compute_execute(&screen,out,&table,all,47,groups));
+    }
+    sampled[8]=sampled[10]=0;
     const unsigned sampled_submissions=submissions;
     for(unsigned word=0;word<12;++word) {
         sampled[word]^=1;

@@ -4,7 +4,7 @@
 
 /* Internal CS -> sampled draw -> CS fetch/size transitions. Twelve alternating
  * R32_FLOAT/UINT/SINT phases verify channels and padding at units 0 and 7.
- * Native qualified: 60 dispatches, 12 draws, 768 pixels, 6144 data/guard words.
+ * Typed baseline qualified: 60 dispatches, 12 draws; filtered successor pending.
  * No public compute cap or display qualification: this test never swaps. */
 #include <stdio.h>
 #include <string.h>
@@ -118,7 +118,9 @@ static nir_shader *compute_sample(unsigned test, unsigned unit)
       tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_lod, nir_imm_int(&b, 0));
    } else {
       tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_coord, test == 4 ?
-         nir_imm_vec2(&b, 0.25, 0.5) : nir_vec2(&b, nir_iadd_imm(&b, id, 1), nir_imm_int(&b, 1)));
+         nir_vec2(&b, nir_bcsel(&b, nir_ine_imm(&b, nir_iand_imm(&b, id, 1), 0),
+            nir_imm_float(&b, 0.75), nir_imm_float(&b, 0.25)), nir_imm_float(&b, 0.5)) :
+         nir_vec2(&b, nir_iadd_imm(&b, id, 1), nir_imm_int(&b, 1)));
       tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, test == 4 ?
          nir_imm_float(&b, 0) : nir_imm_int(&b, 0));
    }
@@ -143,19 +145,26 @@ static uint32_t expected_red(unsigned kind, unsigned x, float sign)
    return word;
 }
 
-static unsigned count_sampled(const uint32_t *words, float sign, bool size_query, unsigned kind)
+/* operation: typed fetch, size, nearest float, linear float. */
+static unsigned count_sampled(const uint32_t *words, float sign, unsigned operation, unsigned kind)
 {
    unsigned correct = 0;
    for (unsigned i = 0; i < 80; ++i) {
       uint32_t expected = GUARD_WORD;
       if (i >= 8 && i < 72) {
          unsigned lane = (i - 8) % 4, invocation = (i - 8) / 4;
-         if (size_query) {
+         if (operation == 1) {
             const uint32_t size[4] = {17, 3, 0, 1};
             expected = size[lane];
          } else {
             expected = lane == 0 ? expected_red(kind, invocation + 1, sign) :
                lane == 3 ? (kind == 0 ? UINT32_C(0x3f800000) : 1) : 0;
+            if (operation >= 2 && lane == 0) {
+               /* Exact coordinates .25/.75 yield texel positions 3.75/12.25. */
+               float value = sign * (invocation & 1 ? (operation == 3 ? 3.0625f : 3.0f) :
+                                                     (operation == 3 ? 0.9375f : 1.0f));
+               memcpy(&expected, &value, 4);
+            }
          }
       }
       correct += words[i] == expected;
@@ -194,6 +203,7 @@ int main(void)
    struct pipe_resource *images[3] = {0}, *target = NULL, *render_pool = NULL;
    struct pipe_resource *sample_output = NULL;
    void *sample_cs[3][4] = {{0}};
+   void *filtered_cs[2] = {0}, *linear_sampler = NULL;
    struct pipe_sampler_view *views[3] = {0};
    void *writers[3] = {0}, *fragments[3] = {0}, *vs = NULL, *sampler = NULL;
    void *blend = NULL, *rasterizer = NULL, *depth = NULL;
@@ -255,6 +265,9 @@ int main(void)
       .min_img_filter = PIPE_TEX_FILTER_NEAREST, .mag_img_filter = PIPE_TEX_FILTER_NEAREST,
       .min_mip_filter = PIPE_TEX_MIPFILTER_NONE};
    sampler = pipe->create_sampler_state(pipe, &ss);
+   struct pipe_sampler_state linear = ss;
+   linear.min_img_filter = linear.mag_img_filter = PIPE_TEX_FILTER_LINEAR;
+   linear_sampler = pipe->create_sampler_state(pipe, &linear);
    const struct pipe_blend_state bs = {.rt[0].colormask = PIPE_MASK_RGBA};
    blend = pipe->create_blend_state(pipe, &bs);
    const struct pipe_rasterizer_state rs = {.front_ccw = true,
@@ -264,7 +277,7 @@ int main(void)
    rasterizer = pipe->create_rasterizer_state(pipe, &rs);
    const struct pipe_depth_stencil_alpha_state ds = {0};
    depth = pipe->create_depth_stencil_alpha_state(pipe, &ds);
-   if (!sampler || !blend || !rasterizer || !depth)
+   if (!sampler || !linear_sampler || !blend || !rasterizer || !depth)
       goto cleanup;
    const struct pipe_resource output_template = {.target = PIPE_BUFFER,
       .format = PIPE_FORMAT_R8_UNORM, .width0 = 80 * 4, .height0 = 1,
@@ -282,6 +295,11 @@ int main(void)
       sample_cs[kind][i] = pipe->create_compute_state(pipe, &compute);
       if (!sample_cs[kind][i])
          goto cleanup;
+   }
+   for (unsigned i = 0; i < 2; ++i) {
+      compute.prog = compute_sample(4, i ? 7 : 0);
+      filtered_cs[i] = pipe->create_compute_state(pipe, &compute);
+      if (!filtered_cs[i]) goto cleanup;
    }
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, &sampler);
    pipe->bind_blend_state(pipe, blend);
@@ -353,6 +371,39 @@ int main(void)
       if (draw_rc || draws != phase + 1 || pixel_ok != 64 || image_ok != IMAGE_WORDS)
          goto cleanup;
    }
+   for (unsigned phase = 0; phase < 2; ++phase) {
+      const float sign = phase ? 1 : -1;
+      const struct pipe_constant_buffer cb = {.user_buffer = &sign, .buffer_size = sizeof(sign)};
+      const struct pipe_image_view iv = {.resource = images[0], .format = image_formats[0],
+         .access = PIPE_IMAGE_ACCESS_WRITE};
+      const struct pipe_grid_info grid = {.work_dim = 1, .block = {16, 1, 1}, .grid = {1, 1, 1}};
+      pipe->set_shader_images(pipe, MESA_SHADER_COMPUTE, 0, 1, 0, &iv);
+      pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 1, 0, &views[0]);
+      pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 7, 1, 0, &views[0]);
+      pipe->set_constant_buffer(pipe, MESA_SHADER_COMPUTE, 0, &cb);
+      pipe->bind_compute_state(pipe, writers[0]);
+      pipe->launch_grid(pipe, &grid);
+      unsigned dispatches = 0;
+      if (ps5_context_last_compute_status(pipe, &dispatches) || dispatches != 61 + phase * 5)
+         goto cleanup;
+      for (unsigned i = 0; i < 4; ++i) {
+         void *state = i & 1 ? linear_sampler : sampler;
+         const unsigned unit = i >= 2 ? 7 : 0;
+         pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, unit, 1, &state);
+         pipe->bind_compute_state(pipe, filtered_cs[i >= 2]);
+         memset(sample_words, 0xcd, sample_bytes);
+         pipe->launch_grid(pipe, &grid);
+         int rc = ps5_context_last_compute_status(pipe, &dispatches);
+         unsigned correct = count_sampled(sample_words, sign, 2 + (i & 1), 0);
+         printf("[ps5-compute-filtered] phase=%u case=%u rc=%d dispatches=%u words=%u/80 first=%08x next=%08x\n",
+            phase, i, rc, dispatches, correct, sample_words[8], sample_words[12]);
+         fflush(stdout);
+         if (rc || dispatches != 62 + phase * 5 + i || correct != 80) goto cleanup;
+      }
+      unsigned image_ok = count_image(image_data[0], sign, 0);
+      printf("[ps5-compute-filtered] phase=%u image=%u/%u\n", phase, image_ok, IMAGE_WORDS);
+      if (image_ok != IMAGE_WORDS) goto cleanup;
+   }
    status = 0;
 cleanup:
    if (pipe) {
@@ -364,6 +415,8 @@ cleanup:
       pipe->bind_depth_stencil_alpha_state(pipe, NULL);
       void *none = NULL;
       pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, &none);
+      pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 0, 1, &none);
+      pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 7, 1, &none);
       pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 1, NULL);
       pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 0, 8, NULL);
       for (unsigned kind = 0; kind < 3; ++kind) {
@@ -375,6 +428,9 @@ cleanup:
       }
       if (vs) pipe->delete_vs_state(pipe, vs);
       if (sampler) pipe->delete_sampler_state(pipe, sampler);
+      if (linear_sampler) pipe->delete_sampler_state(pipe, linear_sampler);
+      for (unsigned i = 0; i < 2; ++i)
+         if (filtered_cs[i]) pipe->delete_compute_state(pipe, filtered_cs[i]);
       if (blend) pipe->delete_blend_state(pipe, blend);
       if (rasterizer) pipe->delete_rasterizer_state(pipe, rasterizer);
       if (depth) pipe->delete_depth_stencil_alpha_state(pipe, depth);

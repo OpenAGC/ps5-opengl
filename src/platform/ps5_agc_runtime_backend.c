@@ -732,8 +732,11 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
             if (!nonzero)
                continue;
             if (image || sampled) {
-               /* Fetch/size shaders cannot consume sampler state yet. */
-               if (sampled && (srd[8] || srd[9] || srd[10] || srd[11]))
+               /* Zero for fetch/size; clamp-edge, base-level nearest/linear for txl.
+                * No border-table pointers or unqualified descriptor bits. */
+               if (sampled && ((srd[8] != 0 && srd[8] != 0x92u) || srd[9] ||
+                   (srd[10] & ~UINT32_C(0x00500000)) || srd[11] ||
+                   (!srd[8] && srd[10])))
                   goto cleanup;
                bool owned = false;
                for (unsigned j = 0; j < buffer_count; ++j) {
