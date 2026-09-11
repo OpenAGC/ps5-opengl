@@ -13,7 +13,7 @@
 #include "ps5_screen.h"
 #include "ps5_agc_package.h"
 
-#define OUTPUT_WORDS 512
+#define OUTPUT_WORDS 2048
 #define INPUT_WORDS (15 * 16)
 #define IMAGE_WORDS (64 * 3) /* 17x3 R32_UINT with a 256-byte linear row. */
 #define GUARD_WORD UINT32_C(0xcdcdcdcd)
@@ -30,6 +30,7 @@ enum { CONTROL, GRID, SHARED, ATOMIC, FP32, FP64, BUFFER_RANGES, BUFFER_ALIAS,
        IMAGE_BANK_STORE, IMAGE_BANK_LOAD, IMAGE_ATOMIC, POST_IMAGE_ATOMIC,
        IMAGE_SINT_STORE, IMAGE_SINT_LOAD, IMAGE_SINT_ATOMIC, POST_SINT,
        IMAGE_FLOAT_STORE, IMAGE_FLOAT_LOAD, POST_FLOAT,
+       LIMIT_X, LIMIT_Y, LIMIT_3D, LIMIT_Z, LIMIT_SHARED, POST_LIMITS,
        SCRATCH, SCRATCH_GRID, POST_SCRATCH };
 static const struct {
    const char *name;
@@ -66,6 +67,12 @@ static const struct {
    {"image-store-r32f", {16, 1, 1}, {1, 1, 1}, 16},
    {"image-load-r32f", {16, 1, 1}, {1, 1, 1}, 16},
    {"post-image-float-control", {16, 1, 1}, {1, 1, 1}, 16},
+   {"limit-local-x1024", {1024, 1, 1}, {1, 1, 1}, 1024},
+   {"limit-local-y1024", {1, 1024, 1}, {1, 1, 1}, 1024},
+   {"limit-local-16x16x4", {16, 16, 4}, {1, 1, 1}, 1024},
+   {"limit-local-z64", {1, 1, 64}, {1, 1, 1}, 64},
+   {"limit-shared32k-cross-wave", {1024, 1, 1}, {1, 1, 1}, 1024},
+   {"post-limits-control", {16, 1, 1}, {1, 1, 1}, 16},
    {"scratch-private-16", {16, 1, 1}, {1, 1, 1}, 16},
    {"scratch-private-128-grid", {64, 1, 1}, {4, 1, 1}, 256},
    {"post-scratch-control", {16, 1, 1}, {1, 1, 1}, 16},
@@ -85,6 +92,10 @@ static nir_shader *create_probe_shader(unsigned test)
       b.shader->info.num_images = 1;
    nir_def *local = nir_load_local_invocation_id(&b);
    nir_def *id = nir_channel(&b, local, 0);
+   if (test >= LIMIT_X && test <= LIMIT_SHARED)
+      id = nir_iadd(&b, id, nir_iadd(&b,
+         nir_imul_imm(&b, nir_channel(&b, local, 1), cases[test].local[0]),
+         nir_imul_imm(&b, nir_channel(&b, local, 2), cases[test].local[0] * cases[test].local[1])));
    nir_def *value;
    if (test == FP32 || test == FP64) {
       const unsigned bits = test == FP64 ? 64 : 32;
@@ -204,6 +215,24 @@ static nir_shader *create_probe_shader(unsigned test)
          value = nir_load_shared(&b, 1, 32,
             nir_imul_imm(&b, nir_ixor(&b, id, nir_imm_int(&b, 32)), 4), .align_mul = 4);
       }
+      if (test == LIMIT_SHARED) {
+         b.shader->info.shared_size = 32768;
+         nir_def *offset = nir_imul_imm(&b, id, 32);
+         for (unsigned half = 0; half < 2; ++half)
+            nir_store_shared(&b, nir_vec4(&b, nir_iadd_imm(&b, value, half * 4),
+               nir_iadd_imm(&b, value, half * 4 + 1), nir_iadd_imm(&b, value, half * 4 + 2),
+               nir_iadd_imm(&b, value, half * 4 + 3)), nir_iadd_imm(&b, offset, half * 16),
+               .align_mul = 16, .write_mask = 15);
+         nir_barrier(&b, .execution_scope = SCOPE_WORKGROUP, .memory_scope = SCOPE_WORKGROUP,
+            .memory_semantics = NIR_MEMORY_ACQ_REL, .memory_modes = nir_var_mem_shared);
+         offset = nir_imul_imm(&b, nir_ixor(&b, id, nir_imm_int(&b, 512)), 32);
+         value = nir_imm_int(&b, 0);
+         for (unsigned half = 0; half < 2; ++half) {
+            nir_def *loaded = nir_load_shared(&b, 4, 32, nir_iadd_imm(&b, offset, half * 16), .align_mul = 16);
+            for (unsigned channel = 0; channel < 4; ++channel)
+               value = nir_iadd(&b, value, nir_channel(&b, loaded, channel));
+         }
+      }
    }
    const unsigned stride = value->bit_size / 8;
    nir_store_ssbo(&b, value, nir_imm_int(&b, OUTPUT_BINDING), nir_imul_imm(&b, id, stride),
@@ -226,6 +255,7 @@ static unsigned count_correct(unsigned test, const uint32_t *output)
          }
       } else {
          uint32_t expected = 17 + 3 * (test == SHARED ? (i ^ 32) : i);
+         if (test == LIMIT_SHARED) expected = 8 * (17 + 3 * (i ^ 512)) + 28;
          if (test == GRID || test == INDIRECT)
             expected += 7 * 2 + 11 * 3 + 13 * 2;
          if (test == INDIRECT_ARGS)
@@ -489,12 +519,12 @@ int main(void)
       memset(user_constants, 0, sizeof(user_constants));
       memset(table, 0, 31 * 16 + 8 * 32);
       if (test >= IMAGE_SINT_STORE) {
-         if (ps5_resource_storage_image_descriptor(images[test >= IMAGE_FLOAT_STORE ? 9 : 8],
+         if (ps5_resource_storage_image_descriptor(images[test >= IMAGE_FLOAT_STORE ? 9 : 8], 0,
                (uint32_t *)table + 31 * 4))
             goto cleanup;
       } else {
          for (unsigned slot = test >= IMAGE_BANK_STORE ? 0 : 7; test >= IMAGE_STORE && slot < 8; ++slot)
-            if (ps5_resource_storage_image_descriptor(images[slot], (uint32_t *)table + 31 * 4 + slot * 8))
+            if (ps5_resource_storage_image_descriptor(images[slot], 0, (uint32_t *)table + 31 * 4 + slot * 8))
                goto cleanup;
       }
       for (unsigned i = 0; i < ARRAY_SIZE(bindings); ++i) {

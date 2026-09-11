@@ -367,7 +367,7 @@ static void native_cases(void) {
         assert(out.metadata.scratch_valid==(test==SCRATCH || test==SCRATCH_GRID));
         assert(out.metadata.scratch_size_per_thread==(test==SCRATCH ? 16 : test==SCRATCH_GRID ? 128 : 0));
         assert(!memcmp(out.metadata.compute_workgroup_size, cases[test].local, sizeof(cases[test].local)));
-        assert(out.metadata.compute_lds_bytes==(test==SHARED ? 1024 : 0));
+        assert(out.metadata.compute_lds_bytes==(test==SHARED ? 1024 : test==LIMIT_SHARED ? 32768 : 0));
         assert(out.metadata.compute_grid_size_valid==(test==GRID || test==INDIRECT));
         uint8_t *package=NULL;
         size_t size=0;
@@ -379,6 +379,7 @@ static void native_cases(void) {
         for (unsigned i=0; i<OUTPUT_WORDS; ++i) output[i]=GUARD_WORD;
         for (unsigned i=0; i<cases[test].words; ++i) {
             output[i]=17+3*(test==SHARED ? (i^32) : i);
+            if(test==LIMIT_SHARED) output[i]=8*(17+3*(i^512))+28;
             if (test==GRID || test==INDIRECT) output[i]+=73;
             if (test==INDIRECT_ARGS) output[i]=i==1 ? 3 : 2;
             if (test==IMAGE_LOAD) output[i]+=100;
