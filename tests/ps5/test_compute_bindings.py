@@ -39,7 +39,16 @@ struct ps5_context {
 };
 static unsigned submitted, destroyed;
 static bool multi, with_constants, fail_upload;
+static bool fail_info;
 static struct ps5_resource *upload_resource;
+static int ps5_resource_info(struct pipe_resource *base, void **address, size_t *size, size_t *allocation) {
+    (void)allocation;
+    if (fail_info) return -1;
+    *address=((struct ps5_resource *)base)->data;
+    *size=base->width0;
+    return 0;
+}
+static void ps5_flush_gpu_data(const void *address, size_t size) { assert(address && size==12); }
 void u_upload_data_ref(struct u_upload_mgr *upload, unsigned minimum, unsigned size,
     unsigned alignment, const void *data, unsigned *offset, struct pipe_resource **buffer) {
     assert(upload && !minimum && alignment==16 && size<=64 && upload_resource);
@@ -138,7 +147,7 @@ int main(void) {
         if (fault==2) bad.last_block[0]=8;
         if (fault==3) bad.grid[0]=65536;
         if (fault==4) bad.variable_shared_mem=1024;
-        if (fault==5) bad.indirect=&buffer.base;
+        if (fault==5) { bad.indirect=&buffer.base; bad.indirect_offset=1; }
         if (fault==6) bad.num_globals=1;
         if (fault==7) bad.work_dim=4;
         ps5_launch_grid(&context.base,&bad);
@@ -223,6 +232,37 @@ int main(void) {
     assert(uploaded.base.reference.count==1);
     caller=&uploaded.base; pipe_resource_reference(&caller,NULL);
     assert(destroyed==3);
+    /* Indirect dimensions replace the caller's direct grid, after validation. */
+    multi=with_constants=false; destroyed=0;
+    pipe_reference_init(&buffer.base.reference,1);
+    ps5_set_shader_buffers(&context.base,MESA_SHADER_COMPUTE,15,1,&binding,1);
+    caller=&buffer.base; pipe_resource_reference(&caller,NULL);
+    const uint32_t dimensions[3]={2,1,1};
+    memcpy(output+16,dimensions,sizeof(dimensions));
+    struct pipe_grid_info indirect=good;
+    memset(indirect.grid,0,sizeof(indirect.grid));
+    indirect.indirect=&buffer.base; indirect.indirect_offset=16;
+    ps5_launch_grid(&context.base,&indirect);
+    assert(!context.last_compute_status && submitted==4 && context.dispatches==4);
+    for (unsigned fault=0; fault<7; ++fault) {
+        struct pipe_grid_info bad=indirect;
+        if (fault==0) bad.indirect_offset=UINT32_MAX;
+        if (fault==1) bad.indirect_offset=17;
+        if (fault==2) bad.indirect_offset=248; /* Eight bytes are not a command. */
+        if (fault==3) buffer.base.target=PIPE_TEXTURE_2D;
+        if (fault==4) buffer.base.screen=&other_screen;
+        if (fault==5) fail_info=true;
+        if (fault==6) { uint32_t large=65536; memcpy(output+16,&large,4); }
+        ps5_launch_grid(&context.base,&bad);
+        assert(context.last_compute_status<0 && submitted==4 && buffer.base.reference.count==1);
+        buffer.base.target=PIPE_BUFFER; buffer.base.screen=&screen; fail_info=false;
+        memcpy(output+16,dimensions,sizeof(dimensions));
+    }
+    memset(output+16,0,4);
+    ps5_launch_grid(&context.base,&indirect);
+    assert(!context.last_compute_status && submitted==4);
+    ps5_set_shader_buffers(&context.base,MESA_SHADER_COMPUTE,15,1,NULL,0);
+    assert(destroyed==1);
 }
 '''
 with tempfile.TemporaryDirectory() as directory:
@@ -240,4 +280,4 @@ with tempfile.TemporaryDirectory() as directory:
         "-I", str(ROOT / "third_party/opengnm-psbc/libpsbc"),
         "-x", "c", "-o", executable, "-"], input=code, text=True, check=True)
     subprocess.run([executable], check=True, timeout=10)
-print("PASS: actual Gallium binding/grid guards, 31 SSBO/UBO descriptors, upload failure, retained lifetime/unbind")
+print("PASS: Gallium 31-slot bindings/lifetime, upload failure, direct/indirect grid guards and unbind")

@@ -302,7 +302,7 @@ static void native_cases(void) {
         assert(out.metadata.scratch_size_per_thread==(test==SCRATCH ? 16 : test==SCRATCH_GRID ? 128 : 0));
         assert(!memcmp(out.metadata.compute_workgroup_size, cases[test].local, sizeof(cases[test].local)));
         assert(out.metadata.compute_lds_bytes==(test==SHARED ? 1024 : 0));
-        assert(out.metadata.compute_grid_size_valid==(test==GRID));
+        assert(out.metadata.compute_grid_size_valid==(test==GRID || test==INDIRECT));
         uint8_t *package=NULL;
         size_t size=0;
         const int package_rc=ps5_agc_package_build(&out, 0, &package, &size);
@@ -313,7 +313,8 @@ static void native_cases(void) {
         for (unsigned i=0; i<OUTPUT_WORDS; ++i) output[i]=GUARD_WORD;
         for (unsigned i=0; i<cases[test].words; ++i) {
             output[i]=17+3*(test==SHARED ? (i^32) : i);
-            if (test==GRID) output[i]+=73;
+            if (test==GRID || test==INDIRECT) output[i]+=73;
+            if (test==INDIRECT_ARGS) output[i]=i==1 ? 3 : 2;
             if (test==BUFFER_RANGES || test==BUFFER_ALIAS) {
                 output[i]=1000+101*(i/4)+7*(i%4);
                 if (test==BUFFER_ALIAS) output[i]=5*output[i]+2;

@@ -10084,7 +10084,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
 
 #ifdef PS5_NATIVE_TITLE_RUNTIME
 /* Internal compute bring-up only: fixed groups and buffer resources. Public compute
- * caps stay off until images, barriers, indirect execution and limits
+ * caps stay off until images, public barriers and limits
  * are complete. Reuse the synchronous native submission owner. */
 static void *
 ps5_create_compute_state(struct pipe_context *base,
@@ -10257,20 +10257,40 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
 {
    struct ps5_context *context = (struct ps5_context *)base;
    struct pipe_resource *buffers[PS5_COMPUTE_BUFFER_SLOTS];
+   uint32_t groups[3];
    unsigned buffer_count = 0;
    context->last_compute_status = -1;
    if (!context->cs || !context->compute_descriptors || context->compute_bindings_invalid ||
        context->compute_constants_invalid || !grid ||
-       grid->work_dim > 3 || grid->variable_shared_mem || grid->indirect || grid->num_globals ||
+       grid->work_dim > 3 || grid->variable_shared_mem || grid->num_globals ||
        grid->draw_count || grid->indirect_draw_count)
       return;
    for (unsigned i = 0; i < 3; ++i) {
       if (grid->block[i] != context->cs->output.metadata.compute_workgroup_size[i] ||
-          grid->grid_base[i] || (grid->last_block[i] && grid->last_block[i] != grid->block[i]) ||
-          grid->grid[i] > 65535)
+          grid->grid_base[i] || (grid->last_block[i] && grid->last_block[i] != grid->block[i]))
          return;
    }
-   if (!grid->grid[0] || !grid->grid[1] || !grid->grid[2]) {
+   memcpy(groups, grid->grid, sizeof(groups));
+   if (grid->indirect) {
+      const struct pipe_resource *command = grid->indirect;
+      void *address = NULL;
+      size_t size = 0;
+      if (command->screen != base->screen || command->target != PIPE_BUFFER ||
+          (grid->indirect_offset & 3u) || grid->indirect_offset > command->width0 ||
+          sizeof(groups) > command->width0 - grid->indirect_offset ||
+          ps5_resource_info(grid->indirect, &address, &size, NULL) || !address ||
+          grid->indirect_offset > size || sizeof(groups) > size - grid->indirect_offset)
+         return;
+      /* ponytail: synchronous CPU argument readback reuses existing retirement
+       * and cache handling. Native indirect packets need a GPU grid-size ABI. */
+      const uint8_t *arguments = (const uint8_t *)address + grid->indirect_offset;
+      ps5_flush_gpu_data(arguments, sizeof(groups));
+      memcpy(groups, arguments, sizeof(groups));
+   }
+   for (unsigned i = 0; i < 3; ++i)
+      if (groups[i] > 65535)
+         return;
+   if (!groups[0] || !groups[1] || !groups[2]) {
       context->last_compute_status = 0; /* A zero-sized dispatch has no work. */
       return;
    }
@@ -10290,7 +10310,7 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
       buffers[buffer_count++] = bound->buffer;
    }
    context->last_compute_status = ps5_agc_compute_execute(base->screen, &context->cs->output,
-      context->compute_descriptors, buffers, buffer_count, grid->grid);
+      context->compute_descriptors, buffers, buffer_count, groups);
    if (!context->last_compute_status)
       ++context->dispatches;
 }

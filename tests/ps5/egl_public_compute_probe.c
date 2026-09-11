@@ -24,7 +24,8 @@
 #define PREFIX_WORDS 0
 #endif
 enum { CONTROL, GRID, SHARED, ATOMIC, FP32, FP64, BUFFER_RANGES, BUFFER_ALIAS,
-       POST_BUFFER, UBO_RANGES, UBO_COPY, POST_UBO, SCRATCH, SCRATCH_GRID, POST_SCRATCH };
+       POST_BUFFER, UBO_RANGES, UBO_COPY, POST_UBO, INDIRECT_ARGS, INDIRECT,
+       POST_INDIRECT, SCRATCH, SCRATCH_GRID, POST_SCRATCH };
 static const struct {
    const char *name;
    uint32_t local[3], groups[3];
@@ -42,6 +43,9 @@ static const struct {
    {"ubo-ssbo-ranges-31", {4, 1, 1}, {15, 1, 1}, 60},
    {"ubo-copied-constants", {16, 1, 1}, {1, 1, 1}, 16},
    {"post-ubo-control", {16, 1, 1}, {1, 1, 1}, 16},
+   {"indirect-arguments", {3, 1, 1}, {1, 1, 1}, 3},
+   {"indirect-grid-consumer", {4, 2, 2}, {2, 3, 2}, 192},
+   {"post-indirect-control", {16, 1, 1}, {1, 1, 1}, 16},
    {"scratch-private-16", {16, 1, 1}, {1, 1, 1}, 16},
    {"scratch-private-128-grid", {64, 1, 1}, {4, 1, 1}, 256},
    {"post-scratch-control", {16, 1, 1}, {1, 1, 1}, 16},
@@ -85,7 +89,9 @@ static nir_shader *create_probe_shader(unsigned test)
       if (test == BUFFER_ALIAS)
          value = nir_iadd_imm(&b, nir_imul_imm(&b, value, 5), 2);
       id = global;
-   } else if (test == GRID) {
+   } else if (test == INDIRECT_ARGS) {
+      value = nir_bcsel(&b, nir_ieq_imm(&b, id, 1), nir_imm_int(&b, 3), nir_imm_int(&b, 2));
+   } else if (test == GRID || test == INDIRECT) {
       nir_def *group = nir_load_workgroup_id(&b);
       nir_def *count = nir_load_num_workgroups(&b);
       nir_def *global[3];
@@ -144,8 +150,10 @@ static unsigned count_correct(unsigned test, const uint32_t *output)
          }
       } else {
          uint32_t expected = 17 + 3 * (test == SHARED ? (i ^ 32) : i);
-         if (test == GRID)
+         if (test == GRID || test == INDIRECT)
             expected += 7 * 2 + 11 * 3 + 13 * 2;
+         if (test == INDIRECT_ARGS)
+            expected = i == 1 ? 3 : 2;
          if (test == BUFFER_RANGES || test == BUFFER_ALIAS) {
             expected = 1000 + 101 * (i / 4) + 7 * (i % 4);
             if (test == BUFFER_ALIAS)
@@ -208,6 +216,7 @@ int main(void)
    output = prefix + PREFIX_WORDS;
    struct pipe_resource *output_buffer = buffers[1];
    uint32_t *input = input_data;
+   memset(input + INPUT_WORDS, 0, 16 * sizeof(uint32_t));
    for (unsigned i = 0; i < INPUT_WORDS; ++i)
       input[i] = i % 16 >= 4 && i % 16 < 8 ?
          1000 + 101 * (i / 16) + 7 * (i % 16 - 4) : GUARD_WORD;
@@ -230,7 +239,7 @@ int main(void)
     * native batch. The shared package guard must stay enabled until fixed. */
    for (unsigned test = 0; test < SCRATCH; ++test) {
       status = 1;
-      if (test != BUFFER_ALIAS) /* Consume the previous GPU result unchanged. */
+      if (test != BUFFER_ALIAS && test != INDIRECT) /* Keep the GPU producer's result. */
          memset(prefix, 0xcd, (OUTPUT_WORDS + PREFIX_WORDS) * sizeof(uint32_t));
       if (test == ATOMIC)
          ((uint32_t *)output)[256] = 0;
@@ -306,7 +315,18 @@ int main(void)
          if (ps5_context_last_compute_status(pipe, &dispatches) || dispatches)
             goto cleanup;
          grid.grid[0] = cases[test].groups[0];
-         printf("[ps5-compute] pipe rejected-block/empty-grid checks passed\n");
+         grid.indirect = buffers[2];
+         grid.indirect_offset = INPUT_WORDS * sizeof(uint32_t);
+         pipe->launch_grid(pipe, &grid);
+         if (ps5_context_last_compute_status(pipe, &dispatches) || dispatches)
+            goto cleanup;
+         grid.indirect = NULL;
+         printf("[ps5-compute] pipe rejected-block/empty-direct/empty-indirect checks passed\n");
+      }
+      if (test == INDIRECT) {
+         memset(grid.grid, 0, sizeof(grid.grid)); /* Must read the GPU-written command. */
+         grid.indirect = output_buffer;
+         grid.indirect_offset = PREFIX_WORDS * sizeof(uint32_t);
       }
       pipe->launch_grid(pipe, &grid);
       int rc = ps5_context_last_compute_status(pipe, &dispatches);
@@ -338,7 +358,9 @@ int main(void)
       fflush(stdout);
       if (compile_rc != PSBC_RESULT_OK || (test == SHARED && compiled.metadata.compute_wave_size != 32))
          goto cleanup;
-      int rc = ps5_agc_compute_execute(screen, &compiled, buffers[0], buffers + 1, 2, cases[test].groups);
+      uint32_t direct_groups[3];
+      memcpy(direct_groups, test == INDIRECT ? output : cases[test].groups, sizeof(direct_groups));
+      int rc = ps5_agc_compute_execute(screen, &compiled, buffers[0], buffers + 1, 2, direct_groups);
 #endif
       unsigned correct = count_correct(test, output), guards = 0;
       for (unsigned i = cases[test].words; i < OUTPUT_WORDS; ++i)
