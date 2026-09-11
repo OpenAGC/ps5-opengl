@@ -21,6 +21,18 @@ code = r'''
 ''' + source[source.index("#define IMAGE_WORDS"):source.index("static int run_fragment_storage(")] + r'''
 static void compile(nir_shader *nir, PsbcCompileOptions *options) {
     nir_validate_shader(nir, "compute-render input");
+    if (options->stage==PSBC_STAGE_FRAGMENT && nir->info.num_ssbos) {
+        unsigned xy=0,z=0,w=0;
+        nir_foreach_function_impl(impl,nir) nir_foreach_block(block,impl) nir_foreach_instr(instr,block) {
+            if(instr->type!=nir_instr_type_intrinsic) continue;
+            nir_intrinsic_op op=nir_instr_as_intrinsic(instr)->intrinsic;
+            assert(op!=nir_intrinsic_load_frag_coord);
+            xy+=op==nir_intrinsic_load_frag_coord_xy;
+            z+=op==nir_intrinsic_load_frag_coord_z;
+            w+=op==nir_intrinsic_load_frag_coord_w_rcp;
+        }
+        assert(xy && z && w);
+    }
     PsbcShaderOutput out = {0};
     assert(psbc_compile_nir(nir, options, &out) == PSBC_RESULT_OK);
     assert(out.machine_code_size && !out.metadata.scratch_size_per_thread);

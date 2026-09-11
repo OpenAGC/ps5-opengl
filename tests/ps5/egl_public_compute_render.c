@@ -354,7 +354,8 @@ static nir_shader *build_fragment_storage(unsigned atomic, unsigned slot, unsign
 {
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
       psbc_get_nir_options(PSBC_STAGE_FRAGMENT), "fragment-storage-native");
-   nir_def *coord = nir_load_frag_coord_xy(&b); /* Internal post-lowering NIR input. */
+   /* Use Mesa's option-aware builder, as GLSL system-value lowering does. */
+   nir_def *coord = nir_build_frag_coord(&b, 4);
    nir_def *id = nir_iadd(&b, nir_f2u32(&b, nir_channel(&b, coord, 0)),
       nir_imul_imm(&b, nir_f2u32(&b, nir_channel(&b, coord, 1)), 8));
    nir_def *buffer = nir_imm_int(&b, slot), *offset = nir_imul_imm(&b, id, 4);
@@ -403,6 +404,13 @@ static nir_shader *build_fragment_storage(unsigned atomic, unsigned slot, unsign
             .atomic_op = nir_atomic_op_iadd);
       buffer = zero;
    }
+   nir_def *coord_ok = nir_iand(&b,
+      nir_feq_imm(&b, nir_ffract(&b, nir_channel(&b, coord, 0)), 0.5),
+      nir_feq_imm(&b, nir_ffract(&b, nir_channel(&b, coord, 1)), 0.5));
+   coord_ok = nir_iand(&b, coord_ok, nir_iand(&b,
+      nir_feq_imm(&b, nir_channel(&b, coord, 2), 0.5),
+      nir_feq_imm(&b, nir_channel(&b, coord, 3), 1)));
+   value = nir_bcsel(&b, coord_ok, value, nir_imm_int(&b, 0xdeadbeef));
    nir_store_ssbo(&b, value, buffer, offset, .align_mul = 4, .write_mask = 1);
    nir_variable *color = nir_variable_create(b.shader, nir_var_shader_out, glsl_vec4_type(), "color");
    color->data.location = FRAG_RESULT_DATA0;
