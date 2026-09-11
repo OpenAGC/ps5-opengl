@@ -33,12 +33,19 @@ code = r'''
 int main(void) {
     PsbcCompileOptions options = {0};
     for (unsigned i = 0; i < 32; ++i) {
-        assert(ps5_append_texture_descriptor(&options, i));
-        assert(ps5_append_texture_descriptor(&options, i));
+        assert(ps5_append_texture_descriptor(&options, i, 0));
+        assert(ps5_append_texture_descriptor(&options, i, 0));
         assert(options.descriptor_binding_count == i + 1);
         assert(options.descriptor_bindings[i].offset == 48 * i);
     }
-    assert(!ps5_append_texture_descriptor(&options, 32));
+    assert(!ps5_append_texture_descriptor(&options, 32, 0));
+    PsbcCompileOptions mixed={0};
+    for(unsigned i=0;i<16;++i) {
+        assert(ps5_append_texture_descriptor(&mixed,i,720));
+        assert(mixed.descriptor_bindings[i].offset==720+i*48);
+        assert(!ps5_append_texture_descriptor(&mixed,i,0));
+    }
+    assert(!ps5_append_texture_descriptor(&mixed,16,UINT32_MAX));
     assert(ps5_append_ubo_descriptors(&options, 0, 26));
     assert(options.descriptor_binding_count == 58);
     assert(!ps5_append_ubo_descriptors(&options, 26, 1));
