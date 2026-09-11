@@ -718,7 +718,7 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
          const bool image = bank->type == PSBC_DESCRIPTOR_STORAGE_IMAGE;
          const bool sampled = bank->type == PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER;
          if (bank->set || bank->stride != (sampled ? 48u : image ? 32u : 16u) || !bank->array_size ||
-             (sampled && (bank->array_size != 1 || bank->binding >= 8)) ||
+             (sampled && (bank->array_size != 1 || bank->binding >= PS5_AGC_COMPUTE_MAX_TEXTURES)) ||
              bank->array_size > (image ? 8u : 32u) ||
              (bank->type != PSBC_DESCRIPTOR_STORAGE_BUFFER &&
               bank->type != PSBC_DESCRIPTOR_UNIFORM_BUFFER && !image && !sampled) || (bank->offset & 15u) ||

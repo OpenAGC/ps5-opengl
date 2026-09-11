@@ -17,10 +17,11 @@ int ps5_agc_package_build(const PsbcShaderOutput *shader,
 
 struct pipe_screen;
 struct pipe_resource;
-#define PS5_AGC_COMPUTE_MAX_RESOURCES 47u /* 16 SSBOs + 15 constants + 8 images + 8 textures. */
+#define PS5_AGC_COMPUTE_MAX_TEXTURES 16u
+#define PS5_AGC_COMPUTE_MAX_RESOURCES (16u + 15u + 8u + PS5_AGC_COMPUTE_MAX_TEXTURES)
 /* Internal bring-up path, not a public GL compute capability. All resources
  * must remain owned and unchanged until this synchronous call returns.
- * Raw UBO/SSBO and validated base-level storage images; unbound slots are zero. */
+ * Raw UBO/SSBO and validated mip/layer image views; unbound slots are zero. */
 int ps5_agc_compute_execute(struct pipe_screen *screen,
                             const PsbcShaderOutput *shader,
                             struct pipe_resource *descriptors,

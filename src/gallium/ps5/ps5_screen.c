@@ -190,7 +190,7 @@ struct ps5_constant_state {
 #define PS5_COMPUTE_CONSTANT_SLOTS 15 /* CB0 plus fourteen user UBOs. */
 #define PS5_COMPUTE_BUFFER_SLOTS (PS5_COMPUTE_STORAGE_SLOTS + PS5_COMPUTE_CONSTANT_SLOTS)
 #define PS5_COMPUTE_IMAGE_SLOTS 8
-#define PS5_COMPUTE_TEXTURE_SLOTS 8
+#define PS5_COMPUTE_TEXTURE_SLOTS PS5_AGC_COMPUTE_MAX_TEXTURES
 #define PS5_COMPUTE_TEXTURE_OFFSET (PS5_COMPUTE_BUFFER_SLOTS * 16 + PS5_COMPUTE_IMAGE_SLOTS * 32)
 #define PS5_COMPUTE_DESCRIPTOR_BYTES (PS5_COMPUTE_TEXTURE_OFFSET + PS5_COMPUTE_TEXTURE_SLOTS * 48)
 struct ps5_compute_shader {
@@ -10195,12 +10195,12 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
 /* ponytail: provably bounded LODs only; unknown ranges remain gated.
  * expanded operations need their own sampler and mip/view qualification. */
 static bool
-ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *filtered, unsigned max_lod[8], unsigned *arrays)
+ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *filtered, unsigned max_lod[PS5_COMPUTE_TEXTURE_SLOTS], unsigned *arrays)
 {
    *used = 0;
    *filtered = 0;
    *arrays = 0;
-   memset(max_lod, 0, 8 * sizeof(*max_lod));
+   memset(max_lod, 0, PS5_COMPUTE_TEXTURE_SLOTS * sizeof(*max_lod));
    nir_foreach_function_impl(impl, nir) {
       nir_foreach_block(block, impl) {
          nir_foreach_instr(instr, block) {
@@ -10279,7 +10279,7 @@ ps5_create_compute_state(struct pipe_context *base,
    if (!templ || templ->ir_type != PIPE_SHADER_IR_NIR || !templ->prog)
       return NULL;
    nir_shader *nir = (nir_shader *)templ->prog; /* Gallium transfers ownership. */
-   unsigned textures = 0, filtered = 0, max_lod[8], arrays = 0;
+   unsigned textures = 0, filtered = 0, max_lod[PS5_COMPUTE_TEXTURE_SLOTS], arrays = 0;
    if (nir->info.stage != MESA_SHADER_COMPUTE || nir->num_uniforms ||
        nir->info.num_ubos > PS5_COMPUTE_CONSTANT_SLOTS ||
        nir->info.num_images > PS5_COMPUTE_IMAGE_SLOTS ||

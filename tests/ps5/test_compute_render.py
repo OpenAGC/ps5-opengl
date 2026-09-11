@@ -18,7 +18,7 @@ code = r'''
 #include "compiler/nir/nir_builder.h"
 #include "util/format/u_format.h"
 #include "ps5_agc_package.h"
-''' + source[source.index("#define IMAGE_WORDS"):source.index("static int run_mips(")] + r'''
+''' + source[source.index("#define IMAGE_WORDS"):source.index("static int run_all_slots(")] + r'''
 static void compile(nir_shader *nir, PsbcCompileOptions *options) {
     nir_validate_shader(nir, "compute-render input");
     PsbcShaderOutput out = {0};
@@ -56,13 +56,22 @@ int main(void) {
           {.binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
            .type=PSBC_DESCRIPTOR_STORAGE_IMAGE, .array_size=8, .stride=32, .offset=496}}};
     for(unsigned kind=0;kind<3;++kind) compile(build_compute(kind), &options);
+    PsbcCompileOptions all_slots=options;
+    for(unsigned unit=0;unit<16;++unit)
+        all_slots.descriptor_bindings[all_slots.descriptor_binding_count++]=(PsbcDescriptorBinding){
+            .binding=unit,.type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,.array_size=1,.stride=48,.offset=752+unit*48};
+    nir_shader *all_nir=compute_all_slots();
+    unsigned all_used=0,all_filtered=0,all_lod[PS5_COMPUTE_TEXTURE_SLOTS],all_arrays=0;
+    assert(ps5_compute_texture_usage(all_nir,&all_used,&all_filtered,all_lod,&all_arrays));
+    assert(all_used==65535 && !all_filtered && !all_arrays);
+    compile(all_nir,&all_slots);
     for(unsigned kind=0;kind<3;++kind) for(unsigned array=0;array<2;++array) for(unsigned level=0;level<4;++level)
         compile(write_mip(level,array,kind), &options);
     /* Sampled descriptors coexist with the three existing compute banks.
      * This is compiler/package coverage, not native sampler qualification. */
-    for(unsigned unit=0;unit<=7;unit+=7) for(unsigned test=0;test<6;++test) {
+    for(unsigned unit=0;unit<=15;unit+=15) for(unsigned test=0;test<6;++test) {
         nir_shader *checked=compute_sample(test,unit);
-        unsigned used=0, filtered=0, max_lod[8], arrays=0;
+        unsigned used=0, filtered=0, max_lod[PS5_COMPUTE_TEXTURE_SLOTS], arrays=0;
         assert(ps5_compute_texture_usage(checked,&used,&filtered,max_lod,&arrays) && !arrays);
         assert(used==(1u<<unit) && filtered==(test>=4 ? 1u<<unit : 0));
         ralloc_free(checked);
@@ -80,10 +89,10 @@ int main(void) {
     }
     const unsigned layer_counts[]={1,3,8};
     for(unsigned kind=0;kind<3;++kind) for(unsigned count=0;count<3;++count)
-      for(unsigned unit=0;unit<=7;unit+=7) for(unsigned op=0;op<(kind ? 2u : 4u);++op)
+      for(unsigned unit=0;unit<=15;unit+=15) for(unsigned op=0;op<(kind ? 2u : 4u);++op)
         for(unsigned level=0;level<(op==3 ? 1u : 4u);++level) {
             nir_shader *checked=compute_mip(op,unit,level,layer_counts[count],kind,false);
-            unsigned used=0, filtered=0, max_lod[8], arrays=0;
+            unsigned used=0, filtered=0, max_lod[PS5_COMPUTE_TEXTURE_SLOTS], arrays=0;
             assert(ps5_compute_texture_usage(checked,&used,&filtered,max_lod,&arrays));
             assert(arrays==(layer_counts[count]>1 ? 1u<<unit : 0));
             assert(used==(1u<<unit) && filtered==(op>=2 ? 1u<<unit : 0));
@@ -116,10 +125,10 @@ int main(void) {
         assert(count_mip(words,op,level,negative ? -1 : 1,layers,kind)==78);
     }
     for(unsigned kind=0;kind<3;++kind) for(unsigned count=0;count<3;++count)
-      for(unsigned op=0;op<(kind ? 2u : 3u);++op) for(unsigned unit=0;unit<=7;unit+=7)
+      for(unsigned op=0;op<(kind ? 2u : 3u);++op) for(unsigned unit=0;unit<=15;unit+=15)
       for(unsigned mask=0;mask<=3;++mask) {
         nir_shader *nir=compute_mip(op,unit,mask,layer_counts[count],kind,true);
-        unsigned used=0,filtered=0,max_lod[8],arrays=0;
+        unsigned used=0,filtered=0,max_lod[PS5_COMPUTE_TEXTURE_SLOTS],arrays=0;
         assert(ps5_compute_texture_usage(nir,&used,&filtered,max_lod,&arrays));
         assert(used==(1u<<unit) && filtered==(op==2 ? 1u<<unit : 0) && max_lod[unit]==mask);
         PsbcCompileOptions sampled=options;
@@ -166,7 +175,7 @@ int main(void) {
                 nir_src_rewrite(&tex->src[0].src,fault==3 ? nir_u2f32(&b,nir_iand_imm(&b,lod,3)) : lod);
             }
         }
-        unsigned used=0,filtered=0,max_lod[8],arrays=0;
+        unsigned used=0,filtered=0,max_lod[PS5_COMPUTE_TEXTURE_SLOTS],arrays=0;
         assert(!ps5_compute_texture_usage(nir,&used,&filtered,max_lod,&arrays));
         ralloc_free(nir);
     }
@@ -177,7 +186,7 @@ int main(void) {
             nir_foreach_instr(instr,block)
                 if(instr->type==nir_instr_type_tex) tex=nir_instr_as_tex(instr);
         assert(tex);
-        if(fault==0) tex->texture_index=8;
+        if(fault==0) tex->texture_index=16;
         if(fault==1) tex->is_array=true;
         if(fault==2) tex->sampler_dim=GLSL_SAMPLER_DIM_3D;
         if(fault==3) tex->src[1].src_type=nir_tex_src_texture_offset;
@@ -188,7 +197,7 @@ int main(void) {
             b.cursor=nir_before_instr(&tex->instr);
             nir_src_rewrite(&tex->src[1].src,nir_imm_int(&b,16));
         }
-        unsigned used=0, filtered=0, max_lod[8], arrays=0;
+        unsigned used=0, filtered=0, max_lod[PS5_COMPUTE_TEXTURE_SLOTS], arrays=0;
         assert(!ps5_compute_texture_usage(checked,&used,&filtered,max_lod,&arrays));
         ralloc_free(checked);
     }
@@ -297,7 +306,7 @@ code = code.replace("static void compile(",swizzle+"static void compile(",1)
 usage_start = driver.index("static bool\nps5_compute_texture_usage(")
 usage = driver[usage_start:driver.index("/* Internal compute bring-up", usage_start)]
 code = code.replace("static nir_shader *compute_sample(",
-    "#define PS5_COMPUTE_TEXTURE_SLOTS 8\n" + usage + "static nir_shader *compute_sample(", 1)
+    "#define PS5_COMPUTE_TEXTURE_SLOTS PS5_AGC_COMPUTE_MAX_TEXTURES\n" + usage + "static nir_shader *compute_sample(", 1)
 with tempfile.TemporaryDirectory() as directory:
     obj = str(Path(directory) / "compute-render.o")
     package = str(Path(directory) / "package.o")

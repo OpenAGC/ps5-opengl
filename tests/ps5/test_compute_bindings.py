@@ -32,14 +32,14 @@ code = r'''
 #include "pipe/p_screen.h"
 #include "util/u_inlines.h"
 #include "psbc_compile.h"
+#include "ps5_agc_package.h"
 #define PS5_COMPUTE_STORAGE_SLOTS 16
 #define PS5_COMPUTE_CONSTANT_SLOTS 15
 #define PS5_COMPUTE_BUFFER_SLOTS 31
 #define PS5_COMPUTE_IMAGE_SLOTS 8
-#define PS5_COMPUTE_TEXTURE_SLOTS 8
+#define PS5_COMPUTE_TEXTURE_SLOTS PS5_AGC_COMPUTE_MAX_TEXTURES
 #define PS5_COMPUTE_TEXTURE_OFFSET (31*16+8*32)
-#define PS5_COMPUTE_DESCRIPTOR_BYTES (PS5_COMPUTE_TEXTURE_OFFSET+8*48)
-#define PS5_AGC_COMPUTE_MAX_RESOURCES 47
+#define PS5_COMPUTE_DESCRIPTOR_BYTES (PS5_COMPUTE_TEXTURE_OFFSET+PS5_COMPUTE_TEXTURE_SLOTS*48)
 #define PS5_MAX_TEXTURE_2D_SIZE 8192
 #define PS5_MAX_CONSTANT_BUFFER_SIZE 0x4000u
 struct ps5_resource {
@@ -48,7 +48,7 @@ struct ps5_resource {
     unsigned level_stride[PIPE_MAX_TEXTURE_LEVELS];
     size_t level_offset[PIPE_MAX_TEXTURE_LEVELS];
 };
-struct ps5_compute_shader { PsbcShaderOutput output; unsigned textures, filtered_textures, texture_lod[8], array_textures; };
+struct ps5_compute_shader { PsbcShaderOutput output; unsigned textures, filtered_textures, texture_lod[PS5_COMPUTE_TEXTURE_SLOTS], array_textures; };
 struct ps5_sampler_state { struct pipe_sampler_state base; };
 struct ps5_context {
     struct pipe_context base;
@@ -56,9 +56,9 @@ struct ps5_context {
     struct pipe_resource *compute_descriptors;
     struct pipe_shader_buffer compute_buffers[31];
     struct pipe_image_view compute_images[8];
-    struct pipe_sampler_view *compute_views[8];
+    struct pipe_sampler_view *compute_views[PS5_COMPUTE_TEXTURE_SLOTS];
     bool compute_views_invalid;
-    uint32_t compute_samplers[8][4];
+    uint32_t compute_samplers[PS5_COMPUTE_TEXTURE_SLOTS][4];
     unsigned compute_sampler_mask;
     bool compute_samplers_invalid;
     bool compute_images_invalid;
@@ -70,6 +70,7 @@ struct ps5_context {
 static unsigned submitted, destroyed;
 static unsigned with_images;
 static bool with_sampled;
+static unsigned sampled_count=8;
 static uint32_t expected_sampler[4];
 static unsigned with_filtered;
 static bool multi, with_constants, fail_upload;
@@ -101,14 +102,14 @@ void u_upload_unmap(struct u_upload_mgr *upload) { assert(upload); }
 static void destroy(struct pipe_screen *s, struct pipe_resource *r) {
     assert(s && r && !r->reference.count); ++destroyed;
 }
-static int ps5_agc_compute_execute(struct pipe_screen *s, const PsbcShaderOutput *shader,
+int ps5_agc_compute_execute(struct pipe_screen *s, const PsbcShaderOutput *shader,
     struct pipe_resource *table, struct pipe_resource *const *buffers, unsigned count,
     const uint32_t groups[3]) {
     assert(s && shader && groups[0]==2 && groups[1]==1 && groups[2]==1);
     if(with_sampled) {
-        assert(count==8);
+        assert(count==sampled_count);
         const struct ps5_resource *t=(const struct ps5_resource *)table;
-        for(unsigned i=0;i<8;++i) {
+        for(unsigned i=0;i<sampled_count;++i) {
             uint32_t expected[12]={0};
             assert(!ps5_resource_sampled_image_descriptor(buffers[i],0,0,expected));
             if (with_filtered & (1u<<i))
@@ -164,6 +165,7 @@ static void ps5_flush(struct pipe_context *context, struct pipe_fence_handle **f
 }
 ''' + barrier + '\n#define PS5_ENABLE_BORDER_COLOR_CANDIDATE 1\n' + sampler_helpers + functions + r'''
 int main(void) {
+    assert(PS5_COMPUTE_TEXTURE_SLOTS==16 && PS5_AGC_COMPUTE_MAX_RESOURCES==55);
     struct pipe_screen screen={.resource_destroy=destroy}, other_screen={0};
     struct pipe_context barrier_context={0};
     ps5_memory_barrier(&barrier_context,0);
@@ -508,7 +510,7 @@ int main(void) {
         if(fault==4) bad.target=PIPE_TEXTURE_2D_ARRAY;
         if(fault==5) image.base.screen=&other_screen;
         struct pipe_sampler_view *pair[2]={&sampled,&bad};
-        ps5_set_compute_sampler_views(&context.base,fault==6 ? 8 : 0,2,0,pair);
+        ps5_set_compute_sampler_views(&context.base,fault==6 ? 16 : 0,2,0,pair);
         assert(context.compute_views_invalid && sampled.reference.count==9);
         ps5_launch_grid(&context.base,&good);
         assert(context.last_compute_status<0 && submitted==before_sampled+1);
@@ -565,7 +567,7 @@ int main(void) {
         if(fault==7) sampler.base.min_lod=1;
         if(fault==8) sampler.base.max_lod=16;
         if(fault==9) sampler.base.lod_bias=1;
-        ps5_set_compute_sampler_states(&context.base,fault==10 ? 8 : 0,8,fault==11 ? NULL : states);
+        ps5_set_compute_sampler_states(&context.base,fault==10 ? 16 : 0,8,fault==11 ? NULL : states);
         assert(context.compute_samplers_invalid && context.compute_sampler_mask==255);
         ps5_launch_grid(&context.base,&good);
         assert(context.last_compute_status<0 && submitted==before_filter);
@@ -581,6 +583,21 @@ int main(void) {
     ps5_set_compute_sampler_views(&context.base,0,0,8,NULL);
     cs.filtered_textures=with_filtered=0;
     cs.textures=0; with_sampled=false;
+    /* All sixteen bindings are retained and copied, including the upper half. */
+    struct pipe_sampler_view *all_views[16]; void *all_states[16];
+    image.base.format=sampled.format=PIPE_FORMAT_R32_FLOAT;
+    for(unsigned i=0;i<16;++i) { all_views[i]=&sampled; all_states[i]=&sampler; }
+    ps5_set_compute_sampler_views(&context.base,0,16,0,all_views);
+    ps5_set_compute_sampler_states(&context.base,0,16,all_states);
+    assert(!context.compute_views_invalid && !context.compute_samplers_invalid && sampled.reference.count==17);
+    cs.textures=cs.filtered_textures=with_filtered=65535;
+    with_sampled=true; sampled_count=16;
+    ps5_launch_grid(&context.base,&good);
+    assert(!context.last_compute_status && context.compute_sampler_mask==65535);
+    ps5_set_compute_sampler_views(&context.base,0,0,16,NULL);
+    for(unsigned i=0;i<16;++i) all_states[i]=NULL;
+    ps5_set_compute_sampler_states(&context.base,0,16,all_states);
+    assert(sampled.reference.count==1 && !context.compute_sampler_mask);
 }
 '''
 with tempfile.TemporaryDirectory() as directory:
@@ -596,6 +613,7 @@ with tempfile.TemporaryDirectory() as directory:
         "-I", str(MESA / "src/gallium/include"), "-I", str(MESA / "src/gallium/auxiliary"),
         "-I", directory,
         "-I", str(ROOT / "third_party/opengnm-psbc/libpsbc"),
+        "-I", str(ROOT / "src/platform"),
         "-x", "c", "-o", executable, "-"], input=code, text=True, check=True)
     subprocess.run([executable], check=True, timeout=10)
 print("PASS: Gallium 39-resource bindings, image descriptors/lifetime, upload failure, direct/indirect guards and unbind")

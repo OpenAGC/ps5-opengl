@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 /* Internal CS -> sampled draw -> CS fetch/size transitions. Twelve alternating
- * R32_FLOAT/UINT/SINT phases verify channels and padding at units 0 and 7.
+ * R32_FLOAT/UINT/SINT phases verify channels and padding at units 0 and 15.
  * Native qualified: 1020 dispatches, 12 draws, typed arrays, bounded LODs and explicit memory barriers.
  * No public compute cap or display qualification: this test never swaps. */
 #include <stdio.h>
@@ -188,6 +188,29 @@ static nir_shader *compute_mip(unsigned operation, unsigned unit, unsigned level
    return b.shader;
 }
 
+static nir_shader *compute_all_slots(void)
+{
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
+      psbc_get_nir_options(PSBC_STAGE_COMPUTE), "compute-all-textures");
+   b.shader->info.workgroup_size[0] = 16;
+   b.shader->info.workgroup_size[1] = b.shader->info.workgroup_size[2] = 1;
+   b.shader->info.num_ssbos = 1; b.shader->info.num_textures = 16;
+   nir_def *id = nir_channel(&b, nir_load_local_invocation_id(&b), 0);
+   for (unsigned unit = 0; unit < 16; ++unit) {
+      BITSET_SET(b.shader->info.textures_used, unit);
+      nir_push_if(&b, nir_ieq_imm(&b, id, unit));
+      nir_tex_instr *tex = nir_tex_instr_create(b.shader, 2);
+      tex->op = nir_texop_txf; tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
+      tex->texture_index = unit; tex->coord_components = 2; tex->dest_type = nir_type_float32;
+      tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_lod, nir_imm_int(&b, 0));
+      tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_coord, nir_imm_ivec2(&b, 0, 0));
+      nir_def_init(&tex->instr, &tex->def, 4, 32); nir_builder_instr_insert(&b, &tex->instr);
+      nir_store_ssbo(&b, &tex->def, nir_imm_int(&b, 0), nir_imul_imm(&b, id, 16), .write_mask = 15, .align_mul = 16);
+      nir_pop_if(&b, NULL);
+   }
+   return b.shader;
+}
+
 static nir_shader *write_mip(unsigned level, bool array, unsigned kind)
 {
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
@@ -318,6 +341,51 @@ static unsigned count_pixels(const uint8_t *pixels, unsigned stride, float sign)
    return correct;
 }
 
+static int run_all_slots(struct pipe_context *pipe, uint32_t *words, size_t bytes)
+{
+   int status = 1;
+   struct pipe_resource *images[16] = {0};
+   struct pipe_sampler_view *views[16] = {0};
+   uint32_t *data[16] = {0}; void *shader = NULL;
+   const struct pipe_resource templ = {.target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_R32_FLOAT,
+      .width0 = 1, .height0 = 1, .depth0 = 1, .array_size = 1, .bind = PIPE_BIND_SAMPLER_VIEW};
+   const struct pipe_sampler_view sv = {.target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_R32_FLOAT,
+      .swizzle_r = PIPE_SWIZZLE_X, .swizzle_g = PIPE_SWIZZLE_Y, .swizzle_b = PIPE_SWIZZLE_Z, .swizzle_a = PIPE_SWIZZLE_W};
+   for (unsigned unit = 0; unit < 16; ++unit) {
+      images[unit] = pipe->screen->resource_create(pipe->screen, &templ);
+      size_t size = 0;
+      if (!images[unit] || ps5_resource_info(images[unit], (void **)&data[unit], &size, NULL) || !data[unit] || size != 256) goto cleanup;
+      memset(data[unit], 0xcd, size); data[unit][0] = expected_red(0, unit + 1, 1);
+      views[unit] = pipe->create_sampler_view(pipe, images[unit], &sv);
+      if (!views[unit]) goto cleanup;
+   }
+   struct pipe_compute_state cs = {.ir_type = PIPE_SHADER_IR_NIR, .prog = compute_all_slots()};
+   shader = pipe->create_compute_state(pipe, &cs);
+   if (!shader) goto cleanup;
+   pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 16, 0, views);
+   pipe->bind_compute_state(pipe, shader);
+   unsigned before = 0, after = 0;
+   if (ps5_context_last_compute_status(pipe, &before)) goto cleanup;
+   const struct pipe_grid_info grid = {.work_dim = 1, .block = {16, 1, 1}, .grid = {1, 1, 1}};
+   memset(words, 0xcd, bytes);
+   pipe->launch_grid(pipe, &grid);
+   pipe->memory_barrier(pipe, PIPE_BARRIER_ALL);
+   int rc = ps5_context_last_compute_status(pipe, &after);
+   unsigned correct = count_sampled(words, 1, 0, 0), source_correct = 0;
+   for (unsigned unit = 0; unit < 16; ++unit) for (unsigned i = 0; i < 64; ++i)
+      source_correct += data[unit][i] == (i ? GUARD_WORD : expected_red(0, unit + 1, 1));
+   printf("[ps5-compute-all-slots] rc=%d dispatches=%u words=%u/80 images=%u/1024\n", rc, after, correct, source_correct);
+   status = rc || after != before + 1 || correct != 80 || source_correct != 1024;
+cleanup:
+   pipe->bind_compute_state(pipe, NULL);
+   pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 0, 16, NULL);
+   if (shader) pipe->delete_compute_state(pipe, shader);
+   for (unsigned unit = 0; unit < 16; ++unit) {
+      pipe_sampler_view_reference(&views[unit], NULL); pipe_resource_reference(&images[unit], NULL);
+   }
+   return status;
+}
+
 static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, unsigned layers, unsigned kind)
 {
    int status = 1;
@@ -365,7 +433,7 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
    for (unsigned op = 0; op < (kind ? 2u : 4u); ++op) for (unsigned unit = 0; unit < 2; ++unit)
       for (unsigned level = 0; level < (op == 3 ? 1u : 4u); ++level) {
          struct pipe_compute_state cs = {.ir_type = PIPE_SHADER_IR_NIR,
-            .prog = compute_mip(op, unit ? 7 : 0, level, layers, kind, false)};
+            .prog = compute_mip(op, unit ? 15 : 0, level, layers, kind, false)};
          shaders[op][unit][level] = pipe->create_compute_state(pipe, &cs);
          if (!shaders[op][unit][level]) goto cleanup;
       }
@@ -377,7 +445,7 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
    for (unsigned view = 0; view < 3; ++view) for (unsigned op = 0; op < (kind ? 2u : 3u); ++op)
       for (unsigned unit = 0; unit < 2; ++unit) {
          struct pipe_compute_state cs = {.ir_type = PIPE_SHADER_IR_NIR,
-            .prog = compute_mip(op, unit ? 7 : 0, op == 2 ? last[view] - first[view] : masks[view], layers, kind, true)};
+            .prog = compute_mip(op, unit ? 15 : 0, op == 2 ? last[view] - first[view] : masks[view], layers, kind, true)};
          dynamic_shaders[view][op][unit] = pipe->create_compute_state(pipe, &cs);
          if (!dynamic_shaders[view][op][unit]) goto cleanup;
       }
@@ -410,7 +478,7 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
    for (unsigned view = 0; view < 3; ++view) for (unsigned op = 0; op < (kind ? 2u : 4u); ++op)
       for (unsigned unit = 0; unit < 2; ++unit)
          for (unsigned level = 0; level < (op == 3 ? (last[view] > first[view] ? 1u : 0u) : last[view] - first[view] + 1); ++level) {
-            const unsigned slot = unit ? 7 : 0;
+            const unsigned slot = unit ? 15 : 0;
             pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, slot, 1, 0, &views[view]);
             pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, slot, 1, &states[op == 3]);
             pipe->bind_compute_state(pipe, shaders[op][unit][level]);
@@ -427,7 +495,7 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
          }
    for (unsigned view = 0; view < 3; ++view) for (unsigned op = 0; op < (kind ? 2u : 3u); ++op)
       for (unsigned unit = 0; unit < 2; ++unit) {
-         const unsigned slot = unit ? 7 : 0;
+         const unsigned slot = unit ? 15 : 0;
          pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, slot, 1, 0, &views[view]);
          if (op == 2) pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, slot, 1, &states[1]);
          pipe->bind_compute_state(pipe, dynamic_shaders[view][op][unit]);
@@ -459,8 +527,8 @@ cleanup:
    pipe->set_shader_images(pipe, MESA_SHADER_COMPUTE, 0, 0, 8, NULL);
    void *none = NULL;
    pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 0, 1, &none);
-   pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 7, 1, &none);
-   pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 0, 8, NULL);
+   pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 15, 1, &none);
+   pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 0, 16, NULL);
    for (unsigned i = 0; i < 3; ++i) pipe_sampler_view_reference(&views[i], NULL);
    for (unsigned i = 0; i < 2; ++i) if (states[i]) pipe->delete_sampler_state(pipe, states[i]);
    for (unsigned i = 0; i < 4; ++i) if (writers[i]) pipe->delete_compute_state(pipe, writers[i]);
@@ -578,13 +646,13 @@ int main(void)
    const struct pipe_shader_buffer output_binding = {sample_output, 8 * 4, 64 * 4};
    pipe->set_shader_buffers(pipe, MESA_SHADER_COMPUTE, 0, 1, &output_binding, 1);
    for (unsigned kind = 0; kind < 3; ++kind) for (unsigned i = 0; i < 4; ++i) {
-      compute.prog = compute_sample(i & 1 ? 3 : kind, i >= 2 ? 7 : 0);
+      compute.prog = compute_sample(i & 1 ? 3 : kind, i >= 2 ? 15 : 0);
       sample_cs[kind][i] = pipe->create_compute_state(pipe, &compute);
       if (!sample_cs[kind][i])
          goto cleanup;
    }
    for (unsigned outside = 0; outside < 2; ++outside) for (unsigned i = 0; i < 2; ++i) {
-      compute.prog = compute_sample(4 + outside, i ? 7 : 0);
+      compute.prog = compute_sample(4 + outside, i ? 15 : 0);
       filtered_cs[outside][i] = pipe->create_compute_state(pipe, &compute);
       if (!filtered_cs[outside][i]) goto cleanup;
    }
@@ -604,7 +672,7 @@ int main(void)
          .access = PIPE_IMAGE_ACCESS_WRITE};
       pipe->set_shader_images(pipe, MESA_SHADER_COMPUTE, 0, 1, 0, &iv);
       pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 1, 0, &view);
-      pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 7, 1, 0, &view);
+      pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 15, 1, 0, &view);
       pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &view);
       pipe->bind_fs_state(pipe, fragments[kind]);
       const float sign = phase & 1 ? 1 : -1;
@@ -669,7 +737,7 @@ int main(void)
       const struct pipe_grid_info grid = {.work_dim = 1, .block = {16, 1, 1}, .grid = {1, 1, 1}};
       pipe->set_shader_images(pipe, MESA_SHADER_COMPUTE, 0, 1, 0, &iv);
       pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 1, 0, &views[0]);
-      pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 7, 1, 0, &views[0]);
+      pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 15, 1, 0, &views[0]);
       pipe->set_constant_buffer(pipe, MESA_SHADER_COMPUTE, 0, &cb);
       pipe->bind_compute_state(pipe, writers[0]);
       pipe->launch_grid(pipe, &grid);
@@ -680,7 +748,7 @@ int main(void)
       for (unsigned i = 0; i < 12; ++i) {
          const unsigned wrap = i / 4;
          void *state = wrap ? wrap_samplers[wrap - 1][i & 1] : i & 1 ? linear_sampler : sampler;
-         const unsigned unit = i % 4 >= 2 ? 7 : 0;
+         const unsigned unit = i % 4 >= 2 ? 15 : 0;
          pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, unit, 1, &state);
          pipe->bind_compute_state(pipe, filtered_cs[wrap != 0][unit != 0]);
          memset(sample_words, 0xcd, sample_bytes);
@@ -700,6 +768,7 @@ int main(void)
    if (run_mips(pipe, sample_words, sample_bytes, 1, 0) || run_mips(pipe, sample_words, sample_bytes, 3, 0)) goto cleanup;
    for (unsigned kind = 0; kind < 3; ++kind)
       if (run_mips(pipe, sample_words, sample_bytes, 8, kind)) goto cleanup;
+   if (run_all_slots(pipe, sample_words, sample_bytes)) goto cleanup;
    status = 0;
 cleanup:
    if (pipe) {
@@ -712,9 +781,9 @@ cleanup:
       void *none = NULL;
       pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, &none);
       pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 0, 1, &none);
-      pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 7, 1, &none);
+      pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 15, 1, &none);
       pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 1, NULL);
-      pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 0, 8, NULL);
+      pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 0, 16, NULL);
       for (unsigned kind = 0; kind < 3; ++kind) {
          pipe_sampler_view_reference(&views[kind], NULL);
          if (writers[kind]) pipe->delete_compute_state(pipe, writers[kind]);
