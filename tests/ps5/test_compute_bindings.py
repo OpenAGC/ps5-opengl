@@ -319,7 +319,7 @@ int main(void) {
     assert(!ps5_resource_storage_image_descriptor(&image.base,descriptor));
     assert(descriptor[0]==(uint32_t)((uintptr_t)pixels>>8));
     assert(descriptor[2]==(4u|(2u<<14)|0x80000000u));
-    assert(descriptor[3]==0x90000fac && descriptor[4]==63 && descriptor[5]==0x400000);
+    assert(descriptor[3]==0x90000204 && descriptor[4]==63 && descriptor[5]==0x400000);
     const enum pipe_format scalar_formats[]={PIPE_FORMAT_R32_UINT,PIPE_FORMAT_R32_SINT,PIPE_FORMAT_R32_FLOAT};
     for(unsigned i=0;i<3;++i) {
         struct ps5_resource typed=image; typed.base.format=scalar_formats[i];

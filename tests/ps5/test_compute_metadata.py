@@ -29,7 +29,7 @@ struct pipe_screen { int unused; };
 struct pipe_resource { void *data; size_t size; bool image; };
 static int ps5_resource_storage_image_descriptor(struct pipe_resource *r,uint32_t d[8]) {
     if(!r || !r->image) return -1;
-    const uint32_t srd[8]={(uintptr_t)r->data>>8,0,0x80000000,0x90000fac,63,0x400000,0,0};
+    const uint32_t srd[8]={(uintptr_t)r->data>>8,0,0x80000000,0x90000204,63,0x400000,0,0};
     memcpy(d,srd,sizeof(srd)); return 0;
 }
 static int ps5_resource_sampled_image_descriptor(struct pipe_resource *r,uint32_t d[8]) {

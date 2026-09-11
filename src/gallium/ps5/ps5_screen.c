@@ -3681,7 +3681,9 @@ ps5_resource_linear_image_descriptor(struct pipe_resource *base, uint32_t descri
       address >> 8,
       format | (((base->width0 - 1u) & 3u) << 30) | (uint32_t)(address >> 40),
       ((base->width0 - 1u) >> 2) | ((base->height0 - 1u) << 14) | UINT32_C(0x80000000),
-      UINT32_C(0x90000fac), /* 2D, linear, identity channel selectors. */
+      /* R32 has one stored channel: logical identity expands to (R,0,0,1),
+       * not hardware XYZW (which replicates R). Shared by loads and fetches. */
+      UINT32_C(0x90000204),
       pitch > base->width0 ? pitch - 1u : 0,
       UINT32_C(0x00400000), 0, 0,
    };
