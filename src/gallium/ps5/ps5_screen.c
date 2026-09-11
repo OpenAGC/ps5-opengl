@@ -3675,7 +3675,6 @@ ps5_resource_linear_image_descriptor(struct pipe_resource *base, uint32_t descri
        base->width0 > PS5_MAX_TEXTURE_2D_SIZE || base->height0 > PS5_MAX_TEXTURE_2D_SIZE ||
        base->depth0 != 1 || base->array_size != 1 || base->last_level >= PIPE_MAX_TEXTURE_LEVELS ||
        base->last_level > 15 || first_level > last_level || last_level > base->last_level ||
-       (required_bind == PIPE_BIND_SHADER_IMAGE && base->last_level) ||
        base->nr_samples > 1 || base->nr_storage_samples > 1 ||
        !(base->bind & required_bind) ||
        (base->bind & (PIPE_BIND_RENDER_TARGET | PIPE_BIND_DEPTH_STENCIL | PIPE_BIND_DISPLAY_TARGET)) ||
@@ -3713,9 +3712,9 @@ ps5_resource_linear_image_descriptor(struct pipe_resource *base, uint32_t descri
 }
 
 int
-ps5_resource_storage_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8])
+ps5_resource_storage_image_descriptor(struct pipe_resource *base, unsigned level, uint32_t descriptor[8])
 {
-   return ps5_resource_linear_image_descriptor(base, descriptor, PIPE_BIND_SHADER_IMAGE, 0, 0);
+   return ps5_resource_linear_image_descriptor(base, descriptor, PIPE_BIND_SHADER_IMAGE, level, level);
 }
 
 int
@@ -10426,9 +10425,9 @@ ps5_set_shader_images(struct pipe_context *base, mesa_shader_stage stage,
           !(v->access & PIPE_IMAGE_ACCESS_READ_WRITE) ||
           ((v->access | v->shader_access) & ~(PIPE_IMAGE_ACCESS_READ_WRITE |
               PIPE_IMAGE_ACCESS_COHERENT | PIPE_IMAGE_ACCESS_VOLATILE)) ||
-          v->u.tex.level || v->u.tex.first_layer || v->u.tex.last_layer ||
+          v->u.tex.first_layer || v->u.tex.last_layer ||
           v->u.tex.single_layer_view || v->u.tex.is_2d_view_of_3d ||
-          ps5_resource_storage_image_descriptor(v->resource, descriptor))
+          ps5_resource_storage_image_descriptor(v->resource, v->u.tex.level, descriptor))
          return;
    }
    for (unsigned i = 0; i < count + unbind; ++i) {
@@ -10567,7 +10566,7 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
       struct pipe_resource *resource = context->compute_images[i].resource;
       if (!resource)
          continue;
-      if (ps5_resource_storage_image_descriptor(resource,
+      if (ps5_resource_storage_image_descriptor(resource, context->compute_images[i].u.tex.level,
             (uint32_t *)(table->data + PS5_COMPUTE_BUFFER_SLOTS * 16 + i * 32)))
          return;
       buffers[buffer_count++] = resource;

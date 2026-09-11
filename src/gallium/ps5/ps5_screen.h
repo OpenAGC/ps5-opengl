@@ -35,6 +35,7 @@ int ps5_resource_info(struct pipe_resource *resource, void **address,
                       size_t *logical_size, size_t *allocation_size);
 /* Internal base-level linear R32 UINT/SINT/FLOAT image, validated before use. */
 int ps5_resource_storage_image_descriptor(struct pipe_resource *resource,
+                                          unsigned level,
                                           uint32_t descriptor[8]);
 int ps5_resource_sampled_image_descriptor(struct pipe_resource *resource,
                                           unsigned first_level, unsigned last_level,

@@ -56,6 +56,7 @@ int main(void) {
           {.binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
            .type=PSBC_DESCRIPTOR_STORAGE_IMAGE, .array_size=8, .stride=32, .offset=496}}};
     for(unsigned kind=0;kind<3;++kind) compile(build_compute(kind), &options);
+    for(unsigned level=0;level<4;++level) compile(write_mip(level), &options);
     /* Sampled descriptors coexist with the three existing compute banks.
      * This is compiler/package coverage, not native sampler qualification. */
     for(unsigned unit=0;unit<=7;unit+=7) for(unsigned test=0;test<6;++test) {
@@ -89,18 +90,19 @@ int main(void) {
                 .type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,.array_size=1,.stride=48,.offset=752+unit*48};
             compile(checked,&sampled);
         }
-    for(unsigned op=0;op<4;++op) for(unsigned level=0;level<(op==3 ? 3u : 4u);++level) {
+    for(unsigned op=0;op<4;++op) for(unsigned level=0;level<(op==3 ? 3u : 4u);++level)
+      for(unsigned negative=0;negative<2;++negative) {
         uint32_t words[80]; memset(words,0xcd,sizeof(words));
         const uint32_t reds[2][4]={{0x3f800000,0x40000000,0x40800000,0x41000000},
                                   {0x3fc00000,0x40400000,0x40c00000,0}};
         for(unsigned i=0;i<16;++i) {
-            const uint32_t value[4]={op==1 ? 16u>>level : reds[op==3][level],
+            const uint32_t value[4]={op==1 ? 16u>>level : reds[op==3][level] ^ (negative ? 0x80000000u : 0),
                 op==1 ? 8u>>level : 0,0,op==1 ? 1 : 0x3f800000u};
             memcpy(words+8+i*4,value,16);
         }
-        assert(count_mip(words,op,level)==80);
+        assert(count_mip(words,op,level,negative ? -1 : 1)==80);
         words[0]^=1; words[8]^=1;
-        assert(count_mip(words,op,level)==78);
+        assert(count_mip(words,op,level,negative ? -1 : 1)==78);
     }
     for(unsigned fault=0;fault<7;++fault) {
         nir_shader *checked=compute_sample(fault>=5 ? 4 : 0,0);

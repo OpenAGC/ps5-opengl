@@ -745,7 +745,7 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
                   uint32_t expected[8];
                   int rc = sampled ? ps5_resource_sampled_image_descriptor(buffers[j],
                         (srd[3] >> 12) & 15u, (srd[3] >> 16) & 15u, expected) :
-                                     ps5_resource_storage_image_descriptor(buffers[j], expected);
+                                     ps5_resource_storage_image_descriptor(buffers[j], (srd[3] >> 12) & 15u, expected);
                   if (!rc &&
                       !memcmp(srd, expected, sizeof(expected)))
                      owned = true;

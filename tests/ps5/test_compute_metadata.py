@@ -27,14 +27,14 @@ mock = r'''
 typedef struct { int unused; } video_api_t;
 struct pipe_screen { int unused; };
 struct pipe_resource { void *data; size_t size; bool image; };
-static int ps5_resource_storage_image_descriptor(struct pipe_resource *r,uint32_t d[8]) {
-    if(!r || !r->image) return -1;
+static int ps5_resource_storage_image_descriptor(struct pipe_resource *r,unsigned level,uint32_t d[8]) {
+    if(!r || !r->image || level) return -1;
     const uint32_t srd[8]={(uintptr_t)r->data>>8,0,0x80000000,0x90000204,63,0x400000,0,0};
     memcpy(d,srd,sizeof(srd)); return 0;
 }
 static int ps5_resource_sampled_image_descriptor(struct pipe_resource *r,unsigned first,unsigned last,uint32_t d[8]) {
     if(first || last) return -1;
-    return ps5_resource_storage_image_descriptor(r,d);
+    return ps5_resource_storage_image_descriptor(r,0,d);
 }
 static unsigned locked, allocations, submissions, dispatches, flushes, userdata_count;
 static unsigned out_of_space;
@@ -205,7 +205,7 @@ static void submission_contract(PsbcShaderOutput *out) {
         .type=PSBC_DESCRIPTOR_STORAGE_IMAGE,.array_size=8,.stride=32,.offset=31*16};
     _Alignas(256) uint32_t pixels[192]={0};
     struct pipe_resource image={pixels,sizeof(pixels),true};
-    uint32_t expected[8]; assert(!ps5_resource_storage_image_descriptor(&image,expected));
+    uint32_t expected[8]; assert(!ps5_resource_storage_image_descriptor(&image,0,expected));
     memcpy(table_data+31*4+7*8,expected,32);
     struct pipe_resource *all[PS5_AGC_COMPUTE_MAX_RESOURCES];
     for(unsigned i=0;i<PS5_AGC_COMPUTE_MAX_RESOURCES;++i) all[i]=i<31 ? &buffer : &image;

@@ -118,7 +118,7 @@ static int ps5_agc_compute_execute(struct pipe_screen *s, const PsbcShaderOutput
         for(unsigned i=0;i<8;++i) {
             uint32_t expected[8]={0};
             if(with_images==39 || i==7)
-                assert(!ps5_resource_storage_image_descriptor(buffers[count-1],expected));
+                assert(!ps5_resource_storage_image_descriptor(buffers[count-1],0,expected));
             assert(!memcmp(t->data+31*16+i*32,expected,32));
         }
         ++submitted; return 0;
@@ -329,7 +329,7 @@ int main(void) {
         .format=PIPE_FORMAT_R32_UINT,.width0=17,.height0=3,.depth0=1,.array_size=1,
         .bind=PIPE_BIND_SHADER_IMAGE|PIPE_BIND_SAMPLER_VIEW},.data=pixels,.size=sizeof(pixels),.level_stride={256}};
     uint32_t descriptor[8];
-    assert(!ps5_resource_storage_image_descriptor(&image.base,descriptor));
+    assert(!ps5_resource_storage_image_descriptor(&image.base,0,descriptor));
     assert(descriptor[0]==(uint32_t)((uintptr_t)pixels>>8));
     assert(descriptor[2]==(4u|(2u<<14)|0x80000000u));
     assert(descriptor[3]==0x90000204 && descriptor[4]==63 && descriptor[5]==0x400000);
@@ -341,7 +341,19 @@ int main(void) {
     for(unsigned level=0;level<4;++level) {mip.level_offset[level]=offsets[level];mip.level_stride[level]=256;}
     assert(!ps5_resource_sampled_image_descriptor(&mip.base,1,2,descriptor));
     assert(descriptor[3]==0x90021204 && descriptor[4]==0 && descriptor[5]==0x400030);
-    assert(ps5_resource_storage_image_descriptor(&mip.base,descriptor)<0);
+    pipe_reference_init(&mip.base.reference,1);
+    for(unsigned level=0;level<4;++level) {
+        assert(!ps5_resource_storage_image_descriptor(&mip.base,level,descriptor));
+        assert(descriptor[3]==(0x90000204u|(level<<12)|(level<<16)));
+        assert(descriptor[5]==0x400030);
+        struct pipe_image_view mv={.resource=&mip.base,.format=mip.base.format,.access=PIPE_IMAGE_ACCESS_WRITE};
+        mv.u.tex.level=level;
+        ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,0,1,0,&mv);
+        assert(!context.compute_images_invalid && context.compute_images[0].u.tex.level==level && mip.base.reference.count==2);
+        ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,0,0,1,NULL);
+        assert(mip.base.reference.count==1);
+    }
+    assert(ps5_resource_storage_image_descriptor(&mip.base,4,descriptor)<0);
     for(unsigned fault=0;fault<12;++fault) {
         struct ps5_resource bad=mip;
         if(fault<4) bad.level_offset[fault]+=256;
@@ -353,7 +365,7 @@ int main(void) {
     const enum pipe_format scalar_formats[]={PIPE_FORMAT_R32_UINT,PIPE_FORMAT_R32_SINT,PIPE_FORMAT_R32_FLOAT};
     for(unsigned i=0;i<3;++i) {
         struct ps5_resource typed=image; typed.base.format=scalar_formats[i];
-        assert(!ps5_resource_storage_image_descriptor(&typed.base,descriptor));
+        assert(!ps5_resource_storage_image_descriptor(&typed.base,0,descriptor));
         assert((descriptor[1]&0x3ff00000u)==(0x1400000u+i*0x100000u));
         pipe_reference_init(&typed.base.reference,1);
         struct pipe_image_view v={.resource=&typed.base,.format=typed.base.format,.access=PIPE_IMAGE_ACCESS_READ_WRITE};
@@ -379,7 +391,7 @@ int main(void) {
         if(fault==12) bad.data++;
         if(fault==13) bad.level_stride[0]=128;
         if(fault==14) bad.size=767;
-        assert(ps5_resource_storage_image_descriptor(&bad.base,descriptor)<0);
+        assert(ps5_resource_storage_image_descriptor(&bad.base,0,descriptor)<0);
     }
     pipe_reference_init(&image.base.reference,1);
     struct pipe_image_view view={.resource=&image.base,.format=PIPE_FORMAT_R32_UINT,.access=PIPE_IMAGE_ACCESS_READ_WRITE};
