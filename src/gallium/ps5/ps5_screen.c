@@ -1326,12 +1326,17 @@ ps5_texture_descriptor_format(enum pipe_format format, uint32_t *word1)
 }
 
 static bool
-ps5_texture_descriptor_swizzle(unsigned swizzle, uint32_t *selector)
+ps5_texture_descriptor_swizzle(unsigned swizzle, enum pipe_format format, uint32_t *selector)
 {
    static const uint8_t selectors[] = {4, 5, 6, 7, 0, 1};
 
    if (swizzle >= ARRAY_SIZE(selectors))
       return false;
+   /* Compose logical R32 view channels with the one-channel storage format.
+    * Keep other formats unchanged until their full-channel audit is complete. */
+   if (swizzle < 4 && (format == PIPE_FORMAT_R32_FLOAT ||
+       format == PIPE_FORMAT_R32_UINT || format == PIPE_FORMAT_R32_SINT))
+      swizzle = util_format_description(format)->swizzle[swizzle];
    *selector = selectors[swizzle];
    return true;
 }
@@ -2567,10 +2572,10 @@ ps5_prepare_texture(struct ps5_context *context,
           !ps5_texture_descriptor_mip_filter(sampler->min_mip_filter,
                                              &mip_filter) ||
           !ps5_texture_descriptor_format(view->format, &format_word) ||
-          !ps5_texture_descriptor_swizzle(view->swizzle_r, &swizzle[0]) ||
-          !ps5_texture_descriptor_swizzle(view->swizzle_g, &swizzle[1]) ||
-          !ps5_texture_descriptor_swizzle(view->swizzle_b, &swizzle[2]) ||
-          !ps5_texture_descriptor_swizzle(view->swizzle_a, &swizzle[3]))
+          !ps5_texture_descriptor_swizzle(view->swizzle_r, view->format, &swizzle[0]) ||
+          !ps5_texture_descriptor_swizzle(view->swizzle_g, view->format, &swizzle[1]) ||
+          !ps5_texture_descriptor_swizzle(view->swizzle_b, view->format, &swizzle[2]) ||
+          !ps5_texture_descriptor_swizzle(view->swizzle_a, view->format, &swizzle[3]))
          return false;
 
       if (staged_packed_depth) {

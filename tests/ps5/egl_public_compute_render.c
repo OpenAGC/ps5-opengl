@@ -2,8 +2,8 @@
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-/* Internal CS -> sampled draw -> CS fetch/size transitions. Four alternating
- * R32_FLOAT phases verify all result channels and padding at units 0 and 7.
+/* Internal CS -> sampled draw -> CS fetch/size transitions. Twelve alternating
+ * R32_FLOAT/UINT/SINT phases verify channels and padding at units 0 and 7.
  * No public compute cap or display qualification: this test never swaps. */
 #include <stdio.h>
 #include <string.h>
@@ -14,10 +14,12 @@
 #include "ps5_screen.h"
 #include "psbc_compile.h"
 
-#define IMAGE_WORDS (64 * 3) /* 17x3 R32_FLOAT, 256-byte rows. */
+#define IMAGE_WORDS (64 * 3) /* 17x3 R32, 256-byte rows. */
 #define GUARD_WORD UINT32_C(0xcdcdcdcd)
+static const enum pipe_format image_formats[] = {
+   PIPE_FORMAT_R32_FLOAT, PIPE_FORMAT_R32_UINT, PIPE_FORMAT_R32_SINT};
 
-static nir_shader *build_compute(void)
+static nir_shader *build_compute(unsigned kind)
 {
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
       psbc_get_nir_options(PSBC_STAGE_COMPUTE), "compute-render-cs");
@@ -28,9 +30,17 @@ static nir_shader *build_compute(void)
    nir_def *x = nir_iadd_imm(&b, nir_channel(&b, nir_load_local_invocation_id(&b), 0), 1);
    nir_def *sign = nir_load_ubo(&b, 1, 32, zero, zero, .align_mul = 4, .range = 4);
    nir_def *value = nir_fmul(&b, nir_fmul_imm(&b, nir_u2f32(&b, x), 0.25), sign);
+   if (kind == 1)
+      value = nir_iadd(&b, nir_imul_imm(&b, x, 3), nir_bcsel(&b, nir_flt_imm(&b, sign, 0),
+         nir_imm_int(&b, 0x80000005u), nir_imm_int(&b, 0x10000005u)));
+   else if (kind == 2) {
+      value = nir_iadd_imm(&b, nir_imul_imm(&b, x, 7), 1000);
+      value = nir_bcsel(&b, nir_flt_imm(&b, sign, 0), nir_ineg(&b, value), value);
+   }
    nir_image_store(&b, zero, nir_vec4(&b, x, nir_imm_int(&b, 1), zero, zero), zero,
       nir_vec4(&b, value, zero, zero, zero), zero, .image_dim = GLSL_SAMPLER_DIM_2D,
-      .format = PIPE_FORMAT_R32_FLOAT, .src_type = nir_type_float32);
+      .format = image_formats[kind], .src_type = kind == 0 ? nir_type_float32 :
+         kind == 1 ? nir_type_uint32 : nir_type_int32);
    return b.shader;
 }
 
@@ -48,7 +58,7 @@ static nir_shader *build_vertex(void)
    return b.shader;
 }
 
-static nir_shader *build_fragment(void)
+static nir_shader *build_fragment(unsigned kind)
 {
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
       psbc_get_nir_options(PSBC_STAGE_FRAGMENT), "compute-render-fs");
@@ -56,16 +66,27 @@ static nir_shader *build_fragment(void)
    tex->op = nir_texop_txf;
    tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
    tex->coord_components = 2;
-   tex->dest_type = nir_type_float32;
+   tex->dest_type = kind == 0 ? nir_type_float32 : kind == 1 ? nir_type_uint32 : nir_type_int32;
    tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_coord, nir_imm_ivec2(&b, 1, 1));
    tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, nir_imm_int(&b, 0));
    nir_def_init(&tex->instr, &tex->def, 4, 32);
    nir_builder_instr_insert(&b, &tex->instr);
    nir_def *negative = nir_flt_imm(&b, nir_channel(&b, &tex->def, 0), 0);
+   if (kind == 1)
+      negative = nir_ine_imm(&b, nir_iand_imm(&b, nir_channel(&b, &tex->def, 0), 0x80000000u), 0);
+   else if (kind == 2)
+      negative = nir_ilt_imm(&b, nir_channel(&b, &tex->def, 0), 0);
+   nir_def *channels_ok = nir_imm_true(&b);
+   for (unsigned lane = 1; lane < 4; ++lane) {
+      nir_def *component = nir_channel(&b, &tex->def, lane);
+      nir_def *matches = kind == 0 ? nir_feq_imm(&b, component, lane == 3 ? 1 : 0) :
+                                    nir_ieq_imm(&b, component, lane == 3 ? 1 : 0);
+      channels_ok = nir_iand(&b, channels_ok, matches);
+   }
    nir_variable *color = nir_variable_create(b.shader, nir_var_shader_out, glsl_vec4_type(), "color");
    color->data.location = FRAG_RESULT_DATA0;
    nir_store_var(&b, color, nir_vec4(&b, nir_b2f32(&b, negative),
-      nir_b2f32(&b, nir_inot(&b, negative)), nir_imm_float(&b, 0), nir_imm_float(&b, 1)), 0xf);
+      nir_b2f32(&b, nir_inot(&b, negative)), nir_b2f32(&b, nir_inot(&b, channels_ok)), nir_imm_float(&b, 1)), 0xf);
    nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
    /* Indexed Gallium texture instructions require explicit usage metadata;
     * gather_info counts sampler variables but does not build these masks. */
@@ -109,7 +130,19 @@ static nir_shader *compute_sample(unsigned test, unsigned unit)
    return b.shader;
 }
 
-static unsigned count_sampled(const uint32_t *words, float sign, bool size_query)
+static uint32_t expected_red(unsigned kind, unsigned x, float sign)
+{
+   if (kind == 1)
+      return (sign < 0 ? UINT32_C(0x80000005) : UINT32_C(0x10000005)) + x * 3;
+   if (kind == 2)
+      return (uint32_t)((sign < 0 ? -1 : 1) * (1000 + (int)x * 7));
+   float value = x * 0.25f * sign;
+   uint32_t word;
+   memcpy(&word, &value, 4);
+   return word;
+}
+
+static unsigned count_sampled(const uint32_t *words, float sign, bool size_query, unsigned kind)
 {
    unsigned correct = 0;
    for (unsigned i = 0; i < 80; ++i) {
@@ -120,8 +153,8 @@ static unsigned count_sampled(const uint32_t *words, float sign, bool size_query
             const uint32_t size[4] = {17, 3, 0, 1};
             expected = size[lane];
          } else {
-            float value = lane == 0 ? (invocation + 1) * 0.25f * sign : lane == 3 ? 1 : 0;
-            memcpy(&expected, &value, 4);
+            expected = lane == 0 ? expected_red(kind, invocation + 1, sign) :
+               lane == 3 ? (kind == 0 ? UINT32_C(0x3f800000) : 1) : 0;
          }
       }
       correct += words[i] == expected;
@@ -129,14 +162,13 @@ static unsigned count_sampled(const uint32_t *words, float sign, bool size_query
    return correct;
 }
 
-static unsigned count_image(const uint32_t *words, float sign)
+static unsigned count_image(const uint32_t *words, float sign, unsigned kind)
 {
    unsigned correct = 0;
    for (unsigned i = 0; i < IMAGE_WORDS; ++i) {
       uint32_t expected = GUARD_WORD;
       if (i >= 65 && i < 81) {
-         float value = (i - 64) * 0.25f * sign;
-         memcpy(&expected, &value, sizeof(expected));
+         expected = expected_red(kind, i - 64, sign);
       }
       correct += words[i] == expected;
    }
@@ -158,11 +190,11 @@ int main(void)
    int status = 1;
    struct pipe_screen *screen = ps5_screen_create();
    struct pipe_context *pipe = screen ? screen->context_create(screen, NULL, 0) : NULL;
-   struct pipe_resource *image = NULL, *target = NULL, *render_pool = NULL;
+   struct pipe_resource *images[3] = {0}, *target = NULL, *render_pool = NULL;
    struct pipe_resource *sample_output = NULL;
-   void *sample_cs[4] = {0};
-   struct pipe_sampler_view *view = NULL;
-   void *cs = NULL, *vs = NULL, *fs = NULL, *sampler = NULL;
+   void *sample_cs[3][4] = {{0}};
+   struct pipe_sampler_view *views[3] = {0};
+   void *writers[3] = {0}, *fragments[3] = {0}, *vs = NULL, *sampler = NULL;
    void *blend = NULL, *rasterizer = NULL, *depth = NULL;
    psbc_init();
    if (!pipe)
@@ -182,35 +214,41 @@ int main(void)
    struct pipe_resource templ = {.target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_R32_FLOAT,
       .width0 = 17, .height0 = 3, .depth0 = 1, .array_size = 1,
       .bind = PIPE_BIND_SHADER_IMAGE | PIPE_BIND_SAMPLER_VIEW};
-   image = screen->resource_create(screen, &templ);
+   void *image_data[3] = {0};
+   for (unsigned kind = 0; kind < 3; ++kind) {
+      templ.format = image_formats[kind];
+      images[kind] = screen->resource_create(screen, &templ);
+      size_t size = 0;
+      if (!images[kind] || ps5_resource_info(images[kind], &image_data[kind], &size, NULL) ||
+          !image_data[kind] || size != IMAGE_WORDS * 4)
+         goto cleanup;
+      memset(image_data[kind], 0xcd, size); /* No CPU source writes after initialization. */
+   }
    templ.format = PIPE_FORMAT_R8G8B8A8_UNORM;
    templ.width0 = templ.height0 = 8;
    templ.bind = PIPE_BIND_RENDER_TARGET;
    target = screen->resource_create(screen, &templ);
-   void *image_data = NULL;
-   size_t image_size = 0;
-   if (!image || !target || ps5_resource_info(image, &image_data, &image_size, NULL) ||
-       !image_data || image_size != IMAGE_WORDS * sizeof(uint32_t))
+   if (!target)
       goto cleanup;
-   memset(image_data, 0xcd, image_size); /* The only CPU image write, before any dispatch. */
-   struct pipe_compute_state compute = {.ir_type = PIPE_SHADER_IR_NIR, .prog = build_compute()};
-   cs = pipe->create_compute_state(pipe, &compute);
+   struct pipe_compute_state compute = {.ir_type = PIPE_SHADER_IR_NIR};
    struct pipe_shader_state shader = {.type = PIPE_SHADER_IR_NIR, .ir.nir = build_vertex()};
    vs = pipe->create_vs_state(pipe, &shader);
-   shader.ir.nir = build_fragment();
-   fs = pipe->create_fs_state(pipe, &shader);
-   if (!cs || !vs || !fs)
+   if (!vs)
       goto cleanup;
-   pipe->bind_compute_state(pipe, cs);
    pipe->bind_vs_state(pipe, vs);
-   pipe->bind_fs_state(pipe, fs);
-   const struct pipe_image_view iv = {.resource = image, .format = image->format,
-      .access = PIPE_IMAGE_ACCESS_WRITE};
-   pipe->set_shader_images(pipe, MESA_SHADER_COMPUTE, 0, 1, 0, &iv);
-   struct pipe_sampler_view sv = {.target = PIPE_TEXTURE_2D, .format = image->format,
+   struct pipe_sampler_view sv = {.target = PIPE_TEXTURE_2D,
       .swizzle_r = PIPE_SWIZZLE_X, .swizzle_g = PIPE_SWIZZLE_Y,
       .swizzle_b = PIPE_SWIZZLE_Z, .swizzle_a = PIPE_SWIZZLE_W};
-   view = pipe->create_sampler_view(pipe, image, &sv);
+   for (unsigned kind = 0; kind < 3; ++kind) {
+      sv.format = image_formats[kind];
+      views[kind] = pipe->create_sampler_view(pipe, images[kind], &sv);
+      compute.prog = build_compute(kind);
+      writers[kind] = pipe->create_compute_state(pipe, &compute);
+      shader.ir.nir = build_fragment(kind);
+      fragments[kind] = pipe->create_fs_state(pipe, &shader);
+      if (!views[kind] || !writers[kind] || !fragments[kind])
+         goto cleanup;
+   }
    const struct pipe_sampler_state ss = {.wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
       .wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE, .wrap_r = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
       .min_img_filter = PIPE_TEX_FILTER_NEAREST, .mag_img_filter = PIPE_TEX_FILTER_NEAREST,
@@ -225,7 +263,7 @@ int main(void)
    rasterizer = pipe->create_rasterizer_state(pipe, &rs);
    const struct pipe_depth_stencil_alpha_state ds = {0};
    depth = pipe->create_depth_stencil_alpha_state(pipe, &ds);
-   if (!view || !sampler || !blend || !rasterizer || !depth)
+   if (!sampler || !blend || !rasterizer || !depth)
       goto cleanup;
    const struct pipe_resource output_template = {.target = PIPE_BUFFER,
       .format = PIPE_FORMAT_R8_UNORM, .width0 = 80 * 4, .height0 = 1,
@@ -238,15 +276,12 @@ int main(void)
       goto cleanup;
    const struct pipe_shader_buffer output_binding = {sample_output, 8 * 4, 64 * 4};
    pipe->set_shader_buffers(pipe, MESA_SHADER_COMPUTE, 0, 1, &output_binding, 1);
-   pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 1, 0, &view);
-   pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 7, 1, 0, &view);
-   for (unsigned i = 0; i < 4; ++i) {
-      compute.prog = compute_sample(i & 1 ? 3 : 0, i >= 2 ? 7 : 0);
-      sample_cs[i] = pipe->create_compute_state(pipe, &compute);
-      if (!sample_cs[i])
+   for (unsigned kind = 0; kind < 3; ++kind) for (unsigned i = 0; i < 4; ++i) {
+      compute.prog = compute_sample(i & 1 ? 3 : kind, i >= 2 ? 7 : 0);
+      sample_cs[kind][i] = pipe->create_compute_state(pipe, &compute);
+      if (!sample_cs[kind][i])
          goto cleanup;
    }
-   pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &view);
    pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, &sampler);
    pipe->bind_blend_state(pipe, blend);
    pipe->bind_rasterizer_state(pipe, rasterizer);
@@ -256,7 +291,16 @@ int main(void)
    const struct pipe_framebuffer_state fb = {.width = 8, .height = 8, .nr_cbufs = 1,
       .cbufs[0] = {.texture = target, .format = PIPE_FORMAT_R8G8B8A8_UNORM}};
    pipe->set_framebuffer_state(pipe, &fb);
-   for (unsigned phase = 0; phase < 4; ++phase) {
+   for (unsigned phase = 0; phase < 12; ++phase) {
+      const unsigned kind = phase / 4;
+      struct pipe_sampler_view *view = views[kind];
+      const struct pipe_image_view iv = {.resource = images[kind], .format = image_formats[kind],
+         .access = PIPE_IMAGE_ACCESS_WRITE};
+      pipe->set_shader_images(pipe, MESA_SHADER_COMPUTE, 0, 1, 0, &iv);
+      pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 1, 0, &view);
+      pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 7, 1, 0, &view);
+      pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 1, 0, &view);
+      pipe->bind_fs_state(pipe, fragments[kind]);
       const float sign = phase & 1 ? 1 : -1;
       float constants[4] = {sign, 0, 0, 0};
       const struct pipe_constant_buffer cb = {.user_buffer = constants, .buffer_size = sizeof(constants)};
@@ -265,7 +309,7 @@ int main(void)
       const struct pipe_grid_info grid = {.work_dim = 1, .block = {16, 1, 1}, .grid = {1, 1, 1}};
       printf("[ps5-compute-render] phase=%u dispatch-start\n", phase);
       fflush(stdout);
-      pipe->bind_compute_state(pipe, cs);
+      pipe->bind_compute_state(pipe, writers[kind]);
       pipe->launch_grid(pipe, &grid);
       unsigned dispatches = 0, draws = 0;
       int compute_rc = ps5_context_last_compute_status(pipe, &dispatches);
@@ -286,11 +330,11 @@ int main(void)
          goto cleanup;
       for (unsigned i = 0; i < 4; ++i) {
          memset(sample_words, 0xcd, sample_bytes); /* Output only; source stays GPU-written. */
-         pipe->bind_compute_state(pipe, sample_cs[i]);
+         pipe->bind_compute_state(pipe, sample_cs[kind][i]);
          pipe->launch_grid(pipe, &grid);
          unsigned sampled_dispatches = 0;
          int rc = ps5_context_last_compute_status(pipe, &sampled_dispatches);
-         unsigned correct = count_sampled(sample_words, sign, i & 1);
+         unsigned correct = count_sampled(sample_words, sign, i & 1, kind);
          printf("[ps5-compute-sampled] phase=%u case=%u rc=%d dispatches=%u words=%u/80\n",
             phase, i, rc, sampled_dispatches, correct);
          if (correct != 80)
@@ -301,7 +345,7 @@ int main(void)
          if (rc || sampled_dispatches != phase * 5 + i + 2 || correct != 80)
             goto cleanup;
       }
-      unsigned image_ok = count_image(image_data, sign);
+      unsigned image_ok = count_image(image_data[kind], sign, kind);
       printf("[ps5-compute-render] phase=%u compute=%d/%u draw=%d/%u pixels=%u/64 image=%u/%u\n",
          phase, compute_rc, dispatches, draw_rc, draws, pixel_ok, image_ok, IMAGE_WORDS);
       fflush(stdout);
@@ -321,19 +365,22 @@ cleanup:
       pipe->bind_sampler_states(pipe, MESA_SHADER_FRAGMENT, 0, 1, &none);
       pipe->set_sampler_views(pipe, MESA_SHADER_FRAGMENT, 0, 0, 1, NULL);
       pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 0, 8, NULL);
-      pipe_sampler_view_reference(&view, NULL);
-      if (cs) pipe->delete_compute_state(pipe, cs);
-      for (unsigned i = 0; i < 4; ++i)
-         if (sample_cs[i]) pipe->delete_compute_state(pipe, sample_cs[i]);
+      for (unsigned kind = 0; kind < 3; ++kind) {
+         pipe_sampler_view_reference(&views[kind], NULL);
+         if (writers[kind]) pipe->delete_compute_state(pipe, writers[kind]);
+         if (fragments[kind]) pipe->delete_fs_state(pipe, fragments[kind]);
+         for (unsigned i = 0; i < 4; ++i)
+            if (sample_cs[kind][i]) pipe->delete_compute_state(pipe, sample_cs[kind][i]);
+      }
       if (vs) pipe->delete_vs_state(pipe, vs);
-      if (fs) pipe->delete_fs_state(pipe, fs);
       if (sampler) pipe->delete_sampler_state(pipe, sampler);
       if (blend) pipe->delete_blend_state(pipe, blend);
       if (rasterizer) pipe->delete_rasterizer_state(pipe, rasterizer);
       if (depth) pipe->delete_depth_stencil_alpha_state(pipe, depth);
       pipe->destroy(pipe);
    }
-   pipe_resource_reference(&image, NULL);
+   for (unsigned kind = 0; kind < 3; ++kind)
+      pipe_resource_reference(&images[kind], NULL);
    pipe_resource_reference(&target, NULL);
    pipe_resource_reference(&sample_output, NULL);
    pipe_resource_reference(&render_pool, NULL);

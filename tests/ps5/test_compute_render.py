@@ -16,6 +16,7 @@ code = r'''
 #include <stdio.h>
 #include <string.h>
 #include "compiler/nir/nir_builder.h"
+#include "util/format/u_format.h"
 #include "ps5_agc_package.h"
 ''' + source[source.index("#define IMAGE_WORDS"):source.index("int main(void)")] + r'''
 static void compile(nir_shader *nir, PsbcCompileOptions *options) {
@@ -31,6 +32,20 @@ static void compile(nir_shader *nir, PsbcCompileOptions *options) {
 }
 int main(void) {
     psbc_init();
+    for(unsigned kind=0;kind<4;++kind) {
+        enum pipe_format format=kind<3 ? image_formats[kind] : PIPE_FORMAT_R8G8B8A8_UNORM;
+        const uint32_t expected_r32[6]={4,0,0,1,0,1}, expected_rgba[6]={4,5,6,7,0,1};
+        for(unsigned channel=0;channel<6;++channel) {
+            uint32_t selector=99;
+            assert(ps5_texture_descriptor_swizzle(channel,format,&selector));
+            assert(selector==(kind<3 ? expected_r32[channel] : expected_rgba[channel]));
+        }
+        uint32_t selector=99;
+        assert(!ps5_texture_descriptor_swizzle(6,format,&selector) && selector==99);
+    }
+    assert(expected_red(0,1,-1)==0xbe800000 && expected_red(0,16,1)==0x40800000);
+    assert(expected_red(1,1,-1)==0x80000008 && expected_red(1,16,1)==0x10000035);
+    assert(expected_red(2,1,-1)==(uint32_t)-1007 && expected_red(2,16,1)==1112);
     PsbcCompileOptions options = {.target=PSBC_TARGET_PS5, .stage=PSBC_STAGE_COMPUTE,
         .optimise=true, .address32_hi=2, .gallium_buffer_arrays=true,
         .descriptor_binding_count=3, .descriptor_bindings={
@@ -40,7 +55,7 @@ int main(void) {
            .type=PSBC_DESCRIPTOR_UNIFORM_BUFFER, .array_size=15, .stride=16, .offset=256},
           {.binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
            .type=PSBC_DESCRIPTOR_STORAGE_IMAGE, .array_size=8, .stride=32, .offset=496}}};
-    compile(build_compute(), &options);
+    for(unsigned kind=0;kind<3;++kind) compile(build_compute(kind), &options);
     /* Sampled descriptors coexist with the three existing compute banks.
      * This is compiler/package coverage, not native sampler qualification. */
     for(unsigned unit=0;unit<=7;unit+=7) for(unsigned test=0;test<5;++test) {
@@ -88,16 +103,17 @@ int main(void) {
         .optimise=true, .address32_hi=2, .spi_shader_col_format=4,
         .descriptor_binding_count=1, .descriptor_bindings={
           {.binding=0, .type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER, .array_size=1, .stride=48}}};
-    nir_shader *fs = build_fragment();
+    nir_shader *fs = build_fragment(0);
     /* Gallium selects descriptors from these masks, not the tex instructions.
      * gather_info alone does not populate them for hand-built indexed NIR. */
     assert(fs->info.num_textures == 1 && BITSET_TEST(fs->info.textures_used, 0) &&
            BITSET_TEST(fs->info.textures_used_by_txf, 0));
     compile(fs, &options);
+    for(unsigned kind=1;kind<3;++kind) compile(build_fragment(kind), &options);
     /* An incomplete legacy descriptor layout must return an error, not enter
      * RADV's unrelated bindless-heap path and abort the native application. */
     for (unsigned test=0; test<8; ++test) {
-        fs = build_fragment();
+        fs = build_fragment(0);
         nir_tex_instr *tex = NULL;
         nir_foreach_block(block, nir_shader_get_entrypoint(fs))
             nir_foreach_instr(instr, block)
@@ -135,7 +151,7 @@ int main(void) {
         psbc_free_output(&output); ralloc_free(fs);
     }
     psbc_shutdown();
-    for (unsigned phase=0; phase<4; ++phase) {
+    for (unsigned kind=0;kind<3;++kind) for (unsigned phase=0; phase<4; ++phase) {
         float sign=phase&1 ? 1 : -1;
         for(unsigned size_query=0;size_query<2;++size_query) {
             uint32_t sampled[80]; memset(sampled,0xcd,sizeof(sampled));
@@ -144,37 +160,39 @@ int main(void) {
                     const uint32_t size[4]={17,3,0,1};
                     memcpy(sampled+8+i*4,size,16);
                 } else {
-                    const float value[4]={(i+1)*0.25f*sign,0,0,1};
+                    const uint32_t value[4]={expected_red(kind,i+1,sign),0,0,kind==0 ? 0x3f800000u : 1};
                     memcpy(sampled+8+i*4,value,16);
                 }
             }
-            assert(count_sampled(sampled,sign,size_query)==80);
-            if(!size_query) assert(count_sampled(sampled,-sign,false)==64);
+            assert(count_sampled(sampled,sign,size_query,kind)==80);
+            if(!size_query) assert(count_sampled(sampled,-sign,false,kind)==64);
             sampled[0]=0; sampled[71]^=1;
-            assert(count_sampled(sampled,sign,size_query)==78);
+            assert(count_sampled(sampled,sign,size_query,kind)==78);
         }
         uint32_t words[IMAGE_WORDS];
         uint8_t pixels[8*256];
         memset(words,0xcd,sizeof(words));
         memset(pixels,0xcd,sizeof(pixels));
         for(unsigned i=65;i<81;++i) {
-            float value=(i-64)*0.25f*sign;
-            memcpy(&words[i],&value,4);
+            words[i]=expected_red(kind,i-64,sign);
         }
         for(unsigned y=0;y<8;++y) for(unsigned x=0;x<8;++x) {
             uint8_t *p=pixels+y*256+4*x;
             p[0]=sign<0 ? 255 : 0; p[1]=sign>0 ? 255 : 0; p[2]=0; p[3]=255;
         }
-        assert(count_image(words,sign)==IMAGE_WORDS && count_pixels(pixels,256,sign)==64);
-        assert(count_image(words,-sign)==IMAGE_WORDS-16 && count_pixels(pixels,256,-sign)==0);
+        assert(count_image(words,sign,kind)==IMAGE_WORDS && count_pixels(pixels,256,sign)==64);
+        assert(count_image(words,-sign,kind)==IMAGE_WORDS-16 && count_pixels(pixels,256,-sign)==0);
         words[0]=0; words[65]=0;
-        assert(count_image(words,sign)==IMAGE_WORDS-2);
+        assert(count_image(words,sign,kind)==IMAGE_WORDS-2);
         pixels[0]^=255; pixels[7*256+7*4+3]=0;
         assert(count_pixels(pixels,256,sign)==62);
     }
 }
 '''
 driver = (ROOT / "src/gallium/ps5/ps5_screen.c").read_text()
+swizzle_start = driver.index("static bool\nps5_texture_descriptor_swizzle(")
+swizzle = driver[swizzle_start:driver.index("static bool\nps5_texture_descriptor_wrap(",swizzle_start)]
+code = code.replace("static void compile(",swizzle+"static void compile(",1)
 usage_start = driver.index("static bool\nps5_compute_texture_usage(")
 usage = driver[usage_start:driver.index("/* Internal compute bring-up", usage_start)]
 code = code.replace("static nir_shader *compute_sample(",
