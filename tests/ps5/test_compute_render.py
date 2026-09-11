@@ -6,16 +6,40 @@
 """Compile the native compute/render shaders and challenge their readback oracle."""
 import subprocess
 import tempfile
+import hashlib
+import json
+import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 PSBC = ROOT / "third_party/opengnm-psbc"
 source = (ROOT / "tests/ps5/egl_public_compute_render.c").read_text()
+fixture_header = ROOT / "tests/ps5/compute_glsl_fixtures.h"
+if not fixture_header.exists():
+    raise SystemExit("Missing fixed GLSL fixtures: explicitly run tests/ps5/glsl_handoff/run.py --export-header")
+fixture_text = fixture_header.read_text()
+receipt_text = fixture_text.split('/* PS5_GLSL_RECEIPT_BEGIN\n', 1)[1].split('\nPS5_GLSL_RECEIPT_END */', 1)[0]
+receipt = json.loads(receipt_text)
+assert receipt['schema'] == 1 and receipt['target_abi']['compile_only']
+receipt_hash = hashlib.sha256(receipt_text.encode()).hexdigest()
+assert f'#define PS5_GLSL_RECEIPT_SHA256 "{receipt_hash}"' in fixture_text
+for name, expected in receipt['source_sha256'].items():
+    assert hashlib.sha256((ROOT / name).read_text().encode()).hexdigest() == expected, f"Stale GLSL fixture source: {name}"
+for i, fixture in enumerate(receipt['fixtures']):
+    assert hashlib.sha256(fixture['source'].encode()).hexdigest() == fixture['source_sha256']
+    array = re.search(rf'ps5_glsl_blob_{i}\[\] = \{{(.*?)\}};', fixture_text, re.S)[1]
+    blob = bytes(int(value, 16) for value in re.findall(r'0x([0-9a-f]{2})', array))
+    assert 0 < len(blob) == fixture['bytes'] <= 1048576
+    assert hashlib.sha256(blob).hexdigest() == fixture['blob_sha256']
+assert len(receipt['fixtures']) == 3
 code = r'''
 #include <assert.h>
 #include <stdio.h>
 #include <string.h>
 #include "compiler/nir/nir_builder.h"
+#include "compiler/nir/nir_serialize.h"
+#include "util/blob.h"
+#include "compute_glsl_fixtures.h"
 #include "util/format/u_format.h"
 #include "util/half_float.h"
 #include "ps5_agc_package.h"
@@ -70,6 +94,32 @@ int main(void) {
            .type=PSBC_DESCRIPTOR_UNIFORM_BUFFER, .array_size=15, .stride=16, .offset=256},
           {.binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
            .type=PSBC_DESCRIPTOR_STORAGE_IMAGE, .array_size=8, .stride=32, .offset=496}}};
+    nir_shader_compiler_options native_options=*psbc_get_nir_options(PSBC_STAGE_COMPUTE);
+    native_options.io_options |= nir_io_has_intrinsics; /* Same native screen contract. */
+    assert(ps5_glsl_options_match(&native_options));
+    nir_shader_compiler_options wrong_options=native_options;
+    wrong_options.lower_fdiv=!wrong_options.lower_fdiv;
+    assert(!ps5_glsl_options_match(&wrong_options));
+    assert(!load_parsed_glsl(0,&wrong_options) && !load_parsed_glsl(3,&native_options));
+    for(unsigned fixture=0;fixture<3;++fixture) {
+        nir_shader *nir=load_parsed_glsl(fixture,&native_options);
+        assert(nir && prepare_compute_nir(nir));
+        unsigned ubos=nir->info.num_ubos;
+        assert(prepare_compute_nir(nir) && nir->info.num_ubos==ubos);
+        PsbcCompileOptions parsed_options=options;
+        if(fixture==2) parsed_options.descriptor_bindings[parsed_options.descriptor_binding_count++]=
+            (PsbcDescriptorBinding){.binding=0,.type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,
+                                    .array_size=1,.stride=48,.offset=752};
+        compile(nir,&parsed_options);
+        for(unsigned pass=0;pass<2;++pass) {
+            uint32_t words[80]; memset(words,0xcd,sizeof(words));
+            assert(count_parsed_glsl(words,parsed_glsl_expected(fixture,pass))==79);
+            words[8]=parsed_glsl_expected(fixture,pass);
+            assert(count_parsed_glsl(words,parsed_glsl_expected(fixture,pass))==80);
+            words[0]=0; words[79]=0;
+            assert(count_parsed_glsl(words,parsed_glsl_expected(fixture,pass))==78);
+        }
+    }
     PsbcShaderOutput uniform_out[2]={{0}};
     for(unsigned explicit_ubo=0;explicit_ubo<2;++explicit_ubo) {
         nir_shader *nir=build_compute_uniforms(explicit_ubo);
@@ -486,7 +536,8 @@ with tempfile.TemporaryDirectory() as directory:
         "-DHAVE_STRUCT_TIMESPEC=1", "-D_GNU_SOURCE",
         "-I", str(PSBC / "include/mesa"), "-I", str(PSBC / "include"),
         "-I", str(PSBC / "src"), "-I", str(PSBC / "libpsbc"),
-        "-I", str(ROOT / "src/platform"), "-x", "c", "-c", "-o", obj, "-"],
+        "-I", str(ROOT / "src/platform"), "-I", str(ROOT / "tests/ps5"),
+        "-x", "c", "-c", "-o", obj, "-"],
         input=code, text=True, check=True)
     subprocess.run(["clang-18", "-std=c11", "-Wall", "-Werror",
         "-I", str(PSBC / "libpsbc"), "-c", str(ROOT / "src/platform/ps5_agc_package.c"),

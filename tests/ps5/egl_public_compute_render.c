@@ -4,11 +4,15 @@
 
 /* Internal CS -> sampled draw -> CS fetch/size transitions. Twelve alternating
  * R32_FLOAT/UINT/SINT phases verify channels and padding at units 0 and 15.
- * Native qualified: 1021 dispatches, 12 draws, sixteen slots, typed arrays, bounded LODs and memory barriers.
+ * Exercises resource slots, typed arrays, bounded LODs, memory barriers, and
+ * audited parsed-GLSL fixtures through the actual native compute callbacks.
  * No public compute cap or display qualification: this test never swaps. */
 #include <stdio.h>
 #include <string.h>
 #include "compiler/nir/nir_builder.h"
+#include "compiler/nir/nir_serialize.h"
+#include "util/blob.h"
+#include "compute_glsl_fixtures.h"
 #include "pipe/p_context.h"
 #include "pipe/p_screen.h"
 #include "util/u_inlines.h"
@@ -23,6 +27,46 @@ static const enum pipe_format image_formats[] = {
    PIPE_FORMAT_R32G32_FLOAT, PIPE_FORMAT_R32G32_UINT, PIPE_FORMAT_R32G32_SINT,
    PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R32G32B32A32_UINT, PIPE_FORMAT_R32G32B32A32_SINT,
    PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_FORMAT_R16G16B16A16_UINT, PIPE_FORMAT_R16G16B16A16_SINT};
+
+
+/* Trusted, embedded exports from the tracked isolated GLSL harness only.
+ * All options are native; serialized NIR does not carry host function pointers. */
+static nir_shader *load_parsed_glsl(unsigned fixture, const nir_shader_compiler_options *options)
+{
+   if (fixture >= ARRAY_SIZE(ps5_glsl_fixtures) || !ps5_glsl_options_match(options))
+      return NULL;
+   const size_t size = ps5_glsl_fixtures[fixture].size;
+   if (!size || size > 1048576)
+      return NULL;
+   struct blob_reader reader;
+   blob_reader_init(&reader, ps5_glsl_fixtures[fixture].data, size);
+   nir_shader *nir = nir_deserialize(NULL, options, &reader);
+   if (!nir || reader.overrun || reader.current != reader.end ||
+       nir->info.stage != MESA_SHADER_COMPUTE || nir->info.spec ||
+       nir->info.workgroup_size_variable || nir->info.shared_size ||
+       nir->info.workgroup_size[0] != 1 || nir->info.workgroup_size[1] != 1 ||
+       nir->info.workgroup_size[2] != 1) {
+      ralloc_free(nir);
+      return NULL;
+   }
+   nir_validate_shader(nir, "audited parsed GLSL fixture");
+   return nir;
+}
+
+static uint32_t parsed_glsl_expected(unsigned fixture, unsigned pass)
+{
+   if (fixture == 0) return pass ? 40 : 20;
+   if (fixture == 1) return pass ? 11 : 7;
+   return pass ? UINT32_C(0x3f400000) : UINT32_C(0x3e800000); /* 0.75 / 0.25 */
+}
+
+static unsigned count_parsed_glsl(const uint32_t *words, uint32_t expected)
+{
+   unsigned correct = 0;
+   for (unsigned i = 0; i < 80; ++i)
+      correct += words[i] == (i == 8 ? expected : GUARD_WORD);
+   return correct;
+}
 
 static nir_shader *build_compute(unsigned kind)
 {
@@ -931,6 +975,104 @@ cleanup:
    return status;
 }
 
+
+/* Six dispatches appended to the established batch. The blobs are deliberately
+ * not prepared here: the real create_compute_state owns and lowers their NIR. */
+static int run_parsed_glsl(struct pipe_context *pipe, struct pipe_resource *output,
+                           uint32_t *words, size_t bytes, void *sampler)
+{
+   int status = 1;
+   void *shaders[3] = {0};
+   struct pipe_resource *ubo = NULL, *texture = NULL;
+   struct pipe_sampler_view *view = NULL;
+   if (bytes != 320 || !words || !sampler ||
+       !ps5_glsl_options_match(pipe->screen->nir_options[MESA_SHADER_COMPUTE]))
+      goto out;
+   ubo = pipe_buffer_create(pipe->screen, PIPE_BIND_CONSTANT_BUFFER, PIPE_USAGE_DEFAULT, 32);
+   const struct pipe_resource templ = {
+      .target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_R32_FLOAT,
+      .width0 = 2, .height0 = 2, .depth0 = 1, .array_size = 1,
+      .bind = PIPE_BIND_SAMPLER_VIEW
+   };
+   texture = pipe->screen->resource_create(pipe->screen, &templ);
+   if (!ubo || !texture) goto out;
+   const struct pipe_sampler_view sv = {
+      .target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_R32_FLOAT,
+      .swizzle_r = PIPE_SWIZZLE_X, .swizzle_g = PIPE_SWIZZLE_Y,
+      .swizzle_b = PIPE_SWIZZLE_Z, .swizzle_a = PIPE_SWIZZLE_W
+   };
+   view = pipe->create_sampler_view(pipe, texture, &sv);
+   if (!view) goto out;
+   for (unsigned fixture = 0; fixture < 3; ++fixture) {
+      nir_shader *nir = load_parsed_glsl(fixture, pipe->screen->nir_options[MESA_SHADER_COMPUTE]);
+      if (!nir) goto out;
+      const struct pipe_compute_state cs = {
+         .ir_type = PIPE_SHADER_IR_NIR, .prog = nir, .static_shared_mem = nir->info.shared_size
+      };
+      shaders[fixture] = pipe->create_compute_state(pipe, &cs);
+      /* Ownership transferred even when the real driver reports failure. */
+      if (!shaders[fixture]) goto out;
+   }
+   const struct pipe_shader_buffer bound = {output, 32, 256};
+   pipe->set_shader_buffers(pipe, MESA_SHADER_COMPUTE, 0, 1, &bound, 1);
+   pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 1, 0, &view);
+   pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 0, 1, &sampler);
+   unsigned expected_dispatches = 0;
+   if (ps5_context_last_compute_status(pipe, &expected_dispatches)) goto out;
+   const struct pipe_grid_info grid = {
+      .work_dim = 1, .block = {1, 1, 1}, .grid = {1, 1, 1}
+   };
+   printf("[ps5-compute-parsed-glsl] receipt=%s\n", PS5_GLSL_RECEIPT_SHA256);
+   for (unsigned pass = 0; pass < 2; ++pass) {
+      const uint32_t user[4] = {pass ? 11 : 7, GUARD_WORD, GUARD_WORD, GUARD_WORD};
+      pipe_buffer_write(pipe, ubo, 16, sizeof(user), user);
+      const struct pipe_constant_buffer cb1 = {.buffer = ubo, .buffer_offset = 16, .buffer_size = sizeof(user)};
+      pipe->set_constant_buffer(pipe, MESA_SHADER_COMPUTE, 1, &cb1);
+      struct pipe_transfer *transfer = NULL;
+      uint8_t *mapped = pipe_texture_map(pipe, texture, 0, 0, PIPE_MAP_WRITE, 0, 0, 2, 2, &transfer);
+      if (!mapped) goto out;
+      const uint32_t texel = parsed_glsl_expected(2, pass);
+      for (unsigned y = 0; y < 2; ++y)
+         for (unsigned x = 0; x < 2; ++x)
+            memcpy(mapped + y * transfer->stride + x * 4, &texel, 4);
+      pipe->texture_unmap(pipe, transfer);
+      for (unsigned fixture = 0; fixture < 3; ++fixture) {
+         uint32_t defaults[PS5_GLSL_DEFAULT_BYTES / 4];
+         for (unsigned i = 0; i < ARRAY_SIZE(defaults); ++i) defaults[i] = UINT32_C(0xdeadbeef);
+         if (fixture == 0) defaults[PS5_GLSL_ADDEND_OFFSET / 4] = pass ? 29 : 13;
+         const struct pipe_constant_buffer cb0 = {.user_buffer = defaults, .buffer_size = sizeof(defaults)};
+         pipe->set_constant_buffer(pipe, MESA_SHADER_COMPUTE, 0, &cb0);
+         memset(defaults, 0, sizeof(defaults)); /* Real uploader must own its copy. */
+         memset(words, 0xcd, bytes);
+         pipe->bind_compute_state(pipe, shaders[fixture]);
+         pipe->launch_grid(pipe, &grid);
+         pipe->memory_barrier(pipe, PIPE_BARRIER_ALL);
+         unsigned dispatches = 0;
+         int rc = ps5_context_last_compute_status(pipe, &dispatches);
+         unsigned correct = count_parsed_glsl(words, parsed_glsl_expected(fixture, pass));
+         printf("[ps5-compute-parsed-glsl] pass=%u fixture=%u rc=%d dispatches=%u words=%u/80 value=%08x\n",
+                pass, fixture, rc, dispatches, correct, words[8]);
+         fflush(stdout);
+         if (rc || dispatches != ++expected_dispatches || correct != 80) goto out;
+      }
+   }
+   status = 0;
+out:
+   pipe->bind_compute_state(pipe, NULL);
+   for (unsigned i = 0; i < 3; ++i)
+      if (shaders[i]) pipe->delete_compute_state(pipe, shaders[i]);
+   for (unsigned i = 0; i < 2; ++i)
+      pipe->set_constant_buffer(pipe, MESA_SHADER_COMPUTE, i, NULL);
+   pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 0, 1, NULL);
+   void *none = NULL;
+   pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 0, 1, &none);
+   pipe->set_shader_buffers(pipe, MESA_SHADER_COMPUTE, 0, 1, NULL, 0);
+   pipe_sampler_view_reference(&view, NULL);
+   pipe_resource_reference(&texture, NULL);
+   pipe_resource_reference(&ubo, NULL);
+   return status;
+}
+
 int main(void)
 {
    int status = 1;
@@ -1169,6 +1311,7 @@ int main(void)
    for (unsigned kind = 3; kind < ARRAY_SIZE(image_formats); ++kind)
       if (run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, false, sampler, false) ||
           run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, false, sampler, true)) goto cleanup;
+   if (run_parsed_glsl(pipe, sample_output, sample_words, sample_bytes, sampler)) goto cleanup;
    status = 0;
 cleanup:
    if (pipe) {
