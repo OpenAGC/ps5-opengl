@@ -504,6 +504,79 @@ static void atomic_counter_lowering(void) {
         }
     }
 }
+static int atomic_uniform_slots(const struct glsl_type *type, bool bindless) {
+    return glsl_count_attribute_slots(type,bindless);
+}
+static void atomic_alignment_lowering(void) {
+    const unsigned storage_counts[]={0,1,8};
+    for(unsigned stage=0;stage<2;++stage) for(unsigned count=0;count<3;++count)
+    for(unsigned binding=0;binding<=7;binding+=7) for(unsigned swap=0;swap<2;++swap) {
+        mesa_shader_stage mesa_stage=stage ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
+        PsbcStage psbc_stage=stage ? PSBC_STAGE_FRAGMENT : PSBC_STAGE_COMPUTE;
+        nir_builder b=nir_builder_init_simple_shader(mesa_stage,psbc_get_nir_options(psbc_stage),"atomic-aligned-state");
+        if(!stage) for(unsigned i=0;i<3;++i) b.shader->info.workgroup_size[i]=1;
+        b.shader->info.num_ssbos=storage_counts[count]; b.shader->info.num_abos=1;
+        nir_variable *counter=nir_variable_create(b.shader,nir_var_uniform,glsl_atomic_uint_type(),"counter");
+        counter->data.binding=binding; counter->data.explicit_binding=true;
+        nir_intrinsic_instr *atomic=nir_intrinsic_instr_create(b.shader,
+            swap ? nir_intrinsic_atomic_counter_comp_swap : nir_intrinsic_atomic_counter_inc);
+        for(unsigned i=0;i<nir_intrinsic_infos[atomic->intrinsic].num_srcs;++i)
+            atomic->src[i]=nir_src_for_ssa(nir_imm_int(&b,i ? i+3 : 12));
+        nir_intrinsic_set_base(atomic,binding); nir_intrinsic_set_range_base(atomic,16);
+        nir_def_init(&atomic->instr,&atomic->def,1,32); nir_builder_instr_insert(&b,&atomic->instr);
+        assert(nir_lower_atomics_to_ssbo(b.shader,STATE_ATOMIC_COUNTER_OFFSET));
+        assert(!b.shader->info.num_abos && b.shader->info.num_ssbos==storage_counts[count]+binding+1);
+        unsigned states=0;
+        nir_foreach_uniform_variable(var,b.shader) {
+            assert(var->num_state_slots==1 && var->state_slots[0].tokens[0]==STATE_ATOMIC_COUNTER_OFFSET);
+            assert(var->state_slots[0].tokens[1]==binding);
+            var->data.driver_location=0; ++states;
+        }
+        assert(states==1); b.shader->num_uniforms=1;
+        nir_lower_io(b.shader,nir_var_uniform,atomic_uniform_slots,0);
+        nir_lower_uniforms_to_ubo(b.shader,false,false);
+        nir_lower_uniforms_to_ubo(b.shader,false,false);
+        assert(b.shader->info.num_ubos==1 && b.shader->info.first_ubo_is_default_ubo);
+        nir_shader *evaluated=nir_shader_clone(NULL,b.shader);
+        unsigned loads=0,atomics=0;
+        nir_foreach_function_impl(impl,evaluated) {
+            nir_builder eval=nir_builder_create(impl);
+            nir_foreach_block(block,impl) nir_foreach_instr_safe(instr,block) {
+                if(instr->type!=nir_instr_type_intrinsic) continue;
+                nir_intrinsic_instr *intr=nir_instr_as_intrinsic(instr);
+                if(intr->intrinsic==nir_intrinsic_load_ubo) {
+                    assert(nir_src_as_uint(intr->src[0])==0);
+                    eval.cursor=nir_before_instr(instr);
+                    nir_def_replace(&intr->def,nir_imm_int(&eval,4)); ++loads;
+                }
+            }
+        }
+        assert(loads==1); nir_opt_constant_folding(evaluated);
+        nir_foreach_function_impl(impl,evaluated) nir_foreach_block(block,impl) nir_foreach_instr(instr,block) {
+            if(instr->type!=nir_instr_type_intrinsic) continue;
+            nir_intrinsic_instr *intr=nir_instr_as_intrinsic(instr);
+            if(intr->intrinsic==nir_intrinsic_ssbo_atomic || intr->intrinsic==nir_intrinsic_ssbo_atomic_swap) {
+                assert(nir_src_as_uint(intr->src[0])==storage_counts[count]+binding);
+                assert(nir_src_as_uint(intr->src[1])==32); /* 12 + declared16 + alignment4. */
+                assert(16+nir_src_as_uint(intr->src[1])==20+16+12); ++atomics;
+            }
+        }
+        assert(atomics==1); ralloc_free(evaluated);
+        PsbcCompileOptions options={.target=PSBC_TARGET_PS5,.stage=psbc_stage,.optimise=true,
+            .address32_hi=2,.gallium_buffer_arrays=true,.descriptor_binding_count=2,
+            .descriptor_bindings={{.binding=PSBC_GALLIUM_SSBO_ARRAY_BINDING(psbc_stage),
+                .type=PSBC_DESCRIPTOR_STORAGE_BUFFER,.array_size=16,.stride=16},
+                {.binding=PSBC_GALLIUM_UBO_ARRAY_BINDING(psbc_stage),.type=PSBC_DESCRIPTOR_UNIFORM_BUFFER,
+                 .array_size=stage ? 13 : 15,.stride=16,.offset=stage ? 512 : 256}}};
+        nir_validate_shader(b.shader,"aligned atomic counter with CB0 state");
+        PsbcShaderOutput out={0};
+        assert(psbc_compile_nir(b.shader,&options,&out)==PSBC_RESULT_OK && out.machine_code_size);
+        assert(!out.metadata.scratch_valid);
+        printf("Atomic alignment: stage=%u original-ssbos=%u binding=%u swap=%u CB0=4 address=48 PASS\n",
+            stage,storage_counts[count],binding,swap);
+        psbc_free_output(&out); ralloc_free(b.shader);
+    }
+}
 static void scratch_contract(void) {
     nir_shader *nir=create_probe_shader(SCRATCH);
     PsbcShaderOutput out={0};
@@ -537,7 +610,7 @@ static void scratch_contract(void) {
 int main(void) {
     psbc_init();
     for (unsigned i=0; i<4; ++i) compiled(i&1, i&2);
-    shapes(); native_cases(); atomic_counter_lowering(); scratch_contract(); compiled(false, false); psbc_shutdown();
+    shapes(); native_cases(); atomic_counter_lowering(); atomic_alignment_lowering(); scratch_contract(); compiled(false, false); psbc_shutdown();
 }
 '''
 with tempfile.TemporaryDirectory() as directory:
@@ -550,6 +623,7 @@ with tempfile.TemporaryDirectory() as directory:
         "-I", str(PSBC / "include/mesa"), "-I", str(PSBC / "include"),
         "-I", str(PSBC / "src"), "-I", str(PSBC / "libpsbc"),
         "-I", str(ROOT / "src/platform"),
+        "-include", str(ROOT / "third_party/mesa-26.2.0/src/mesa/program/prog_statevars.h"),
         "-x", "c", "-c", "-o", obj, "-"]
     subprocess.run(["clang-18", "-std=c11", "-Wall", "-Werror",
         "-I", str(PSBC / "libpsbc"), "-c", str(ROOT / "src/platform/ps5_agc_package.c"),

@@ -28,6 +28,15 @@ fragment = source[fragment_at:source.index("static bool\nps5_prepare_constant(",
 constant_at = source.index("static bool\nps5_prepare_constant(")
 constant = source[constant_at:source.index("static bool\nps5_prepare_texture(", constant_at)]
 assert "context->base.memory_barrier = ps5_memory_barrier;" in source
+atomic_source = (MESA / "src/mesa/state_tracker/st_atom_atomicbuf.c").read_text()
+atomic_at = atomic_source.index("static void\nst_binding_to_sb(")
+atomic_handoff = atomic_source[atomic_at:atomic_source.index("\nvoid\nst_bind_vs_atomics(", atomic_at)]
+storage_source = (MESA / "src/mesa/state_tracker/st_atom_storagebuf.c").read_text()
+storage_at = storage_source.index("static void\nst_bind_ssbos(")
+storage_handoff = storage_source[storage_at:storage_source.index("\nvoid st_bind_vs_ssbos(", storage_at)]
+state_source = (MESA / "src/mesa/program/prog_statevars.c").read_text()
+state_at = state_source.index("   case STATE_ATOMIC_COUNTER_OFFSET:")
+atomic_offset_state = state_source[state_at:state_source.index("      return;", state_at) + len("      return;")]
 code = r'''
 #include <assert.h>
 #include <stdint.h>
@@ -35,6 +44,9 @@ code = r'''
 #include "pipe/p_context.h"
 #include "pipe/p_screen.h"
 #include "util/u_inlines.h"
+#include "mesa/program/prog_statevars.h"
+#include "mesa/main/config.h"
+#include "mesa/state_tracker/st_atom.h"
 #include "psbc_compile.h"
 #include "ps5_agc_package.h"
 #include "amd/common/amdgfxregs.h"
@@ -197,6 +209,213 @@ static void ps5_flush(struct pipe_context *context, struct pipe_fence_handle **f
     assert(context && !fence && !flags); ++barrier_flushes;
 }
 ''' + barrier + fragment + constant + '\n#define PS5_ENABLE_BORDER_COLOR_CANDIDATE 1\n' + sampler_helpers + functions + r'''
+/* Only fields read by the extracted Mesa handoff/state code are modeled. */
+struct gl_buffer_object { struct pipe_resource *buffer; };
+struct gl_buffer_binding {
+    struct gl_buffer_object *BufferObject;
+    GLintptr Offset;
+    GLsizeiptr Size;
+    GLboolean AutomaticSize;
+};
+struct gl_active_atomic_buffer { GLuint Binding; };
+struct gl_uniform_block { GLuint Binding; };
+struct gl_shader_program_data {
+    unsigned NumAtomicBuffers;
+    struct gl_active_atomic_buffer *AtomicBuffers;
+};
+struct gl_program {
+    struct { unsigned num_ssbos; } info;
+    struct {
+        struct gl_shader_program_data *data;
+        struct gl_uniform_block **ShaderStorageBlocks;
+        unsigned ShaderStorageBlocksWriteAccess;
+    } sh;
+};
+struct gl_context {
+    struct gl_buffer_binding AtomicBufferBindings[8];
+    struct gl_buffer_binding ShaderStorageBufferBindings[8];
+    struct { unsigned ShaderStorageBufferOffsetAlignment; } Const;
+};
+struct st_context {
+    struct pipe_context *pipe;
+    struct pipe_screen *screen;
+    struct gl_context *ctx;
+    unsigned last_used_atomic_bindings[MESA_SHADER_MESH_STAGES];
+    unsigned last_num_ssbos[MESA_SHADER_MESH_STAGES];
+};
+''' + atomic_handoff + storage_handoff + r'''
+union atomic_state_value { int i; float f; };
+static void atomic_state(struct gl_context *ctx, const uint16_t state[],
+                         union atomic_state_value *val) {
+    switch (state[0]) {
+''' + atomic_offset_state + r'''
+    default: assert(!"unexpected atomic state token");
+    }
+}
+static void atomic_handoff_contract(void) {
+    const unsigned counts[]={0,1,8}, bindings[]={0,7};
+    const mesa_shader_stage stages[]={MESA_SHADER_COMPUTE,MESA_SHADER_FRAGMENT};
+    const unsigned drains_before=fragment_drains;
+    for(unsigned n=0;n<3;++n) for(unsigned b=0;b<2;++b) {
+        struct pipe_screen screen={.resource_destroy=destroy};
+        struct ps5_context c={.base={.screen=&screen,.set_shader_buffers=ps5_set_shader_buffers}};
+        struct pipe_resource original={.screen=&screen,.target=PIPE_BUFFER,.width0=64};
+        struct pipe_resource replacement={.screen=&screen,.target=PIPE_BUFFER,.width0=64};
+        struct pipe_resource sentinel={.screen=&screen,.target=PIPE_BUFFER,.width0=64};
+        pipe_reference_init(&original.reference,1);
+        pipe_reference_init(&replacement.reference,1);
+        pipe_reference_init(&sentinel.reference,1);
+        struct gl_buffer_object obj={.buffer=&original};
+        struct gl_context ctx={.Const.ShaderStorageBufferOffsetAlignment=16};
+        ctx.AtomicBufferBindings[bindings[b]]=(struct gl_buffer_binding){
+            .BufferObject=&obj,.Offset=20,.Size=16};
+        struct gl_active_atomic_buffer atomic={.Binding=bindings[b]};
+        struct gl_shader_program_data data={.NumAtomicBuffers=1,.AtomicBuffers=&atomic};
+        struct gl_program prog={.info.num_ssbos=counts[n],.sh.data=&data};
+        struct st_context st={.pipe=&c.base,.screen=&screen,.ctx=&ctx};
+        const unsigned slot=counts[n]+bindings[b]; /* Includes highest slot 15. */
+        struct pipe_shader_buffer seed[16];
+        for(unsigned i=0;i<16;++i)
+            seed[i]=(struct pipe_shader_buffer){.buffer=&sentinel,.buffer_size=16};
+        /* Seed every slot to detect misplaced writes and preserve SSBOs/holes. */
+        for(unsigned s=0;s<2;++s)
+            ps5_set_shader_buffers(&c.base,stages[s],0,16,seed,0xffff);
+        assert(sentinel.reference.count==33);
+        for(unsigned s=0;s<2;++s) {
+            struct pipe_shader_buffer *bound=s ? c.fragment_buffers : c.compute_buffers;
+            struct pipe_shader_buffer *other=s ? c.compute_buffers : c.fragment_buffers;
+            struct pipe_shader_buffer saved[16];
+            memcpy(saved,other,sizeof(saved));
+            for(unsigned step=0;step<4;++step) {
+                /* Repeat original, replace resource, then exercise both missing forms. */
+                obj.buffer=step<2 ? &original : &replacement;
+                if(step==3) {
+                    if(b) obj.buffer=NULL;
+                    else ctx.AtomicBufferBindings[bindings[b]].BufferObject=NULL;
+                }
+                st_bind_atomics(&st,&prog,stages[s]);
+                struct pipe_resource *expected=step==3 ? NULL : obj.buffer;
+                assert(bound[slot].buffer==expected);
+                assert(bound[slot].buffer_offset==(expected ? 16 : 0));
+                assert(bound[slot].buffer_size==(expected ? 20 : 0));
+                assert(original.reference.count==(step<2 ? 2 : 1));
+                assert(replacement.reference.count==(step==2 ? 2 : 1));
+                assert(sentinel.reference.count==32-(int)s);
+                assert(!c.compute_bindings_invalid && !c.fragment_bindings_invalid);
+                assert(st.last_used_atomic_bindings[stages[s]]==bindings[b]+1);
+                assert(st.last_used_atomic_bindings[stages[1-s]]==(s ? bindings[b]+1 : 0));
+                assert(!memcmp(saved,other,sizeof(saved)));
+                for(unsigned i=0;i<16;++i) if(i!=slot) {
+                    assert(bound[i].buffer==&sentinel);
+                    assert(bound[i].buffer_offset==0 && bound[i].buffer_size==16);
+                }
+                if(expected) {
+                    const uint16_t state[]={STATE_ATOMIC_COUNTER_OFFSET,bindings[b]};
+                    union atomic_state_value value={.i=-1};
+                    /* Run Mesa's emitted offset-state branch, not a copied formula. */
+                    atomic_state(&ctx,state,&value);
+                    assert(value.i==4 && bound[slot].buffer_offset+value.i==20);
+                    assert(bound[slot].buffer_size-value.i==16);
+                }
+            }
+            ctx.AtomicBufferBindings[bindings[b]].BufferObject=&obj;
+        }
+        /* Explicit teardown; the separate regression below traces stale cleanup. */
+        for(unsigned s=0;s<2;++s)
+            ps5_set_shader_buffers(&c.base,stages[s],0,16,NULL,0);
+        assert(sentinel.reference.count==1 && original.reference.count==1 && replacement.reference.count==1);
+    }
+    fragment_drains=drains_before;
+}
+static void stale_cleanup_regression(void) {
+    /* st_validate_state visits ascending atom indices from the actual list. */
+    _Static_assert(ST_NEW_CS_ATOMICS<ST_NEW_CS_SSBOS, "CS atom order changed");
+    _Static_assert(ST_NEW_FS_ATOMICS<ST_NEW_FS_SSBOS, "FS atom order changed");
+    const mesa_shader_stage stages[]={MESA_SHADER_COMPUTE,MESA_SHADER_FRAGMENT};
+    const unsigned drains_before=fragment_drains;
+    for(unsigned s=0;s<2;++s) {
+        struct pipe_screen screen={.resource_destroy=destroy};
+        struct ps5_context c={.base={.screen=&screen,.set_shader_buffers=ps5_set_shader_buffers}};
+        struct pipe_resource ssbo={.screen=&screen,.target=PIPE_BUFFER,.width0=64};
+        struct pipe_resource old_atomic={.screen=&screen,.target=PIPE_BUFFER,.width0=64};
+        struct pipe_resource new_atomic={.screen=&screen,.target=PIPE_BUFFER,.width0=64};
+        pipe_reference_init(&ssbo.reference,1);
+        pipe_reference_init(&old_atomic.reference,1);
+        pipe_reference_init(&new_atomic.reference,1);
+        struct gl_buffer_object objects[]={{&ssbo},{&old_atomic},{&new_atomic}};
+        struct gl_context ctx={.Const.ShaderStorageBufferOffsetAlignment=16};
+        struct gl_uniform_block blocks[8], *block_ptrs[8];
+        for(unsigned i=0;i<8;++i) {
+            blocks[i].Binding=i;
+            block_ptrs[i]=&blocks[i];
+            ctx.ShaderStorageBufferBindings[i]=(struct gl_buffer_binding){
+                .BufferObject=&objects[0],.Offset=0,.Size=16};
+        }
+        ctx.AtomicBufferBindings[7]=(struct gl_buffer_binding){
+            .BufferObject=&objects[1],.Offset=20,.Size=16};
+        ctx.AtomicBufferBindings[0]=(struct gl_buffer_binding){
+            .BufferObject=&objects[2],.Offset=20,.Size=16};
+        struct gl_active_atomic_buffer atomics[]={{.Binding=7},{.Binding=0}};
+        struct gl_shader_program_data data[]={
+            {.NumAtomicBuffers=1,.AtomicBuffers=&atomics[0]},
+            {.NumAtomicBuffers=1,.AtomicBuffers=&atomics[1]}};
+        struct gl_program programs[]={
+            {.info.num_ssbos=8,.sh={.data=&data[0],.ShaderStorageBlocks=block_ptrs,
+                                   .ShaderStorageBlocksWriteAccess=255}},
+            {.info.num_ssbos=1,.sh={.data=&data[1],.ShaderStorageBlocks=block_ptrs,
+                                   .ShaderStorageBlocksWriteAccess=1}}};
+        /* Same zero initialization as st_create_context_priv's CALLOC_STRUCT.
+         * Never assign either bookkeeping field in the fixture. Both programs
+         * use SSBOs AND atomics, so both atoms remain active across this switch
+         * (st_program.c / main/state.c); no forced inactive cleanup assumed. */
+        struct st_context st={.pipe=&c.base,.screen=&screen,.ctx=&ctx};
+        struct pipe_shader_buffer *bound=s ? c.fragment_buffers : c.compute_buffers;
+        struct pipe_shader_buffer *other=s ? c.compute_buffers : c.fragment_buffers;
+        assert(st.last_num_ssbos[stages[s]]==0 && st.last_used_atomic_bindings[stages[s]]==0);
+        for(unsigned i=0;i<16;++i) assert(!bound[i].buffer && !other[i].buffer);
+        unsigned after_growth=0;
+        for(unsigned p=0;p<2;++p) {
+            st_bind_atomics(&st,&programs[p],stages[s]);
+            st_bind_ssbos(&st,&programs[p],stages[s]);
+            assert(st.last_used_atomic_bindings[stages[s]]==(p ? 1 : 8));
+            assert(!c.compute_bindings_invalid && !c.fragment_bindings_invalid);
+            assert(bound[0].buffer==&ssbo && bound[0].buffer_size==16);
+            assert(bound[1].buffer==(p ? &new_atomic : &ssbo));
+            assert(bound[1].buffer_offset==(p ? 16 : 0));
+            assert(bound[1].buffer_size==(p ? 20 : 16));
+            for(unsigned i=2;i<8;++i) {
+                assert(bound[i].buffer==(p ? NULL : &ssbo));
+                assert(bound[i].buffer_offset==0 && bound[i].buffer_size==(p ? 0 : 16));
+            }
+            for(unsigned i=8;i<15;++i) assert(!bound[i].buffer);
+            assert(bound[15].buffer==(p ? NULL : &old_atomic));
+            assert(bound[15].buffer_offset==(p ? 0 : 16) && bound[15].buffer_size==(p ? 0 : 20));
+            assert(ssbo.reference.count==(p ? 2 : 9));
+            assert(old_atomic.reference.count==(p ? 1 : 2) && new_atomic.reference.count==(p ? 2 : 1));
+            /* Check after shrink so the original source fails on retained
+             * bindings first, demonstrating the consequence of lost tracking. */
+            if(!p) after_growth=st.last_num_ssbos[stages[s]];
+            else assert(after_growth==16 && st.last_num_ssbos[stages[s]]==2);
+            for(unsigned i=0;i<16;++i) assert(!other[i].buffer);
+            assert(!st.last_num_ssbos[stages[1-s]] && !st.last_used_atomic_bindings[stages[1-s]]);
+        }
+        /* Exercise the atoms' 2-to-0 contract directly. Full Mesa validation
+         * can mask resource-free programs' atoms via active_states; this final
+         * step does not claim to test scheduling of an empty GL program. */
+        struct gl_shader_program_data empty_data={0};
+        struct gl_program empty={.sh.data=&empty_data};
+        st_bind_atomics(&st,&empty,stages[s]);
+        st_bind_ssbos(&st,&empty,stages[s]);
+        assert(!st.last_num_ssbos[stages[s]] && !st.last_used_atomic_bindings[stages[s]]);
+        for(unsigned i=0;i<16;++i) {
+            assert(!bound[i].buffer && !bound[i].buffer_offset && !bound[i].buffer_size);
+            assert(!other[i].buffer && !other[i].buffer_offset && !other[i].buffer_size);
+        }
+        assert(!st.last_num_ssbos[stages[1-s]] && !st.last_used_atomic_bindings[stages[1-s]]);
+        assert(ssbo.reference.count==1 && old_atomic.reference.count==1 && new_atomic.reference.count==1);
+    }
+    fragment_drains=drains_before;
+}
 static void fragment_contract(void) {
     struct pipe_screen screen={.resource_destroy=destroy};
     uint32_t words[64]={0}, descriptors[128]={0}, userdata[16]={0};
@@ -302,6 +521,8 @@ static void fragment_contract(void) {
     fragment_mode=false;
 }
 int main(void) {
+    atomic_handoff_contract();
+    stale_cleanup_regression();
     fragment_contract();
     assert(PS5_COMPUTE_TEXTURE_SLOTS==16 && PS5_AGC_COMPUTE_MAX_RESOURCES==55);
     struct pipe_screen screen={.resource_destroy=destroy}, other_screen={0};
@@ -845,3 +1066,5 @@ with tempfile.TemporaryDirectory() as directory:
         "-x", "c", "-o", executable, "-"], input=code, text=True, check=True)
     subprocess.run([executable], check=True, timeout=10)
 print("PASS: Gallium 39-resource bindings, image descriptors/lifetime, upload failure, direct/indirect guards and unbind")
+print("PASS: Mesa atomic handoff CS/FS, SSBO counts 0/1/8 + bindings 0/7, alignment/offset state, refs, isolation, replacement/unbind")
+print("PASS: Mesa CS/FS zero-initialized 0-to-16-to-2-to-0 tracking, stale cleanup, reference counts and stage isolation")
