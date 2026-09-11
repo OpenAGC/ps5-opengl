@@ -134,8 +134,8 @@ static nir_shader *compute_sample(unsigned test, unsigned unit)
    b.shader->info.num_textures = unit + 1;
    BITSET_SET(b.shader->info.textures_used, unit);
    nir_def *id = nir_channel(&b, nir_load_local_invocation_id(&b), 0);
-   nir_tex_instr *tex = nir_tex_instr_create(b.shader, test == 3 ? 1 : 2);
-   tex->op = test == 3 ? nir_texop_txs : test >= 4 ? nir_texop_txl : nir_texop_txf;
+   nir_tex_instr *tex = nir_tex_instr_create(b.shader, test == 3 || test == 6 ? 1 : 2);
+   tex->op = test == 6 ? nir_texop_tex : test == 3 ? nir_texop_txs : test >= 4 ? nir_texop_txl : nir_texop_txf;
    tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
    tex->texture_index = tex->sampler_index = unit;
    tex->coord_components = test == 3 ? 0 : 2;
@@ -151,8 +151,9 @@ static nir_shader *compute_sample(unsigned test, unsigned unit)
             nir_bcsel(&b, nir_ine_imm(&b, nir_iand_imm(&b, id, 1), 0),
                nir_imm_float(&b, 1.5), nir_imm_float(&b, -0.5)) : nir_imm_float(&b, 0.5)) :
          nir_vec2(&b, nir_iadd_imm(&b, id, 1), nir_imm_int(&b, 1)));
-      tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, test >= 4 ?
-         nir_imm_float(&b, 0) : nir_imm_int(&b, 0));
+      if (test != 6)
+         tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, test >= 4 ?
+            nir_imm_float(&b, 0) : nir_imm_int(&b, 0));
    }
    nir_def_init(&tex->instr, &tex->def, test == 3 ? 2 : 4, 32);
    nir_builder_instr_insert(&b, &tex->instr);
@@ -1019,7 +1020,9 @@ int main(void)
          goto cleanup;
    }
    for (unsigned outside = 0; outside < 2; ++outside) for (unsigned i = 0; i < 2; ++i) {
-      compute.prog = compute_sample(4 + outside, i ? 15 : 0);
+      /* Exercise ordinary texture() inside the image; outside-coordinate
+       * cases retain explicit LOD zero as the native reference. */
+      compute.prog = compute_sample(outside ? 5 : 6, i ? 15 : 0);
       filtered_cs[outside][i] = pipe->create_compute_state(pipe, &compute);
       if (!filtered_cs[outside][i]) goto cleanup;
    }

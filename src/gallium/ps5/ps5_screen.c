@@ -10451,6 +10451,10 @@ ps5_create_compute_state(struct pipe_context *base,
    unsigned textures = 0, filtered = 0, max_lod[PS5_COMPUTE_TEXTURE_SLOTS], arrays = 0;
    if (nir->info.stage != MESA_SHADER_COMPUTE)
       goto cleanup;
+   /* Ordinary compute texture() has no implicit derivatives. Normalize it
+    * before the usage validator requires an explicit, bounded LOD. */
+   const nir_lower_tex_options tex_options = {.lower_invalid_implicit_lod = true};
+   nir_lower_tex(nir, &tex_options);
    /* Match graphics: Mesa's unpacked default uniforms occupy CB0. Check the
     * resulting count after lowering, including the newly reserved slot. */
    if (nir->num_uniforms)

@@ -108,6 +108,39 @@ int main(void) {
         compile(write_mip(level,array,kind), &options);
     /* Sampled descriptors coexist with the three existing compute banks.
      * This is compiler/package coverage, not native sampler qualification. */
+    for(unsigned unit=0;unit<=15;unit+=15) {
+        PsbcCompileOptions sampled=all_slots;
+        PsbcShaderOutput output[2]={{0}};
+        for(unsigned implicit=0;implicit<2;++implicit) {
+            nir_shader *nir=compute_sample(implicit ? 6 : 4,unit);
+            nir_tex_instr *tex=NULL;
+            nir_foreach_block(block,nir_shader_get_entrypoint(nir)) nir_foreach_instr(instr,block)
+                if(instr->type==nir_instr_type_tex) tex=nir_instr_as_tex(instr);
+            assert(tex);
+            unsigned used=0,filtered=0,lods[PS5_COMPUTE_TEXTURE_SLOTS],arrays=0;
+            if(implicit) {
+                assert(!ps5_compute_texture_usage(nir,&used,&filtered,lods,&arrays));
+            }
+            assert(prepare_compute_nir(nir) && prepare_compute_nir(nir));
+            assert(tex->op==nir_texop_txl && tex->num_srcs==2);
+            int lod=nir_tex_instr_src_index(tex,nir_tex_src_lod);
+            assert(lod>=0 && nir_src_is_const(tex->src[lod].src) && nir_src_as_float(tex->src[lod].src)==0);
+            assert(ps5_compute_texture_usage(nir,&used,&filtered,lods,&arrays));
+            assert(used==(1u<<unit) && filtered==used && !arrays && !lods[unit]);
+            nir_validate_shader(nir,"compute implicit LOD normalized before usage validation");
+            assert(psbc_compile_nir(nir,&sampled,&output[implicit])==PSBC_RESULT_OK);
+            assert(!output[implicit].metadata.scratch_valid);
+            uint8_t *package=NULL; size_t size=0;
+            assert(!ps5_agc_package_build(&output[implicit],0,&package,&size) && size);
+            free(package); ralloc_free(nir);
+        }
+        assert(output[0].machine_code_size==output[1].machine_code_size);
+        assert(!memcmp(output[0].machine_code,output[1].machine_code,output[0].machine_code_size));
+        assert(output[0].metadata.descriptor_binding_count==output[1].metadata.descriptor_binding_count);
+        assert(!memcmp(output[0].metadata.descriptor_bindings,output[1].metadata.descriptor_bindings,
+            output[0].metadata.descriptor_binding_count*sizeof(PsbcDescriptorBinding)));
+        for(unsigned i=0;i<2;++i) psbc_free_output(&output[i]);
+    }
     for(unsigned unit=0;unit<=15;unit+=15) for(unsigned test=0;test<6;++test) {
         nir_shader *checked=compute_sample(test,unit);
         unsigned used=0, filtered=0, max_lod[PS5_COMPUTE_TEXTURE_SLOTS], arrays=0;
