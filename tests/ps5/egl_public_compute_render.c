@@ -117,8 +117,11 @@ int main(void)
       .height0 = PS5_SCANOUT_HEIGHT, .depth0 = 1, .array_size = 1,
       .bind = PIPE_BIND_RENDER_TARGET | PIPE_BIND_DISPLAY_TARGET};
    render_pool = screen->resource_create(screen, &pool_template);
-   if (!render_pool)
+   if (!render_pool) {
+      printf("[ps5-compute-render] setup-failed render-pool=%ux%u\n",
+         (unsigned)PS5_SCANOUT_WIDTH, (unsigned)PS5_SCANOUT_HEIGHT);
       goto cleanup;
+   }
    struct pipe_resource templ = {.target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_R32_FLOAT,
       .width0 = 17, .height0 = 3, .depth0 = 1, .array_size = 1,
       .bind = PIPE_BIND_SHADER_IMAGE | PIPE_BIND_SAMPLER_VIEW};
