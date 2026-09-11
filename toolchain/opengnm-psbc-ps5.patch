@@ -518,7 +518,7 @@ index 945737d..2e49126 100644
  
  	psbc_free_output(&output);
 diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
-index bacbc6a..16049ad 100644
+index bacbc6a..05565f5 100644
 --- a/libpsbc/psbc_compile.c
 +++ b/libpsbc/psbc_compile.c
 @@ -12,6 +12,7 @@
@@ -697,7 +697,7 @@ index bacbc6a..16049ad 100644
 +                        intr->intrinsic == nir_intrinsic_image_atomic_swap;
 +    const bool uint_format = format == PIPE_FORMAT_R32_UINT || format == PIPE_FORMAT_R32G32_UINT || format == PIPE_FORMAT_R32G32B32A32_UINT || format == PIPE_FORMAT_R16G16B16A16_UINT;
 +    const bool sint_format = format == PIPE_FORMAT_R32_SINT || format == PIPE_FORMAT_R32G32_SINT || format == PIPE_FORMAT_R32G32B32A32_SINT || format == PIPE_FORMAT_R16G16B16A16_SINT;
-+    const bool float_format = format == PIPE_FORMAT_R32_FLOAT || format == PIPE_FORMAT_R32G32_FLOAT || format == PIPE_FORMAT_R32G32B32A32_FLOAT || format == PIPE_FORMAT_R16G16B16A16_FLOAT;
++    const bool float_format = format == PIPE_FORMAT_R32_FLOAT || format == PIPE_FORMAT_R32G32_FLOAT || format == PIPE_FORMAT_R32G32B32A32_FLOAT || format == PIPE_FORMAT_R16G16B16A16_FLOAT || format == PIPE_FORMAT_R16G16B16A16_UNORM;
 +    const bool scalar_integer = format == PIPE_FORMAT_R32_UINT || format == PIPE_FORMAT_R32_SINT;
 +    if (!opts->gallium_buffer_arrays || !bank ||
 +        slot.ssa->num_components != 1 || slot.ssa->bit_size != 32 ||

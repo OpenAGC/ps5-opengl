@@ -284,6 +284,21 @@ main(void)
       "layout(rgba16) uniform readonly image2D source_image;\n"
       "layout(std430) buffer Output { uvec4 result; };\n"
       "void main() { result = floatBitsToUint(imageLoad(source_image, ivec2(1, 1))); }\n";
+   static const char *capacity_source =
+      "#version 330\n"
+      "#extension GL_ARB_compute_shader : require\n"
+      "#extension GL_ARB_shader_storage_buffer_object : require\n"
+      "layout(local_size_x=1) in;\n"
+      "layout(std430) buffer Capacity { uint words[]; } capacity;\n"
+      "layout(std430) buffer Report { uint length; } report;\n"
+      "void main() {\n"
+      "  uint count = uint(capacity.words.length());\n"
+      "  report.length = count;\n"
+      "  if (count == 33554432u) {\n"
+      "    capacity.words[0] = 0x13579bdfu;\n"
+      "    capacity.words[33554431] = 0x2468ace0u;\n"
+      "  }\n"
+      "}\n";
    const EGLint config_attributes[] = {
       EGL_SURFACE_TYPE, EGL_PBUFFER_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
       EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
@@ -306,6 +321,7 @@ main(void)
    GLuint extra_shaders[3] = {0}, extra_programs[3] = {0};
    GLuint grid_shaders[3] = {0}, grid_programs[3] = {0}, grid_buffers[2] = {0};
    GLuint rgba16_shaders[2] = {0}, rgba16_programs[2] = {0}, rgba16_texture = 0;
+   GLuint capacity_shader = 0, capacity_program = 0, capacity_buffer = 0;
    GLuint texture = 0, atomic_buffer = 0;
    GLint major = 0, minor = 0, profile = 0;
    GLint addend = -1, block_size = 0, ubo_alignment = 0, ssbo_alignment = 0;
@@ -639,6 +655,87 @@ main(void)
       printf(TAG "RGBA16 pass=%u channels=4/4 SSBO guards=76/76 PASS\n", pass);
    }
    puts(TAG "dispatch delta=18 (prior 14 + RGBA16 store/load 4); negatives=3 PASS");
+
+   GLint advertised_ssbo_size = 0;
+   glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &advertised_ssbo_size);
+   printf(TAG "private capacity proof: advertised SSBO maximum=%d expected=16384\n", advertised_ssbo_size);
+   if (!check_gl("unchanged SSBO cap") || advertised_ssbo_size != 16384 ||
+       !has_extension("GL_ARB_program_interface_query") ||
+       !compile_program("128MiB unsized capacity", capacity_source, &capacity_shader, &capacity_program))
+      goto cleanup;
+   GLuint capacity_block = glGetProgramResourceIndex(capacity_program, GL_SHADER_STORAGE_BLOCK, "Capacity");
+   GLuint report_block = glGetProgramResourceIndex(capacity_program, GL_SHADER_STORAGE_BLOCK, "Report");
+   if (!check_gl("capacity block lookup") || capacity_block == GL_INVALID_INDEX || report_block == GL_INVALID_INDEX)
+      goto cleanup;
+   PFNGLSHADERSTORAGEBLOCKBINDINGPROC bind_storage_block =
+      (PFNGLSHADERSTORAGEBLOCKBINDINGPROC)eglGetProcAddress("glShaderStorageBlockBinding");
+   if (!bind_storage_block) {
+      puts(TAG "missing glShaderStorageBlockBinding entrypoint");
+      goto cleanup;
+   }
+   bind_storage_block(capacity_program, capacity_block, 0);
+   bind_storage_block(capacity_program, report_block, 1);
+   if (!check_gl("capacity block bindings"))
+      goto cleanup;
+   const GLsizeiptr capacity_bytes = 134217728;
+   const GLsizeiptr allocation_bytes = 134217792;
+   GLint64 actual_bytes = 0;
+   uint32_t edge_guards[16];
+   for (unsigned i = 0; i < 16; ++i)
+      edge_guards[i] = GUARD;
+   glGenBuffers(1, &capacity_buffer);
+   if (!check_gl("capacity buffer name") || !capacity_buffer)
+      goto cleanup;
+   glBindBuffer(GL_SHADER_STORAGE_BUFFER, capacity_buffer);
+   if (!check_gl("capacity allocation binding"))
+      goto cleanup;
+   puts(TAG "capacity allocation begin bytes=134217792; no retries on failure");
+   glBufferData(GL_SHADER_STORAGE_BUFFER, allocation_bytes, NULL, GL_DYNAMIC_DRAW);
+   if (!check_gl("capacity allocation")) /* Including OOM: stop before any access. */
+      goto cleanup;
+   glGetBufferParameteri64v(GL_SHADER_STORAGE_BUFFER, GL_BUFFER_SIZE, &actual_bytes);
+   printf(TAG "capacity allocation actual bytes=%lld\n", (long long)actual_bytes);
+   if (!check_gl("capacity allocation size") || actual_bytes != allocation_bytes)
+      goto cleanup;
+   /* Initialize/read only the first and last 64 bytes. The interior is not checked. */
+   glBufferSubData(GL_SHADER_STORAGE_BUFFER, 0, sizeof(edge_guards), edge_guards);
+   glBufferSubData(GL_SHADER_STORAGE_BUFFER, capacity_bytes, sizeof(edge_guards), edge_guards);
+   if (!check_gl("capacity boundary guards") || !reset_output(buffers[1]))
+      goto cleanup;
+   glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 1, buffers[1], 32, 16);
+   glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, capacity_buffer, 32, capacity_bytes);
+   glUseProgram(capacity_program);
+   if (!check_gl("capacity ranges") ||
+       !dispatch_checked("128MiB unsized capacity", mesa->pipe, baseline + 19,
+                         GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT) ||
+       !check_buffer("capacity length", GL_SHADER_STORAGE_BUFFER, buffers[1], UINT32_C(33554432)))
+      goto cleanup;
+   glBindBuffer(GL_SHADER_STORAGE_BUFFER, capacity_buffer);
+   for (unsigned edge = 0; edge < 2; ++edge) {
+      uint32_t words[16] = {0};
+      const unsigned changed = edge ? 7 : 8;
+      const uint32_t marker = edge ? UINT32_C(0x2468ace0) : UINT32_C(0x13579bdf);
+      printf(TAG "capacity %s 64-byte readback begin\n", edge ? "last" : "first");
+      glGetBufferSubData(GL_SHADER_STORAGE_BUFFER, edge ? capacity_bytes : 0, sizeof(words), words);
+      if (!check_gl("capacity boundary readback"))
+         goto cleanup;
+      for (unsigned i = 0; i < 16; ++i) {
+         const uint32_t wanted = i == changed ? marker : GUARD;
+         if (words[i] != wanted) {
+            printf(TAG "capacity edge=%u word=%u actual=%08x expected=%08x\n", edge, i, words[i], wanted);
+            goto cleanup;
+         }
+      }
+      printf(TAG "capacity edge=%u changed word=%u guards=15/15 PASS\n", edge, changed);
+   }
+   /* Delete the large GL object promptly; context teardown retires any cached refs. */
+   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0);
+   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, 0);
+   glDeleteBuffers(1, &capacity_buffer);
+   capacity_buffer = 0;
+   if (!check_gl("capacity buffer delete"))
+      goto cleanup;
+   puts(TAG "dispatch delta=19 (prior 18 + capacity 1); negatives=3 PASS; capacity interior unchecked");
    passed = 1;
 
 cleanup:
@@ -651,6 +748,14 @@ cleanup:
       /* Do not issue unsupported SSBO calls if context validation failed. */
       if (buffers[1])
          glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0);
+      if (capacity_program)
+         glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 1, 0);
+      if (capacity_buffer)
+         glDeleteBuffers(1, &capacity_buffer);
+      if (capacity_program)
+         glDeleteProgram(capacity_program);
+      if (capacity_shader)
+         glDeleteShader(capacity_shader);
       if (atomic_buffer) {
          glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 7, 0);
          glDeleteBuffers(1, &atomic_buffer);
