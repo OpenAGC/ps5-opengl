@@ -12,6 +12,7 @@
 #include "pipe/p_context.h"
 #include "pipe/p_screen.h"
 #include "util/u_inlines.h"
+#include "util/half_float.h"
 #include "ps5_screen.h"
 #include "psbc_compile.h"
 
@@ -20,7 +21,8 @@
 static const enum pipe_format image_formats[] = {
    PIPE_FORMAT_R32_FLOAT, PIPE_FORMAT_R32_UINT, PIPE_FORMAT_R32_SINT,
    PIPE_FORMAT_R32G32_FLOAT, PIPE_FORMAT_R32G32_UINT, PIPE_FORMAT_R32G32_SINT,
-   PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R32G32B32A32_UINT, PIPE_FORMAT_R32G32B32A32_SINT};
+   PIPE_FORMAT_R32G32B32A32_FLOAT, PIPE_FORMAT_R32G32B32A32_UINT, PIPE_FORMAT_R32G32B32A32_SINT,
+   PIPE_FORMAT_R16G16B16A16_FLOAT, PIPE_FORMAT_R16G16B16A16_UINT, PIPE_FORMAT_R16G16B16A16_SINT};
 
 static nir_shader *build_compute(unsigned kind)
 {
@@ -366,6 +368,18 @@ static uint32_t fragment_image_word(unsigned kind, unsigned id, bool load)
    memcpy(&sum, &total, 4); return sum;
 }
 
+static uint32_t fragment_image_packed_word(unsigned kind, unsigned id, unsigned word)
+{
+   if (kind < 9) return fragment_image_component(kind, id, word);
+   uint32_t packed = 0;
+   for (unsigned half = 0; half < 2; ++half) {
+      uint32_t bits = fragment_image_component(kind, id, word * 2 + half);
+      if (kind % 3 == 0) { float f; memcpy(&f, &bits, 4); bits = _mesa_float_to_half_slow(f); }
+      packed |= (bits & 0xffffu) << (half * 16);
+   }
+   return packed;
+}
+
 static nir_shader *build_fragment_storage(unsigned atomic, unsigned slot, unsigned kind, bool mixed,
                                           bool array, unsigned layer)
 {
@@ -508,7 +522,8 @@ static int run_fragment_images(struct pipe_context *pipe, struct pipe_resource *
 {
    int status = 1;
    const unsigned channels = kind < 3 ? 1 : kind < 6 ? 2 : 4;
-   const unsigned layer_bytes = array ? (kind < 6 ? 14336 : 22528) : 2048;
+   const unsigned texel_words = kind >= 9 ? 2 : channels;
+   const unsigned layer_bytes = array ? (texel_words == 4 ? 22528 : 14336) : 2048;
    void *fs = NULL;
    struct pipe_sampler_view *sampled = NULL;
    struct pipe_resource *uniform_buffer = NULL;
@@ -591,8 +606,8 @@ static int run_fragment_images(struct pipe_context *pipe, struct pipe_resource *
       for (unsigned i = 0; i < image_bytes / 4; ++i) {
          const unsigned start = layer * layer_bytes / 4;
          const unsigned local = i - start;
-         uint32_t expected = i >= start && local < 512 && local % 64 < 8 * channels ?
-            fragment_image_component(kind, layer * 64 + local / 64 * 8 + (local % 64) / channels, local % channels) : UINT32_C(0xcdcdcdcd);
+         uint32_t expected = i >= start && local < 512 && local % 64 < 8 * texel_words ?
+            fragment_image_packed_word(kind, layer * 64 + local / 64 * 8 + (local % 64) / texel_words, local % texel_words) : UINT32_C(0xcdcdcdcd);
          if (!i && kind && kind < 3 && !mixed) expected += kind == 2 ? (uint32_t)-64 : 64;
          correct += pixels[i] == expected;
       }
@@ -1051,7 +1066,7 @@ int main(void)
       if (run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, false, sampler, false)) goto cleanup;
    for (unsigned kind = 0; kind < 3; ++kind)
       if (run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, true, sampler, false)) goto cleanup;
-   for (unsigned kind = 3; kind < 9; ++kind)
+   for (unsigned kind = 3; kind < ARRAY_SIZE(image_formats); ++kind)
       if (run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, false, sampler, false) ||
           run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, false, sampler, true)) goto cleanup;
    status = 0;

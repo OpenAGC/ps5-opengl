@@ -664,7 +664,7 @@ index bacbc6a..ee967cf 100644
 +    return true;
 +}
 +
-+/* 32-bit R/RG/RGBA single-sample 2D images. Atomic operations remain
++/* 32-bit R/RG/RGBA and 16-bit RGBA single-sample 2D images. Atomics remain
 + * restricted to scalar integer formats with matching native descriptors. */
 +static bool lower_gallium_image_index(nir_builder* b, nir_instr* instruction,
 +                                     void* data) {
@@ -693,9 +693,9 @@ index bacbc6a..ee967cf 100644
 +    const enum pipe_format format = nir_intrinsic_format(intr);
 +    const bool atomic = intr->intrinsic == nir_intrinsic_image_atomic ||
 +                        intr->intrinsic == nir_intrinsic_image_atomic_swap;
-+    const bool uint_format = format == PIPE_FORMAT_R32_UINT || format == PIPE_FORMAT_R32G32_UINT || format == PIPE_FORMAT_R32G32B32A32_UINT;
-+    const bool sint_format = format == PIPE_FORMAT_R32_SINT || format == PIPE_FORMAT_R32G32_SINT || format == PIPE_FORMAT_R32G32B32A32_SINT;
-+    const bool float_format = format == PIPE_FORMAT_R32_FLOAT || format == PIPE_FORMAT_R32G32_FLOAT || format == PIPE_FORMAT_R32G32B32A32_FLOAT;
++    const bool uint_format = format == PIPE_FORMAT_R32_UINT || format == PIPE_FORMAT_R32G32_UINT || format == PIPE_FORMAT_R32G32B32A32_UINT || format == PIPE_FORMAT_R16G16B16A16_UINT;
++    const bool sint_format = format == PIPE_FORMAT_R32_SINT || format == PIPE_FORMAT_R32G32_SINT || format == PIPE_FORMAT_R32G32B32A32_SINT || format == PIPE_FORMAT_R16G16B16A16_SINT;
++    const bool float_format = format == PIPE_FORMAT_R32_FLOAT || format == PIPE_FORMAT_R32G32_FLOAT || format == PIPE_FORMAT_R32G32B32A32_FLOAT || format == PIPE_FORMAT_R16G16B16A16_FLOAT;
 +    const bool scalar_integer = format == PIPE_FORMAT_R32_UINT || format == PIPE_FORMAT_R32_SINT;
 +    if (!opts->gallium_buffer_arrays || !bank ||
 +        slot.ssa->num_components != 1 || slot.ssa->bit_size != 32 ||

@@ -192,9 +192,10 @@ static void image_contract(void) {
         .type=PSBC_DESCRIPTOR_STORAGE_IMAGE,.array_size=8,.offset=31*16,.stride=32};
     const enum pipe_format formats[]={PIPE_FORMAT_R32_UINT,PIPE_FORMAT_R32_SINT,PIPE_FORMAT_R32_FLOAT,
         PIPE_FORMAT_R32G32_UINT,PIPE_FORMAT_R32G32_SINT,PIPE_FORMAT_R32G32_FLOAT,
-        PIPE_FORMAT_R32G32B32A32_UINT,PIPE_FORMAT_R32G32B32A32_SINT,PIPE_FORMAT_R32G32B32A32_FLOAT};
+        PIPE_FORMAT_R32G32B32A32_UINT,PIPE_FORMAT_R32G32B32A32_SINT,PIPE_FORMAT_R32G32B32A32_FLOAT,
+        PIPE_FORMAT_R16G16B16A16_UINT,PIPE_FORMAT_R16G16B16A16_SINT,PIPE_FORMAT_R16G16B16A16_FLOAT};
     for(unsigned array=0;array<2;++array)
-    for(unsigned f=0;f<9;++f) for(unsigned op=0;op<5;++op) for(unsigned dynamic=0;dynamic<2;++dynamic) {
+    for(unsigned f=0;f<ARRAY_SIZE(formats);++f) for(unsigned op=0;op<5;++op) for(unsigned dynamic=0;dynamic<2;++dynamic) {
         if(f>=2 && (op==2 || op==3)) continue; /* Scalar integer atomics only. */
         PsbcShaderOutput out[2]={{0}};
         for(unsigned manual=0;manual<2;++manual) {

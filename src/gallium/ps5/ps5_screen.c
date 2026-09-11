@@ -1255,9 +1255,21 @@ ps5_storage_image_texel_size(enum pipe_format format)
    switch (format) {
    case PIPE_FORMAT_R32_FLOAT: case PIPE_FORMAT_R32_UINT: case PIPE_FORMAT_R32_SINT: return 4;
    case PIPE_FORMAT_R32G32_FLOAT: case PIPE_FORMAT_R32G32_UINT: case PIPE_FORMAT_R32G32_SINT: return 8;
+   case PIPE_FORMAT_R16G16B16A16_FLOAT: case PIPE_FORMAT_R16G16B16A16_UINT:
+   case PIPE_FORMAT_R16G16B16A16_SINT: return 8;
    case PIPE_FORMAT_R32G32B32A32_FLOAT: case PIPE_FORMAT_R32G32B32A32_UINT:
    case PIPE_FORMAT_R32G32B32A32_SINT: return 16;
    default: return 0;
+   }
+}
+
+static unsigned
+ps5_storage_image_channels(enum pipe_format format)
+{
+   switch (format) {
+   case PIPE_FORMAT_R32_FLOAT: case PIPE_FORMAT_R32_UINT: case PIPE_FORMAT_R32_SINT: return 1;
+   case PIPE_FORMAT_R32G32_FLOAT: case PIPE_FORMAT_R32G32_UINT: case PIPE_FORMAT_R32G32_SINT: return 2;
+   default: return ps5_storage_image_texel_size(format) ? 4 : 0;
    }
 }
 
@@ -1366,9 +1378,9 @@ ps5_texture_descriptor_swizzle(unsigned swizzle, enum pipe_format format, uint32
 
    if (swizzle >= ARRAY_SIZE(selectors))
       return false;
-   /* Compose missing logical channels for the supported 32-bit image formats. */
+   /* Compose missing logical channels independently of storage channel width. */
    if (swizzle < 4 && ps5_storage_image_texel_size(format) &&
-       swizzle >= ps5_storage_image_texel_size(format) / 4)
+       swizzle >= ps5_storage_image_channels(format))
       swizzle = util_format_description(format)->swizzle[swizzle];
    *selector = selectors[swizzle];
    return true;
@@ -3816,7 +3828,8 @@ ps5_resource_linear_image_descriptor(struct pipe_resource *base, uint32_t descri
     * ponytail: full arrays of at most eight layers; sublayers/tiled formats remain gated. */
    const uintptr_t address = (uintptr_t)resource->data;
    const unsigned pitch = resource->level_stride[0] / texel_size;
-   const uint32_t swizzle = texel_size == 4 ? 0x204u : texel_size == 8 ? 0x22cu : 0xfacu;
+   const unsigned channels = ps5_storage_image_channels(base->format);
+   const uint32_t swizzle = channels == 1 ? 0x204u : channels == 2 ? 0x22cu : 0xfacu;
    const uint32_t srd[8] = {
       address >> 8,
       format | (((base->width0 - 1u) & 3u) << 30) | (uint32_t)(address >> 40),

@@ -557,11 +557,12 @@ int main(void) {
         assert(!context.compute_images_invalid && typed.base.reference.count==1);
     }
     const enum pipe_format vectors[]={PIPE_FORMAT_R32G32_UINT,PIPE_FORMAT_R32G32_SINT,PIPE_FORMAT_R32G32_FLOAT,
-        PIPE_FORMAT_R32G32B32A32_UINT,PIPE_FORMAT_R32G32B32A32_SINT,PIPE_FORMAT_R32G32B32A32_FLOAT};
+        PIPE_FORMAT_R32G32B32A32_UINT,PIPE_FORMAT_R32G32B32A32_SINT,PIPE_FORMAT_R32G32B32A32_FLOAT,
+        PIPE_FORMAT_R16G16B16A16_UINT,PIPE_FORMAT_R16G16B16A16_SINT,PIPE_FORMAT_R16G16B16A16_FLOAT};
     _Alignas(256) uint8_t vector_pixels[1536];
-    for(unsigned i=0;i<6;++i) {
+    for(unsigned i=0;i<9;++i) {
         struct ps5_resource v=image; v.base.format=vectors[i]; v.data=vector_pixels;
-        unsigned bytes=i<3 ? 8 : 16, stride=(17*bytes+255)&~255u;
+        unsigned bytes=i>=3 && i<6 ? 16 : 8, stride=(17*bytes+255)&~255u;
         v.level_stride[0]=stride; v.size=stride*3;
         assert(ps5_storage_image_texel_size(v.base.format)==bytes);
         assert(!ps5_resource_storage_image_descriptor(&v.base,0,descriptor));
@@ -575,15 +576,15 @@ int main(void) {
     /* Odd extents cross the RGBA row-alignment boundary; explicit offsets are
      * independent of the driver's layout helper. Host layout proof, not GPU proof. */
     _Alignas(256) uint8_t vector_array_pixels[8*7168];
-    for(unsigned i=0;i<6;++i) {
+    for(unsigned i=0;i<9;++i) {
         struct ps5_resource v=layered;
         v.base.format=vectors[i]; v.base.width0=17; v.base.height0=9;
         v.base.array_size=8; v.data=vector_array_pixels;
-        v.layer_stride=i<3 ? 4864 : 7168; v.size=8*v.layer_stride;
+        v.layer_stride=i>=3 && i<6 ? 7168 : 4864; v.size=8*v.layer_stride;
         const size_t vector_offsets[]={2560,1280,512,0};
         for(unsigned level=0;level<4;++level) {
             v.level_offset[level]=vector_offsets[level];
-            v.level_stride[level]=i>=3 && !level ? 512 : 256;
+            v.level_stride[level]=i>=3 && i<6 && !level ? 512 : 256;
         }
         assert(ps5_compute_image_array_resource(&v.base));
         pipe_reference_init(&v.base.reference,1);

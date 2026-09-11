@@ -17,6 +17,7 @@ code = r'''
 #include <string.h>
 #include "compiler/nir/nir_builder.h"
 #include "util/format/u_format.h"
+#include "util/half_float.h"
 #include "ps5_agc_package.h"
 ''' + source[source.index("#define IMAGE_WORDS"):source.index("static int run_fragment_storage(")] + r'''
 static void compile(nir_shader *nir, PsbcCompileOptions *options) {
@@ -237,10 +238,13 @@ int main(void) {
     storage.descriptor_bindings[1]=(PsbcDescriptorBinding){
         .binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_FRAGMENT),
         .type=PSBC_DESCRIPTOR_STORAGE_IMAGE,.array_size=8,.offset=256,.stride=32};
-    for(unsigned kind=0;kind<9;++kind)
+    assert(fragment_image_packed_word(9,0,0)==0xc780c800u); /* -8, -7.5 */
+    assert(fragment_image_packed_word(10,0,0)==0x00220011u); /* 17, 34 */
+    assert(fragment_image_packed_word(11,0,0)==0xfc29fc18u); /* -1000, -983 */
+    for(unsigned kind=0;kind<ARRAY_SIZE(image_formats);++kind)
       for(unsigned operation=2;operation<=((kind==1 || kind==2) ? 4u : 3u);++operation) for(unsigned slot=0;slot<=7;slot+=7)
         compile(build_fragment_storage(operation,slot,kind,false,false,0),&storage);
-    for(unsigned kind=3;kind<9;++kind) for(unsigned slot=0;slot<=7;slot+=7)
+    for(unsigned kind=3;kind<ARRAY_SIZE(image_formats);++kind) for(unsigned slot=0;slot<=7;slot+=7)
         for(unsigned operation=2;operation<=3;++operation)
             compile(build_fragment_storage(operation,slot,kind,false,true,slot),&storage);
     for(unsigned slot=0;slot<=7;slot+=7) for(unsigned kind=0;kind<3;++kind) {
@@ -264,7 +268,7 @@ int main(void) {
     assert(fragment_image_word(8,0,true)==(uint32_t)-14322);
     uint32_t vector_bits=fragment_image_word(6,0,true); float vector_value;
     memcpy(&vector_value,&vector_bits,4); assert(vector_value==-205.875f);
-    for(unsigned kind=0;kind<9;++kind) for(unsigned lane=0;lane<4;++lane) {
+    for(unsigned kind=0;kind<ARRAY_SIZE(image_formats);++kind) for(unsigned lane=0;lane<4;++lane) {
         const unsigned channels=kind<3 ? 1 : kind<6 ? 2 : 4;
         uint32_t selector=99;
         assert(ps5_texture_descriptor_swizzle(lane,image_formats[kind],&selector));
