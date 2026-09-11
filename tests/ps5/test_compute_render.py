@@ -22,6 +22,7 @@ code = r'''
 ''' + source[source.index("#define IMAGE_WORDS"):source.index("static int run_fragment_storage(")] + r'''
 static void compile(nir_shader *nir, PsbcCompileOptions *options) {
     nir_validate_shader(nir, "compute-render input");
+    const nir_shader_compiler_options *borrowed_options=nir->options;
     if (options->stage==PSBC_STAGE_FRAGMENT && nir->info.num_ssbos) {
         unsigned xy=0,z=0,w=0;
         nir_foreach_function_impl(impl,nir) nir_foreach_block(block,impl) nir_foreach_instr(instr,block) {
@@ -36,6 +37,7 @@ static void compile(nir_shader *nir, PsbcCompileOptions *options) {
     }
     PsbcShaderOutput out = {0};
     assert(psbc_compile_nir(nir, options, &out) == PSBC_RESULT_OK);
+    assert(nir->options==borrowed_options); /* Never retain compiler-stack options in borrowed NIR. */
     assert(out.machine_code_size && !out.metadata.scratch_size_per_thread);
     uint8_t *package = NULL;
     size_t size = 0;
@@ -123,6 +125,18 @@ int main(void) {
     wrong_stage->info.stage=MESA_SHADER_FRAGMENT;
     assert(!prepare_compute_nir(wrong_stage) && wrong_stage->info.num_ubos==1);
     ralloc_free(wrong_stage);
+    nir_shader *rejected_input=build_compute_user_ubo(true);
+    const nir_shader_compiler_options *rejected_options=rejected_input->options;
+    PsbcCompileOptions missing_banks=options; missing_banks.descriptor_binding_count=0;
+    PsbcShaderOutput rejected_output={0};
+    assert(psbc_compile_nir(rejected_input,&missing_banks,&rejected_output)!=PSBC_RESULT_OK);
+    assert(rejected_input->options==rejected_options && !rejected_output.machine_code && !rejected_output.data);
+    psbc_free_output(&rejected_output);
+    nir_function_create(rejected_input,"unused");
+    nir_validate_shader(rejected_input,"valid unused function declaration");
+    assert(psbc_compile_nir(rejected_input,&options,&rejected_output)!=PSBC_RESULT_OK);
+    assert(rejected_input->options==rejected_options && !rejected_output.machine_code && !rejected_output.data);
+    psbc_free_output(&rejected_output); ralloc_free(rejected_input);
     for(unsigned kind=0;kind<3;++kind) compile(build_compute(kind), &options);
     PsbcCompileOptions all_slots=options;
     for(unsigned unit=0;unit<16;++unit)

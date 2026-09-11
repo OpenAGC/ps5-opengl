@@ -44,6 +44,9 @@ code = r'''
 #include <stdlib.h>
 #include <string.h>
 #include "psbc_compile.h"
+#include "ps5_agc_package.h"
+#include "compiler/nir/nir_serialize.h"
+#include "util/blob.h"
 #include "compiler/nir/nir_builder.h"
 #include "compiler/nir/nir_xfb_info.h"
 #include "amd/vulkan/radv_shader.h"
@@ -159,6 +162,142 @@ static void abi_constants(const struct radv_compiler_info *ci,const struct radv_
     }
     dump(b.shader,"abi-witness"); ralloc_free(b.shader);
 }
+
+/* Public API checks are additional to, not a replacement for, the extracted
+ * RADV reference below. They intentionally require a refreshed host archive. */
+static PsbcResult checked_compile(nir_shader** inputs,
+                                  const PsbcTessellationCompileOptions* options,
+                                  PsbcTessellationOutput* out) {
+    struct blob before[3], after[3];
+    const struct nir_shader_compiler_options* pointers[3];
+    for (unsigned i=0;i<3;++i) {
+        blob_init(&before[i]);
+        nir_serialize(&before[i],inputs[i],false);
+        pointers[i]=inputs[i]->options;
+    }
+    PsbcResult result=psbc_compile_nir_tessellation_pipeline(inputs[0],inputs[1],inputs[2],options,out);
+    for (unsigned i=0;i<3;++i) {
+        assert(inputs[i]->options==pointers[i]); /* Never dereference a stale options pointer. */
+        blob_init(&after[i]);
+        nir_serialize(&after[i],inputs[i],false);
+        assert(before[i].size==after[i].size);
+        assert(!memcmp(before[i].data,after[i].data,before[i].size));
+        blob_finish(&before[i]); blob_finish(&after[i]);
+    }
+    return result;
+}
+static void expect_empty(const PsbcTessellationOutput* out) {
+    const PsbcTessellationOutput empty={0};
+    assert(!memcmp(out,&empty,sizeof(empty)));
+}
+static void api_tests(const struct radv_compiler_info* ci,bool cross,
+                      PsbcTessellationOutput* reference) {
+    nir_shader* inputs[]={build(MESA_SHADER_VERTEX,cross,ci),
+                         build(MESA_SHADER_TESS_CTRL,cross,ci),
+                         build(MESA_SHADER_TESS_EVAL,cross,ci)};
+    PsbcTessellationCompileOptions options={
+        .input_patch_vertices=3,.offchip_workgroup_capacity_dwords=8192,.address32_hi=2
+    };
+    PsbcTessellationOutput out={0};
+    assert(psbc_compile_nir_tessellation_pipeline(NULL,inputs[1],inputs[2],&options,&out)
+           ==PSBC_RESULT_INVALID_ARGUMENT);
+    expect_empty(&out);
+    assert(checked_compile(inputs,NULL,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+    expect_empty(&out);
+    assert(checked_compile(inputs,&options,NULL)==PSBC_RESULT_INVALID_ARGUMENT);
+    mesa_shader_stage stage=inputs[0]->info.stage;
+    inputs[0]->info.stage=MESA_SHADER_FRAGMENT;
+    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_UNSUPPORTED_STAGE);
+    expect_empty(&out); inputs[0]->info.stage=stage;
+    nir_function* unused=nir_function_create(inputs[0],"unused");
+    nir_validate_shader(inputs[0],"valid unused function declaration");
+    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+    expect_empty(&out); exec_node_remove(&unused->node);
+    for (unsigned n=0;n<2;++n) {
+        options.input_patch_vertices=n ? 4 : 0;
+        assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+        expect_empty(&out);
+    }
+    options.input_patch_vertices=3;
+    const uint32_t capacities[]={0,1,UINT32_MAX};
+    for (unsigned n=0;n<3;++n) {
+        options.offchip_workgroup_capacity_dwords=capacities[n];
+        assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+        expect_empty(&out);
+    }
+    options.offchip_workgroup_capacity_dwords=8192;
+    struct shader_info tcs_info=inputs[1]->info, tes_info=inputs[2]->info;
+    inputs[2]->info.tess.tcs_vertices_out=4; /* Contradictory modes: no RADV assertion. */
+    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+    expect_empty(&out); inputs[2]->info=tes_info;
+    inputs[2]->info.tess.spacing=TESS_SPACING_FRACTIONAL_EVEN;
+    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+    expect_empty(&out); inputs[2]->info=tes_info;
+    inputs[2]->info.tess.point_mode=true;
+    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+    expect_empty(&out); inputs[2]->info=tes_info;
+    inputs[1]->info.tess._primitive_mode=inputs[2]->info.tess._primitive_mode=TESS_PRIMITIVE_QUADS;
+    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+    expect_empty(&out); inputs[1]->info=tcs_info; inputs[2]->info=tes_info;
+    inputs[1]->info.tess.ccw=inputs[2]->info.tess.ccw=false;
+    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+    expect_empty(&out); inputs[1]->info=tcs_info; inputs[2]->info=tes_info;
+    inputs[0]->info.num_ubos=1;
+    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+    expect_empty(&out); inputs[0]->info.num_ubos=0;
+    /* A resource declaration with stale/zero resource counts must also fail. */
+    nir_variable* resource=nir_variable_create(inputs[0],nir_var_uniform,glsl_float_type(),"unsupported-uniform");
+    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+    expect_empty(&out); exec_node_remove(&resource->node);
+    nir_variable* attr=nir_variable_create(inputs[0],nir_var_shader_in,glsl_vec4_type(),"unsupported-attribute");
+    attr->data.location=VERT_ATTRIB_GENERIC0;
+    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+    expect_empty(&out); exec_node_remove(&attr->node);
+
+    /* Actual merge rules: TCS-only and TES-only mode declarations both work.
+     * OutputVertices may also arrive only in TES. The borrowed shader retains
+     * its original, unmerged fields/options on success and on every failure. */
+    for (unsigned modes=0;modes<3;++modes) {
+        inputs[1]->info=tcs_info; inputs[2]->info=tes_info;
+        if (modes==1) {
+            inputs[1]->info.tess.spacing=TESS_SPACING_UNSPECIFIED;
+            inputs[1]->info.tess._primitive_mode=TESS_PRIMITIVE_UNSPECIFIED;
+            inputs[1]->info.tess.ccw=false;
+            inputs[1]->info.tess.tcs_vertices_out=0;
+            inputs[2]->info.tess.tcs_vertices_out=3;
+        } else if (modes==2) {
+            inputs[2]->info.tess.spacing=TESS_SPACING_UNSPECIFIED;
+            inputs[2]->info.tess._primitive_mode=TESS_PRIMITIVE_UNSPECIFIED;
+            inputs[2]->info.tess.ccw=false;
+        }
+        PsbcResult result=checked_compile(inputs,&options,&out);
+        printf("public API %s modes=%u: %s\n",cross ? "cross" : "same",modes,psbc_result_string(result));
+        assert(result==PSBC_RESULT_OK);
+        PsbcShaderOutput* pair[]={&out.hs,&out.tes};
+        assert(out.hs.machine_code!=out.tes.machine_code);
+        for (unsigned i=0;i<2;++i) {
+            assert(pair[i]->machine_code && pair[i]->machine_code_size);
+            assert(!pair[i]->data && !pair[i]->size);
+            assert(pair[i]->metadata.source_stage==(i ? PSBC_STAGE_TESS_EVAL : PSBC_STAGE_TESS_CTRL));
+            assert(pair[i]->metadata.hardware_stage==PSBC_HW_STAGE_UNKNOWN);
+            assert(!pair[i]->metadata.linkage_valid);
+            assert(!pair[i]->metadata.context_register_count && !pair[i]->metadata.shader_register_count);
+            uint8_t* package=NULL; size_t size=0;
+            assert(ps5_agc_package_build(pair[i],0,&package,&size)<0);
+            assert(!package && !size);
+        }
+        PsbcTessellationOutput owned=out;
+        assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+        assert(!memcmp(&out,&owned,sizeof(out)));
+        if (!modes) { *reference=out; memset(&out,0,sizeof(out)); }
+        psbc_free_tessellation_output(&out); expect_empty(&out);
+        psbc_free_tessellation_output(&out); expect_empty(&out);
+    }
+    psbc_free_tessellation_output(NULL);
+    for (unsigned i=0;i<3;++i) ralloc_free(inputs[i]);
+    puts("PASS public linked tessellation API: ownership, rejection, raw packaging gate");
+}
+
 int main(int argc,char **argv) {
     assert(argc==2); setvbuf(stdout,NULL,_IONBF,0);
     bool cross=!strcmp(argv[1],"cross");
@@ -170,6 +309,8 @@ int main(int argc,char **argv) {
     ci.key.family=ci.debug.family=CHIP_NAVI21;
     ci.key.ge_wave_size=64; ci.key.ps_wave_size=32; ci.key.use_ngg=true;
     ci.hw.address32_hi=2; radv_get_nir_options(&ci);
+    PsbcTessellationOutput reference={0};
+    api_tests(&ci,cross,&reference);
     struct radv_graphics_state_key gfx={0}; gfx.ts.patch_control_points=3;
     struct radv_shader_stage stages[MESA_VULKAN_SHADER_STAGES]={0};
     const mesa_shader_stage ids[]={MESA_SHADER_VERTEX,MESA_SHADER_TESS_CTRL,MESA_SHADER_TESS_EVAL};
@@ -284,6 +425,12 @@ int main(int argc,char **argv) {
     struct radv_shader_binary *tes_binary=radv_shader_nir_to_asm(&ci,tes,&tes->nir,1,&gfx); assert(tes_binary);
     struct radv_shader_binary_legacy *hb=(void *)hs_binary, *tb=(void *)tes_binary;
     assert(hb->code_size && hb->exec_size && tb->code_size && tb->exec_size);
+    assert(reference.hs.machine_code_size==hb->code_size);
+    assert(reference.tes.machine_code_size==tb->code_size);
+    assert(!memcmp(reference.hs.machine_code,hb->data+hb->stats_size,hb->code_size));
+    assert(!memcmp(reference.tes.machine_code,tb->data+tb->stats_size,tb->code_size));
+    psbc_free_tessellation_output(&reference);
+    puts("PASS public API matches extracted RADV reference code byte-for-byte");
     assert(radv_select_hw_stage(&hs->info,ac.gfx_level)==AC_HW_HULL_SHADER);
     assert(radv_select_hw_stage(&tes->info,ac.gfx_level)==AC_HW_NEXT_GEN_GEOMETRY_SHADER);
     printf("PASS %s: linked merged2 HS=%u bytes TES/NGG=%u bytes; compiler-model only\n",argv[1],hb->code_size,tb->code_size);
@@ -331,9 +478,14 @@ if __name__ == "__main__":
                         "src/amd/common", "src/compiler/nir", "src/amd/compiler", "src/compiler",
                         "src/amd/common/nir", "src/vulkan/runtime", "src/vulkan/util", "../Vulkan-Headers/include"):
             command += ["-I", str(PSBC / include)]
+        command += ["-I", str(ROOT / "src/platform")]
         status = run(command + ["-c", str(cfile), "-o", str(obj)], attempt / "compile.log", 45, attempt)
+        package_obj = attempt / "package.o"
         if not status:
-            status = run(["g++", "-o", str(executable), str(obj), str(LIB), "-pthread", "-lm"],
+            status = run(command + ["-c", str(ROOT / "src/platform/ps5_agc_package.c"),
+                                    "-o", str(package_obj)], attempt / "package-compile.log", 45, attempt)
+        if not status:
+            status = run(["g++", "-o", str(executable), str(obj), str(package_obj), str(LIB), "-pthread", "-lm"],
                          attempt / "link.log", 45, attempt)
         if not status:
             for variant in ("same", "cross"):
