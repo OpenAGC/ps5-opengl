@@ -366,7 +366,8 @@ static uint32_t fragment_image_word(unsigned kind, unsigned id, bool load)
    memcpy(&sum, &total, 4); return sum;
 }
 
-static nir_shader *build_fragment_storage(unsigned atomic, unsigned slot, unsigned kind, bool mixed)
+static nir_shader *build_fragment_storage(unsigned atomic, unsigned slot, unsigned kind, bool mixed,
+                                          bool array, unsigned layer)
 {
    const enum pipe_format format = image_formats[kind];
    const unsigned channels = kind < 3 ? 1 : kind < 6 ? 2 : 4;
@@ -386,21 +387,22 @@ static nir_shader *build_fragment_storage(unsigned atomic, unsigned slot, unsign
    else {
       nir_def *zero = nir_imm_int(&b, 0);
       nir_def *xy = nir_vec4(&b, nir_f2u32(&b, nir_channel(&b, coord, 0)),
-         nir_f2u32(&b, nir_channel(&b, coord, 1)), zero, zero);
-      value = nir_iadd_imm(&b, nir_imul_imm(&b, id, 3), 17);
-      if (kind == 0) value = nir_fmul_imm(&b, nir_i2f32(&b, nir_iadd_imm(&b, id, -32)), 0.25);
-      if (kind == 2) value = nir_iadd_imm(&b, nir_imul_imm(&b, id, -7), -1000);
+         nir_f2u32(&b, nir_channel(&b, coord, 1)), nir_imm_int(&b, layer), zero);
+      nir_def *image_id = nir_iadd_imm(&b, id, layer * 64);
+      value = nir_iadd_imm(&b, nir_imul_imm(&b, image_id, 3), 17);
+      if (kind == 0) value = nir_fmul_imm(&b, nir_i2f32(&b, nir_iadd_imm(&b, image_id, -32)), 0.25);
+      if (kind == 2) value = nir_iadd_imm(&b, nir_imul_imm(&b, image_id, -7), -1000);
       const nir_alu_type type = kind == 0 ? nir_type_float32 : kind == 1 ? nir_type_uint32 : nir_type_int32;
       if (atomic == 2) {
          nir_def *components[4] = {value, zero, zero, zero};
          for (unsigned lane = 1; lane < channels; ++lane)
             components[lane] = kind ? nir_iadd_imm(&b, value, lane * 17) : nir_fadd_imm(&b, value, lane * 0.5);
          nir_image_store(&b, buffer, xy, zero, nir_vec(&b, components, 4), zero,
-            .image_dim = GLSL_SAMPLER_DIM_2D, .format = format, .src_type = type);
+            .image_dim = GLSL_SAMPLER_DIM_2D, .image_array = array, .format = format, .src_type = type);
       }
       else if (atomic == 3) {
          nir_def *loaded = nir_image_load(&b, 4, 32, buffer, xy, zero, zero,
-            .image_dim = GLSL_SAMPLER_DIM_2D, .format = format, .dest_type = type);
+            .image_dim = GLSL_SAMPLER_DIM_2D, .image_array = array, .format = format, .dest_type = type);
          value = nir_channel(&b, loaded, 0);
          for (unsigned lane = 1; lane < channels; ++lane)
             value = kind ? nir_iadd(&b, value, nir_imul_imm(&b, nir_channel(&b, loaded, lane), 1u << lane)) :
@@ -467,7 +469,7 @@ static int run_fragment_storage(struct pipe_context *pipe, struct pipe_resource 
       for (unsigned i = 0; i < 16; ++i)
          bindings[i] = (struct pipe_shader_buffer){buffer, 32, (atomic ? 65u : 64u) * 4};
       pipe->set_shader_buffers(pipe, MESA_SHADER_FRAGMENT, 0, slot + 1, bindings, 65535);
-      struct pipe_shader_state shader = {.type = PIPE_SHADER_IR_NIR, .ir.nir = build_fragment_storage(atomic, slot, 1, false)};
+      struct pipe_shader_state shader = {.type = PIPE_SHADER_IR_NIR, .ir.nir = build_fragment_storage(atomic, slot, 1, false, false, 0)};
       void *fs = pipe->create_fs_state(pipe, &shader);
       if (!fs) return 1;
       pipe->bind_fs_state(pipe, fs);
@@ -502,20 +504,23 @@ static int run_fragment_storage(struct pipe_context *pipe, struct pipe_resource 
 }
 
 static int run_fragment_images(struct pipe_context *pipe, struct pipe_resource *output,
-                               uint32_t *words, size_t bytes, unsigned kind, bool mixed, void *sampler)
+                               uint32_t *words, size_t bytes, unsigned kind, bool mixed, void *sampler, bool array)
 {
    int status = 1;
+   const unsigned channels = kind < 3 ? 1 : kind < 6 ? 2 : 4;
+   const unsigned layer_bytes = array ? (kind < 6 ? 14336 : 22528) : 2048;
    void *fs = NULL;
    struct pipe_sampler_view *sampled = NULL;
    struct pipe_resource *uniform_buffer = NULL;
-   const struct pipe_resource templ = {.target = PIPE_TEXTURE_2D, .format = image_formats[kind],
-      .width0 = 8, .height0 = 8, .depth0 = 1, .array_size = 1,
+   const struct pipe_resource templ = {.target = array ? PIPE_TEXTURE_2D_ARRAY : PIPE_TEXTURE_2D, .format = image_formats[kind],
+      .width0 = array ? 32 : 8, .height0 = array ? 32 : 8, .depth0 = 1,
+      .array_size = array ? 8 : 1, .last_level = array ? 2 : 0,
       .bind = PIPE_BIND_SHADER_IMAGE | PIPE_BIND_SAMPLER_VIEW};
    struct pipe_resource *image = pipe->screen->resource_create(pipe->screen, &templ);
    uint32_t *pixels = NULL;
    size_t image_bytes = 0;
    if (!image || bytes != 320 || ps5_resource_info(image, (void **)&pixels, &image_bytes, NULL) ||
-       !pixels || image_bytes != 2048) goto out;
+       !pixels || image_bytes != layer_bytes * templ.array_size) goto out;
    const struct pipe_shader_buffer bound = {output, 32, 256};
    pipe->set_shader_buffers(pipe, MESA_SHADER_FRAGMENT, 0, 1, &bound, 1);
    if (mixed) {
@@ -527,10 +532,12 @@ static int run_fragment_images(struct pipe_context *pipe, struct pipe_resource *
       if (!sampled || !uniform_buffer) goto out;
    }
    for (unsigned slot = 0; slot <= 7; slot += 7) {
+      const unsigned layer = array ? slot : 0;
       memset(pixels, 0xcd, image_bytes);
       struct pipe_image_view views[8];
       for (unsigned i = 0; i < 8; ++i) views[i] = (struct pipe_image_view){.resource = image,
-         .format = image_formats[kind], .access = PIPE_IMAGE_ACCESS_READ_WRITE};
+         .format = image_formats[kind], .access = PIPE_IMAGE_ACCESS_READ_WRITE,
+         .u.tex = {.level = templ.last_level, .last_layer = templ.array_size - 1}};
       pipe->set_shader_images(pipe, MESA_SHADER_FRAGMENT, 0, slot + 1, 0, views);
       uint32_t uniform = kind ? (slot ? 200u : 100u) : (slot ? UINT32_C(0x3ec00000) : UINT32_C(0x3e000000));
       if (mixed) {
@@ -547,7 +554,7 @@ static int run_fragment_images(struct pipe_context *pipe, struct pipe_resource *
       for (unsigned operation = 2; operation <= (kind == 0 || kind >= 3 || mixed ? 3u : 4u); ++operation) {
          memset(words, 0xcd, bytes); /* Output only; no CPU image access between producer and consumer. */
          struct pipe_shader_state shader = {.type = PIPE_SHADER_IR_NIR,
-            .ir.nir = build_fragment_storage(operation, slot, kind, mixed)};
+            .ir.nir = build_fragment_storage(operation, slot, kind, mixed, array, layer)};
          fs = pipe->create_fs_state(pipe, &shader);
          if (!fs) goto out;
          pipe->bind_fs_state(pipe, fs);
@@ -566,7 +573,7 @@ static int run_fragment_images(struct pipe_context *pipe, struct pipe_resource *
                   value = kind == 2 ? initial - value : value - initial;
                   if (value < 64 && !seen[value]) { seen[value] = true; ++correct; }
                } else {
-                  uint32_t expected = fragment_image_word(kind, i - 8, operation == 3);
+                  uint32_t expected = fragment_image_word(kind, i - 8 + layer * 64, operation == 3);
                   if (mixed && operation == 3) {
                      if (kind) expected = 2u * fragment_image_word(kind, i - 8, false) + uniform;
                      else if (slot) { float f; memcpy(&f, &expected, 4); f += 0.25f; memcpy(&expected, &f, 4); }
@@ -576,20 +583,21 @@ static int run_fragment_images(struct pipe_context *pipe, struct pipe_resource *
             } else correct += words[i] == UINT32_C(0xcdcdcdcd);
          }
          pipe->bind_fs_state(pipe, NULL); pipe->delete_fs_state(pipe, fs); fs = NULL;
-         printf("[ps5-fragment-image] mixed=%u kind=%u op=%u slot=%u rc=%d words=%u/80\n", mixed, kind, operation, slot, rc, correct);
+         printf("[ps5-fragment-image%s] mixed=%u kind=%u op=%u slot=%u rc=%d words=%u/80\n", array ? "-array" : "", mixed, kind, operation, slot, rc, correct);
          fflush(stdout);
          if (rc || correct != 80) goto out;
       }
       unsigned correct = 0;
-      const unsigned channels = kind < 3 ? 1 : kind < 6 ? 2 : 4;
-      for (unsigned i = 0; i < 512; ++i) {
-         uint32_t expected = i % 64 < 8 * channels ?
-            fragment_image_component(kind, i / 64 * 8 + (i % 64) / channels, i % channels) : UINT32_C(0xcdcdcdcd);
+      for (unsigned i = 0; i < image_bytes / 4; ++i) {
+         const unsigned start = layer * layer_bytes / 4;
+         const unsigned local = i - start;
+         uint32_t expected = i >= start && local < 512 && local % 64 < 8 * channels ?
+            fragment_image_component(kind, layer * 64 + local / 64 * 8 + (local % 64) / channels, local % channels) : UINT32_C(0xcdcdcdcd);
          if (!i && kind && kind < 3 && !mixed) expected += kind == 2 ? (uint32_t)-64 : 64;
          correct += pixels[i] == expected;
       }
-      printf("[ps5-fragment-image] kind=%u slot=%u image-and-padding=%u/512\n", kind, slot, correct);
-      if (correct != 512) goto out;
+      printf("[ps5-fragment-image%s] kind=%u slot=%u image-and-padding=%u/%u\n", array ? "-array" : "", kind, slot, correct, (unsigned)image_bytes / 4);
+      if (correct != image_bytes / 4) goto out;
    }
    status = 0;
 out:
@@ -1040,11 +1048,12 @@ int main(void)
    if (run_all_slots(pipe, sample_words, sample_bytes)) goto cleanup;
    if (run_fragment_storage(pipe, sample_output, sample_words, sample_bytes, target)) goto cleanup;
    for (unsigned kind = 0; kind < 3; ++kind)
-      if (run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, false, sampler)) goto cleanup;
+      if (run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, false, sampler, false)) goto cleanup;
    for (unsigned kind = 0; kind < 3; ++kind)
-      if (run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, true, sampler)) goto cleanup;
+      if (run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, true, sampler, false)) goto cleanup;
    for (unsigned kind = 3; kind < 9; ++kind)
-      if (run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, false, sampler)) goto cleanup;
+      if (run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, false, sampler, false) ||
+          run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind, false, sampler, true)) goto cleanup;
    status = 0;
 cleanup:
    if (pipe) {

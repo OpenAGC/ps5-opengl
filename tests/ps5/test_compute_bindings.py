@@ -572,6 +572,53 @@ int main(void) {
         v.size++; v.level_stride[0]+=256;
         assert(ps5_resource_storage_image_descriptor(&v.base,0,descriptor)<0);
     }
+    /* Odd extents cross the RGBA row-alignment boundary; explicit offsets are
+     * independent of the driver's layout helper. Host layout proof, not GPU proof. */
+    _Alignas(256) uint8_t vector_array_pixels[8*7168];
+    for(unsigned i=0;i<6;++i) {
+        struct ps5_resource v=layered;
+        v.base.format=vectors[i]; v.base.width0=17; v.base.height0=9;
+        v.base.array_size=8; v.data=vector_array_pixels;
+        v.layer_stride=i<3 ? 4864 : 7168; v.size=8*v.layer_stride;
+        const size_t vector_offsets[]={2560,1280,512,0};
+        for(unsigned level=0;level<4;++level) {
+            v.level_offset[level]=vector_offsets[level];
+            v.level_stride[level]=i>=3 && !level ? 512 : 256;
+        }
+        assert(ps5_compute_image_array_resource(&v.base));
+        pipe_reference_init(&v.base.reference,1);
+        for(unsigned level=0;level<4;++level) {
+            assert(!ps5_resource_storage_image_descriptor(&v.base,level,descriptor));
+            assert(descriptor[3]==(0xd0000000u|(i<3 ? 0x22cu : 0xfacu)|(level<<12)|(level<<16)));
+            assert(descriptor[4]==7 && descriptor[5]==0x400030);
+            struct pipe_image_view view={.resource=&v.base,.format=v.base.format,
+                .access=PIPE_IMAGE_ACCESS_READ_WRITE};
+            view.u.tex.level=level; view.u.tex.last_layer=7;
+            ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,1,0,&view);
+            assert(!context.compute_images_invalid && v.base.reference.count==2);
+            /* Rejected sublayers must preserve the retained binding. */
+            view.u.tex.first_layer=1;
+            ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,1,0,&view);
+            assert(context.compute_images_invalid && v.base.reference.count==2);
+            assert(context.compute_images[7].u.tex.first_layer==0);
+            ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,0,1,NULL);
+            assert(!context.compute_images_invalid && v.base.reference.count==1);
+        }
+        for(unsigned first=0;first<4;++first)
+            for(unsigned last=first;last<4;++last)
+                assert(!ps5_resource_sampled_image_descriptor(&v.base,first,last,descriptor));
+        for(unsigned fault=0;fault<11;++fault) {
+            struct ps5_resource bad=v;
+            if(fault<4) bad.level_offset[fault]+=256;
+            if(fault>=4 && fault<8) bad.level_stride[fault-4]+=256;
+            if(fault==8) bad.size--;
+            if(fault==9) bad.layer_stride++;
+            if(fault==10) bad.base.array_size=9;
+            memset(descriptor,0xa5,sizeof(descriptor));
+            assert(ps5_resource_storage_image_descriptor(&bad.base,0,descriptor)<0);
+            for(unsigned word=0;word<8;++word) assert(descriptor[word]==0xa5a5a5a5u);
+        }
+    }
     for(unsigned fault=0;fault<15;++fault) {
         struct ps5_resource bad=image;
         if(fault==0) bad.base.target=PIPE_BUFFER;

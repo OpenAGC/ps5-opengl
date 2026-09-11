@@ -232,14 +232,17 @@ int main(void) {
         .descriptor_bindings={{.binding=PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_FRAGMENT),
             .type=PSBC_DESCRIPTOR_STORAGE_BUFFER,.array_size=16,.stride=16}}};
     for(unsigned atomic=0;atomic<2;++atomic) for(unsigned slot=0;slot<=15;slot+=15)
-        compile(build_fragment_storage(atomic,slot,1,false),&storage);
+        compile(build_fragment_storage(atomic,slot,1,false,false,0),&storage);
     storage.descriptor_binding_count=2;
     storage.descriptor_bindings[1]=(PsbcDescriptorBinding){
         .binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_FRAGMENT),
         .type=PSBC_DESCRIPTOR_STORAGE_IMAGE,.array_size=8,.offset=256,.stride=32};
     for(unsigned kind=0;kind<9;++kind)
       for(unsigned operation=2;operation<=((kind==1 || kind==2) ? 4u : 3u);++operation) for(unsigned slot=0;slot<=7;slot+=7)
-        compile(build_fragment_storage(operation,slot,kind,false),&storage);
+        compile(build_fragment_storage(operation,slot,kind,false,false,0),&storage);
+    for(unsigned kind=3;kind<9;++kind) for(unsigned slot=0;slot<=7;slot+=7)
+        for(unsigned operation=2;operation<=3;++operation)
+            compile(build_fragment_storage(operation,slot,kind,false,true,slot),&storage);
     for(unsigned slot=0;slot<=7;slot+=7) for(unsigned kind=0;kind<3;++kind) {
         PsbcCompileOptions mixed=storage;
         mixed.descriptor_binding_count=4;
@@ -248,9 +251,9 @@ int main(void) {
             .type=PSBC_DESCRIPTOR_UNIFORM_BUFFER,.array_size=13,.offset=512,.stride=16};
         mixed.descriptor_bindings[3]=(PsbcDescriptorBinding){.binding=slot ? 15 : 0,
             .type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,.array_size=1,.offset=720+(slot ? 15 : 0)*48,.stride=48};
-        compile(build_fragment_storage(3,slot,kind,true),&mixed);
+        compile(build_fragment_storage(3,slot,kind,true,false,0),&mixed);
         PsbcShaderOutput rejected={0};
-        nir_shader *missing=build_fragment_storage(3,slot,kind,true);
+        nir_shader *missing=build_fragment_storage(3,slot,kind,true,false,0);
         assert(psbc_compile_nir(missing,&storage,&rejected)!=PSBC_RESULT_OK && !rejected.machine_code);
         psbc_free_output(&rejected); ralloc_free(missing);
     }
