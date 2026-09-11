@@ -489,6 +489,8 @@ int main(void)
    psbc_init();
    if (!pipe || !pipe->memory_barrier)
       goto cleanup;
+   printf("[ps5-compute-render] explicit-memory-barrier-batch=1\n");
+   fflush(stdout);
    /* The graphics backend requires its normal render pool even for offscreen
     * draws. It may open VideoOut internally; this test never swaps buffers. */
    const struct pipe_resource pool_template = {.target = PIPE_TEXTURE_2D,
