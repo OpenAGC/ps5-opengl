@@ -9,6 +9,10 @@ include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 PS5_OPENGL_BUILD := $(abspath ../../build/core33-native-runtime)
 PS5_DEFERRED_DRAW_BATCH ?= 1
 PS5_OPENGL_RUNTIME_DEFINES := -DPS5_NATIVE_TITLE_RUNTIME=1
+ifeq ($(PS5_COMPUTE_API_TEST),1)
+PS5_OPENGL_BUILD := $(abspath ../../build/compute-api-native-runtime)
+PS5_OPENGL_RUNTIME_DEFINES += -DPS5_ENABLE_COMPUTE_API_TEST=1
+endif
 ifneq ($(PS5_SCANOUT_FPS),)
 ifneq ($(words $(PS5_SCANOUT_FPS)),1)
 $(error PS5_SCANOUT_FPS must be one rate)

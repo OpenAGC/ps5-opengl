@@ -187,6 +187,9 @@ struct ps5_constant_state {
 };
 
 #define PS5_COMPUTE_STORAGE_SLOTS 16
+#ifndef PS5_ENABLE_COMPUTE_API_TEST
+#define PS5_ENABLE_COMPUTE_API_TEST 0
+#endif
 #define PS5_COMPUTE_CONSTANT_SLOTS 15 /* CB0 plus fourteen user UBOs. */
 #define PS5_COMPUTE_BUFFER_SLOTS (PS5_COMPUTE_STORAGE_SLOTS + PS5_COMPUTE_CONSTANT_SLOTS)
 #define PS5_COMPUTE_IMAGE_SLOTS 8
@@ -12139,6 +12142,27 @@ ps5_screen_create(void)
    fs_caps->indirect_temp_addr = true;
    fs_caps->indirect_const_addr = true;
    fs_caps->integers = true;
+#if PS5_ENABLE_COMPUTE_API_TEST
+   /* Private GL integration fixture only. Initialize before Mesa/CSO caches
+    * capabilities; this is not a release/conformance feature advertisement. */
+   struct pipe_shader_caps *cs_caps = (struct pipe_shader_caps *)
+      &screen->base.shader_caps[MESA_SHADER_COMPUTE];
+   struct pipe_compute_caps *compute_caps = (struct pipe_compute_caps *)
+      &screen->base.compute_caps;
+   *cs_caps = *fs_caps;
+   cs_caps->max_const_buffers = PS5_COMPUTE_CONSTANT_SLOTS;
+   cs_caps->max_shader_buffers = fs_caps->max_shader_buffers = PS5_COMPUTE_STORAGE_SLOTS;
+   cs_caps->max_shader_images = fs_caps->max_shader_images = PS5_COMPUTE_IMAGE_SLOTS;
+   caps->compute = true;
+   caps->image_store_formatted = true;
+   caps->shader_buffer_offset_alignment = 16;
+   caps->max_shader_buffer_size = 16384;
+   *compute_caps = (struct pipe_compute_caps){
+      .max_threads_per_block = 1024, .max_local_size = 32768,
+      .max_grid_size = {65535, 65535, 65535},
+      .max_block_size = {1024, 1024, 64},
+   };
+#endif
    vs_options = (struct nir_shader_compiler_options *)(uintptr_t)
       psbc_get_nir_options(PSBC_STAGE_VERTEX);
    fs_options = (struct nir_shader_compiler_options *)(uintptr_t)

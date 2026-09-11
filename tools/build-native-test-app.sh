@@ -47,6 +47,15 @@ esac
     exit 2
 }
 test_name=${gate_object%.o}
+case ${PS5_COMPUTE_API_TEST:-0} in 0|1) ;; *) echo 'Invalid compute API test mode' >&2; exit 2 ;; esac
+if [[ $test_name == egl_public_compute_api ]]; then
+    [[ ${PS5_COMPUTE_API_TEST:-0} == 1 && -z ${PS5_OPENGL_PREFIX:-} ]] || {
+        echo 'Compute API gate requires PS5_COMPUTE_API_TEST=1 and no SDK prefix' >&2; exit 2;
+    }
+elif [[ ${PS5_COMPUTE_API_TEST:-0} == 1 ]]; then
+    echo 'Compute API test mode is restricted to egl_public_compute_api' >&2
+    exit 2
+fi
 case ${PS5_IMGUI_WINDOW_TARGET:-60} in 30|60|90|120) ;; *) echo 'Invalid window target' >&2; exit 2 ;; esac
 if [[ ${PS5_IMGUI_WINDOW_TARGET:-60} -gt 60 ]]; then
     [[ $gate_object == egl_public_core33_imgui_tv.o && ${PS5_IMGUI_PROFILE:-0} == 1 &&

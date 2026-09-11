@@ -115,4 +115,5 @@ test-compiler:
 	python3 tests/ps5/test_compute_metadata.py
 	python3 tests/ps5/test_compute_bindings.py
 	python3 tests/ps5/test_compute_render.py
+	python3 tests/ps5/test_compute_api_caps.py
 	python3 tests/ps5/test_tessellation_link.py
