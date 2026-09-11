@@ -10182,7 +10182,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
 }
 
 #ifdef PS5_NATIVE_TITLE_RUNTIME
-/* ponytail: bounded integer-LOD 2D fetch/size and constant-LOD float sampling only;
+/* ponytail: provably bounded LODs only; unknown ranges remain gated.
  * expanded operations need their own sampler and mip/view qualification. */
 static bool
 ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *filtered, unsigned max_lod[8], unsigned *arrays)
@@ -10223,12 +10223,18 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *filtered, u
                      if (!(lod >= 0 && lod <= 15)) return false;
                      ceiling = (unsigned)lod + (lod > (unsigned)lod);
                   } else {
-                     if (tex->op == nir_texop_txl) return false;
                      struct hash_table *ranges = _mesa_pointer_hash_table_create(NULL);
                      if (!ranges) return false;
                      ceiling = nir_unsigned_upper_bound(nir, ranges, nir_get_scalar(source.ssa, 0));
                      _mesa_hash_table_destroy(ranges, NULL);
-                     if (ceiling > 15) return false;
+                     if (tex->op == nir_texop_txl) {
+                        /* Positive finite IEEE floats have ordered unsigned bits.
+                         * A raw-bit upper bound <= bits(15.0) also excludes signs,
+                         * infinities and NaNs; unknown ranges fail conservatively. */
+                        if (ceiling > UINT32_C(0x41700000)) return false;
+                        float lod; memcpy(&lod, &ceiling, sizeof(lod));
+                        ceiling = (unsigned)lod + (lod > (unsigned)lod);
+                     } else if (ceiling > 15) return false;
                   }
                   max_lod[tex->texture_index] = MAX2(max_lod[tex->texture_index], ceiling);
                   ++lods;
