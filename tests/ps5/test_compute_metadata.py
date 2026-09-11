@@ -347,6 +347,9 @@ static void native_cases(void) {
             if (test==INDIRECT_ARGS) output[i]=i==1 ? 3 : 2;
             if (test==IMAGE_LOAD) output[i]+=100;
             if (test==IMAGE_SIZE) output[i]=317;
+            if (test==IMAGE_BANK_STORE || test==IMAGE_BANK_LOAD)
+                output[i]=1000*(i/16)+17+3*(i%16)+(test==IMAGE_BANK_LOAD ? 100 : 0);
+            if (test==IMAGE_ATOMIC) output[i]=7017+63-i;
             if (test==BUFFER_RANGES || test==BUFFER_ALIAS) {
                 output[i]=1000+101*(i/4)+7*(i%4);
                 if (test==BUFFER_ALIAS) output[i]=5*output[i]+2;
@@ -366,15 +369,20 @@ static void native_cases(void) {
             }
         }
         assert(count_correct(test, output)==cases[test].words);
-        if(test==IMAGE_STORE) {
+        if(test==IMAGE_STORE || test==IMAGE_BANK_STORE || test==IMAGE_ATOMIC) {
             uint32_t pixels[IMAGE_WORDS];
-            for(unsigned i=0;i<IMAGE_WORDS;++i) pixels[i]=i>=65 && i<81 ? 17+3*(i-65) : GUARD_WORD;
-            assert(count_image_correct(pixels)==IMAGE_WORDS);
-            pixels[0]=17; assert(count_image_correct(pixels)==IMAGE_WORDS-1);
-            pixels[65]=0; assert(count_image_correct(pixels)==IMAGE_WORDS-2);
+            for(unsigned i=0;i<IMAGE_WORDS;++i) pixels[i]=i>=65 && i<81 ?
+                (test>=IMAGE_BANK_STORE ? 7000 : 0)+17+3*(i-65) : GUARD_WORD;
+            if(test==IMAGE_ATOMIC) pixels[65]+=64;
+            assert(count_image_correct(test,7,pixels)==IMAGE_WORDS);
+            pixels[0]=17; assert(count_image_correct(test,7,pixels)==IMAGE_WORDS-1);
+            pixels[65]=0; assert(count_image_correct(test,7,pixels)==IMAGE_WORDS-2);
         }
         output[0]=UINT32_MAX;
         assert(count_correct(test, output)==cases[test].words-1);
+        if(test==IMAGE_ATOMIC) {
+            output[0]=output[1]; assert(count_correct(test,output)==63);
+        }
         if (test==ATOMIC) {
             output[0]=output[1]; /* A duplicated return value must fail. */
             assert(count_correct(test, output)==256);
