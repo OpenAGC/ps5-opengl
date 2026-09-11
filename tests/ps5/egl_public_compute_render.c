@@ -341,7 +341,16 @@ static unsigned count_pixels(const uint8_t *pixels, unsigned stride, float sign)
    return correct;
 }
 
-static nir_shader *build_fragment_storage(unsigned atomic, unsigned slot)
+static uint32_t fragment_image_word(unsigned kind, unsigned id, bool load)
+{
+   if (kind == 1) return 17 + 3 * id + (load ? 100 : 0);
+   if (kind == 2) return (uint32_t)(-1000 - 7 * (int)id + (load ? 100 : 0));
+   float value = ((int)id - 32) * 0.25f;
+   if (load) value = value * 2 + 0.125f;
+   uint32_t bits; memcpy(&bits, &value, 4); return bits;
+}
+
+static nir_shader *build_fragment_storage(unsigned atomic, unsigned slot, unsigned kind)
 {
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
       psbc_get_nir_options(PSBC_STAGE_FRAGMENT), "fragment-storage-native");
@@ -359,15 +368,20 @@ static nir_shader *build_fragment_storage(unsigned atomic, unsigned slot)
       nir_def *xy = nir_vec4(&b, nir_f2u32(&b, nir_channel(&b, coord, 0)),
          nir_f2u32(&b, nir_channel(&b, coord, 1)), zero, zero);
       value = nir_iadd_imm(&b, nir_imul_imm(&b, id, 3), 17);
+      if (kind == 0) value = nir_fmul_imm(&b, nir_i2f32(&b, nir_iadd_imm(&b, id, -32)), 0.25);
+      if (kind == 2) value = nir_iadd_imm(&b, nir_imul_imm(&b, id, -7), -1000);
+      const nir_alu_type type = kind == 0 ? nir_type_float32 : kind == 1 ? nir_type_uint32 : nir_type_int32;
       if (atomic == 2)
          nir_image_store(&b, buffer, xy, zero, nir_vec4(&b, value, zero, zero, zero), zero,
-            .image_dim = GLSL_SAMPLER_DIM_2D, .format = PIPE_FORMAT_R32_UINT, .src_type = nir_type_uint32);
-      else if (atomic == 3)
-         value = nir_iadd_imm(&b, nir_channel(&b, nir_image_load(&b, 4, 32, buffer, xy, zero, zero,
-            .image_dim = GLSL_SAMPLER_DIM_2D, .format = PIPE_FORMAT_R32_UINT, .dest_type = nir_type_uint32), 0), 100);
+            .image_dim = GLSL_SAMPLER_DIM_2D, .format = image_formats[kind], .src_type = type);
+      else if (atomic == 3) {
+         value = nir_channel(&b, nir_image_load(&b, 4, 32, buffer, xy, zero, zero,
+            .image_dim = GLSL_SAMPLER_DIM_2D, .format = image_formats[kind], .dest_type = type), 0);
+         value = kind == 0 ? nir_fadd_imm(&b, nir_fmul_imm(&b, value, 2), 0.125) : nir_iadd_imm(&b, value, 100);
+      }
       else
          value = nir_image_atomic(&b, 32, buffer, nir_imm_ivec4(&b, 0, 0, 0, 0), zero,
-            nir_imm_int(&b, 1), .image_dim = GLSL_SAMPLER_DIM_2D, .format = PIPE_FORMAT_R32_UINT,
+            nir_imm_int(&b, kind == 2 ? -1 : 1), .image_dim = GLSL_SAMPLER_DIM_2D, .format = image_formats[kind],
             .atomic_op = nir_atomic_op_iadd);
       buffer = zero;
    }
@@ -393,7 +407,7 @@ static int run_fragment_storage(struct pipe_context *pipe, struct pipe_resource 
       for (unsigned i = 0; i < 16; ++i)
          bindings[i] = (struct pipe_shader_buffer){buffer, 32, (atomic ? 65u : 64u) * 4};
       pipe->set_shader_buffers(pipe, MESA_SHADER_FRAGMENT, 0, slot + 1, bindings, 65535);
-      struct pipe_shader_state shader = {.type = PIPE_SHADER_IR_NIR, .ir.nir = build_fragment_storage(atomic, slot)};
+      struct pipe_shader_state shader = {.type = PIPE_SHADER_IR_NIR, .ir.nir = build_fragment_storage(atomic, slot, 1)};
       void *fs = pipe->create_fs_state(pipe, &shader);
       if (!fs) return 1;
       pipe->bind_fs_state(pipe, fs);
@@ -428,11 +442,11 @@ static int run_fragment_storage(struct pipe_context *pipe, struct pipe_resource 
 }
 
 static int run_fragment_images(struct pipe_context *pipe, struct pipe_resource *output,
-                               uint32_t *words, size_t bytes)
+                               uint32_t *words, size_t bytes, unsigned kind)
 {
    int status = 1;
    void *fs = NULL;
-   const struct pipe_resource templ = {.target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_R32_UINT,
+   const struct pipe_resource templ = {.target = PIPE_TEXTURE_2D, .format = image_formats[kind],
       .width0 = 8, .height0 = 8, .depth0 = 1, .array_size = 1,
       .bind = PIPE_BIND_SHADER_IMAGE | PIPE_BIND_SAMPLER_VIEW};
    struct pipe_resource *image = pipe->screen->resource_create(pipe->screen, &templ);
@@ -446,12 +460,12 @@ static int run_fragment_images(struct pipe_context *pipe, struct pipe_resource *
       memset(pixels, 0xcd, image_bytes);
       struct pipe_image_view views[8];
       for (unsigned i = 0; i < 8; ++i) views[i] = (struct pipe_image_view){.resource = image,
-         .format = PIPE_FORMAT_R32_UINT, .access = PIPE_IMAGE_ACCESS_READ_WRITE};
+         .format = image_formats[kind], .access = PIPE_IMAGE_ACCESS_READ_WRITE};
       pipe->set_shader_images(pipe, MESA_SHADER_FRAGMENT, 0, slot + 1, 0, views);
-      for (unsigned operation = 2; operation <= 4; ++operation) {
+      for (unsigned operation = 2; operation <= (kind == 0 ? 3u : 4u); ++operation) {
          memset(words, 0xcd, bytes); /* Output only; no CPU image access between producer and consumer. */
          struct pipe_shader_state shader = {.type = PIPE_SHADER_IR_NIR,
-            .ir.nir = build_fragment_storage(operation, slot)};
+            .ir.nir = build_fragment_storage(operation, slot, kind)};
          fs = pipe->create_fs_state(pipe, &shader);
          if (!fs) goto out;
          pipe->bind_fs_state(pipe, fs);
@@ -466,23 +480,24 @@ static int run_fragment_images(struct pipe_context *pipe, struct pipe_resource *
             if (i >= 8 && i < 72) {
                uint32_t value = words[i];
                if (operation == 4) {
-                  value -= 17;
+                  const uint32_t initial = fragment_image_word(kind, 0, false);
+                  value = kind == 2 ? initial - value : value - initial;
                   if (value < 64 && !seen[value]) { seen[value] = true; ++correct; }
-               } else correct += value == 17 + 3 * (i - 8) + (operation == 3 ? 100 : 0);
+               } else correct += value == fragment_image_word(kind, i - 8, operation == 3);
             } else correct += words[i] == UINT32_C(0xcdcdcdcd);
          }
          pipe->bind_fs_state(pipe, NULL); pipe->delete_fs_state(pipe, fs); fs = NULL;
-         printf("[ps5-fragment-image] op=%u slot=%u rc=%d words=%u/80\n", operation, slot, rc, correct);
+         printf("[ps5-fragment-image] kind=%u op=%u slot=%u rc=%d words=%u/80\n", kind, operation, slot, rc, correct);
          fflush(stdout);
          if (rc || correct != 80) goto out;
       }
       unsigned correct = 0;
       for (unsigned i = 0; i < 512; ++i) {
-         uint32_t expected = i % 64 < 8 ? 17 + 3 * (i / 64 * 8 + i % 64) : UINT32_C(0xcdcdcdcd);
-         if (!i) expected += 64;
+         uint32_t expected = i % 64 < 8 ? fragment_image_word(kind, i / 64 * 8 + i % 64, false) : UINT32_C(0xcdcdcdcd);
+         if (!i && kind) expected += kind == 2 ? (uint32_t)-64 : 64;
          correct += pixels[i] == expected;
       }
-      printf("[ps5-fragment-image] slot=%u image-and-padding=%u/512\n", slot, correct);
+      printf("[ps5-fragment-image] kind=%u slot=%u image-and-padding=%u/512\n", kind, slot, correct);
       if (correct != 512) goto out;
    }
    status = 0;
@@ -924,7 +939,8 @@ int main(void)
       if (run_mips(pipe, sample_words, sample_bytes, 8, kind)) goto cleanup;
    if (run_all_slots(pipe, sample_words, sample_bytes)) goto cleanup;
    if (run_fragment_storage(pipe, sample_output, sample_words, sample_bytes, target)) goto cleanup;
-   if (run_fragment_images(pipe, sample_output, sample_words, sample_bytes)) goto cleanup;
+   for (unsigned kind = 0; kind < 3; ++kind)
+      if (run_fragment_images(pipe, sample_output, sample_words, sample_bytes, kind)) goto cleanup;
    status = 0;
 cleanup:
    if (pipe) {
