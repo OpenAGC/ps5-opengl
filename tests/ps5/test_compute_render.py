@@ -48,7 +48,52 @@ int main(void) {
         .optimise=true, .address32_hi=2, .spi_shader_col_format=4,
         .descriptor_binding_count=1, .descriptor_bindings={
           {.binding=0, .type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER, .array_size=1, .stride=48}}};
-    compile(build_fragment(), &options);
+    nir_shader *fs = build_fragment();
+    /* Gallium selects descriptors from these masks, not the tex instructions.
+     * gather_info alone does not populate them for hand-built indexed NIR. */
+    assert(fs->info.num_textures == 1 && BITSET_TEST(fs->info.textures_used, 0) &&
+           BITSET_TEST(fs->info.textures_used_by_txf, 0));
+    compile(fs, &options);
+    /* An incomplete legacy descriptor layout must return an error, not enter
+     * RADV's unrelated bindless-heap path and abort the native application. */
+    for (unsigned test=0; test<8; ++test) {
+        fs = build_fragment();
+        nir_tex_instr *tex = NULL;
+        nir_foreach_block(block, nir_shader_get_entrypoint(fs))
+            nir_foreach_instr(instr, block)
+                if (instr->type == nir_instr_type_tex) tex=nir_instr_as_tex(instr);
+        assert(tex);
+        PsbcCompileOptions candidate = options;
+        if (test == 0) candidate.descriptor_binding_count=0;
+        if (test == 1) candidate.descriptor_bindings[0].binding=1;
+        if (test == 2) {
+            candidate.descriptor_bindings[0].type=PSBC_DESCRIPTOR_UNIFORM_BUFFER;
+            candidate.descriptor_bindings[0].stride=16;
+        }
+        if (test == 3) tex->texture_index=64;
+        if (test == 4 || test == 5) {
+            nir_builder b=nir_builder_create(nir_shader_get_entrypoint(fs));
+            b.cursor=nir_before_instr(&tex->instr);
+            tex->op=nir_texop_txl;
+            tex->sampler_index=7;
+            nir_src_rewrite(&tex->src[0].src,nir_imm_vec2(&b,0.25,0.5));
+            nir_src_rewrite(&tex->src[1].src,nir_imm_float(&b,0));
+            if (test == 5) {
+                candidate.descriptor_binding_count=2;
+                candidate.descriptor_bindings[1]=candidate.descriptor_bindings[0];
+                candidate.descriptor_bindings[1].binding=7;
+                candidate.descriptor_bindings[1].offset=48;
+            }
+        }
+        if (test == 6) tex->sampler_index=7; /* txf doesn't consume a sampler. */
+        if (test == 7) tex->texture_index=candidate.descriptor_bindings[0].binding=63;
+        nir_validate_shader(fs,"legacy layout guard input");
+        PsbcShaderOutput output = {0};
+        PsbcResult result=psbc_compile_nir(fs,&candidate,&output);
+        assert((result == PSBC_RESULT_OK) == (test >= 5));
+        assert((output.machine_code != NULL) == (test >= 5));
+        psbc_free_output(&output); ralloc_free(fs);
+    }
     psbc_shutdown();
     for (unsigned phase=0; phase<4; ++phase) {
         float sign=phase&1 ? 1 : -1;

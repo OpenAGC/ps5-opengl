@@ -66,6 +66,11 @@ static nir_shader *build_fragment(void)
    nir_store_var(&b, color, nir_vec4(&b, nir_b2f32(&b, negative),
       nir_b2f32(&b, nir_inot(&b, negative)), nir_imm_float(&b, 0), nir_imm_float(&b, 1)), 0xf);
    nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   /* Indexed Gallium texture instructions require explicit usage metadata;
+    * gather_info counts sampler variables but does not build these masks. */
+   b.shader->info.num_textures = 1;
+   BITSET_SET(b.shader->info.textures_used, 0);
+   BITSET_SET(b.shader->info.textures_used_by_txf, 0);
    return b.shader;
 }
 
