@@ -2,8 +2,9 @@
 // Copyright (C) 2026 BlackBearReloaded
 // SPDX-License-Identifier: GPL-3.0-or-later
 
-/* Internal CS -> sampled draw -> CS transitions. No public compute cap or
- * display qualification: the oracle reads an offscreen target, never swaps. */
+/* Internal CS -> sampled draw -> CS fetch/size transitions. Four alternating
+ * R32_FLOAT phases verify all result channels and padding at units 0 and 7.
+ * No public compute cap or display qualification: this test never swaps. */
 #include <stdio.h>
 #include <string.h>
 #include "compiler/nir/nir_builder.h"
