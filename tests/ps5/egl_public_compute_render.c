@@ -292,6 +292,11 @@ int main(void)
          unsigned correct = count_sampled(sample_words, sign, i & 1);
          printf("[ps5-compute-sampled] phase=%u case=%u rc=%d dispatches=%u words=%u/80\n",
             phase, i, rc, sampled_dispatches, correct);
+         if (correct != 80)
+            printf("[ps5-compute-sampled] first=%08x,%08x,%08x,%08x next=%08x,%08x,%08x,%08x guards=%08x/%08x\n",
+               sample_words[8], sample_words[9], sample_words[10], sample_words[11],
+               sample_words[12], sample_words[13], sample_words[14], sample_words[15],
+               sample_words[0], sample_words[79]);
          if (rc || sampled_dispatches != phase * 5 + i + 2 || correct != 80)
             goto cleanup;
       }
