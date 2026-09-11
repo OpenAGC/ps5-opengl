@@ -6624,6 +6624,16 @@ ps5_flush(struct pipe_context *context, struct pipe_fence_handle **out_fence,
    fence->references--;
 }
 
+static void
+ps5_memory_barrier(struct pipe_context *context, unsigned flags)
+{
+   /* Compute retires and synchronizes every bound resource before returning;
+    * graphics may still have deferred draws. Reuse the common drain.
+    * ponytail: full drain for every nonzero mask; async queues need tracked hazards. */
+   if (flags)
+      ps5_flush(context, NULL, 0);
+}
+
 static bool
 ps5_draw_primitive(unsigned mode, unsigned count, uint32_t *primitive_type)
 {
@@ -11626,6 +11636,7 @@ ps5_context_create(struct pipe_screen *screen, void *priv, unsigned flags)
    context->base.launch_grid = ps5_launch_grid;
 #endif
    context->base.draw_vbo = ps5_draw_vbo;
+   context->base.memory_barrier = ps5_memory_barrier;
    context->base.create_query = ps5_create_query;
    context->base.destroy_query = ps5_destroy_query;
    context->base.begin_query = ps5_begin_query;

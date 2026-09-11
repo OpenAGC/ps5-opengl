@@ -399,6 +399,7 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
          pipe->set_shader_images(pipe, MESA_SHADER_COMPUTE, 0, 1, 0, &iv);
          pipe->bind_compute_state(pipe, writers[level]);
          pipe->launch_grid(pipe, &writer_grid);
+         pipe->memory_barrier(pipe, PIPE_BARRIER_IMAGE | PIPE_BARRIER_TEXTURE);
          unsigned dispatches = 0;
          int rc = ps5_context_last_compute_status(pipe, &dispatches);
          printf("[ps5-compute-mip-write] kind=%u layers=%u pass=%u level=%u rc=%d dispatches=%u\n", kind, layers, pass, level, rc, dispatches);
@@ -415,6 +416,7 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
             pipe->bind_compute_state(pipe, shaders[op][unit][level]);
             memset(words, 0xcd, bytes);
             pipe->launch_grid(pipe, &grid);
+            pipe->memory_barrier(pipe, PIPE_BARRIER_MAPPED_BUFFER | PIPE_BARRIER_SHADER_BUFFER);
             unsigned dispatches = 0;
             int rc = ps5_context_last_compute_status(pipe, &dispatches);
             unsigned correct = count_mip(words, op, first[view] + level, sign, layers, kind);
@@ -431,6 +433,7 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
          pipe->bind_compute_state(pipe, dynamic_shaders[view][op][unit]);
          memset(words, 0xcd, bytes);
          pipe->launch_grid(pipe, &grid);
+         pipe->memory_barrier(pipe, PIPE_BARRIER_MAPPED_BUFFER | PIPE_BARRIER_SHADER_BUFFER);
          unsigned dispatches = 0;
          int rc = ps5_context_last_compute_status(pipe, &dispatches);
          unsigned correct = count_dynamic_mip(words, op, first[view], op == 2 ? last[view] - first[view] : masks[view], sign, layers, kind);
@@ -484,7 +487,7 @@ int main(void)
    void *writers[3] = {0}, *fragments[3] = {0}, *vs = NULL, *sampler = NULL;
    void *blend = NULL, *rasterizer = NULL, *depth = NULL;
    psbc_init();
-   if (!pipe)
+   if (!pipe || !pipe->memory_barrier)
       goto cleanup;
    /* The graphics backend requires its normal render pool even for offscreen
     * draws. It may open VideoOut internally; this test never swaps buffers. */
@@ -612,6 +615,7 @@ int main(void)
       fflush(stdout);
       pipe->bind_compute_state(pipe, writers[kind]);
       pipe->launch_grid(pipe, &grid);
+      pipe->memory_barrier(pipe, PIPE_BARRIER_IMAGE | PIPE_BARRIER_TEXTURE);
       unsigned dispatches = 0, draws = 0;
       int compute_rc = ps5_context_last_compute_status(pipe, &dispatches);
       if (compute_rc || dispatches != phase * 5 + 1)
@@ -620,6 +624,7 @@ int main(void)
       const struct pipe_draw_info info = {.mode = MESA_PRIM_TRIANGLES, .instance_count = 1};
       const struct pipe_draw_start_count_bias draw = {.count = 3};
       pipe->draw_vbo(pipe, &info, 0, NULL, &draw, 1);
+      pipe->memory_barrier(pipe, PIPE_BARRIER_ALL);
       int draw_rc = ps5_context_last_draw_status(pipe, &draws);
       struct pipe_transfer *transfer = NULL;
       uint8_t *pixels = draw_rc ? NULL : pipe_texture_map(pipe, target, 0, 0,
@@ -633,6 +638,7 @@ int main(void)
          memset(sample_words, 0xcd, sample_bytes); /* Output only; source stays GPU-written. */
          pipe->bind_compute_state(pipe, sample_cs[kind][i]);
          pipe->launch_grid(pipe, &grid);
+         pipe->memory_barrier(pipe, PIPE_BARRIER_MAPPED_BUFFER | PIPE_BARRIER_SHADER_BUFFER);
          unsigned sampled_dispatches = 0;
          int rc = ps5_context_last_compute_status(pipe, &sampled_dispatches);
          unsigned correct = count_sampled(sample_words, sign, i & 1, kind);
@@ -665,6 +671,7 @@ int main(void)
       pipe->set_constant_buffer(pipe, MESA_SHADER_COMPUTE, 0, &cb);
       pipe->bind_compute_state(pipe, writers[0]);
       pipe->launch_grid(pipe, &grid);
+      pipe->memory_barrier(pipe, PIPE_BARRIER_IMAGE | PIPE_BARRIER_TEXTURE);
       unsigned dispatches = 0;
       if (ps5_context_last_compute_status(pipe, &dispatches) || dispatches != 61 + phase * 13)
          goto cleanup;
@@ -676,6 +683,7 @@ int main(void)
          pipe->bind_compute_state(pipe, filtered_cs[wrap != 0][unit != 0]);
          memset(sample_words, 0xcd, sample_bytes);
          pipe->launch_grid(pipe, &grid);
+         pipe->memory_barrier(pipe, PIPE_BARRIER_MAPPED_BUFFER | PIPE_BARRIER_SHADER_BUFFER);
          int rc = ps5_context_last_compute_status(pipe, &dispatches);
          unsigned correct = count_sampled(sample_words, sign, 2 + wrap * 2 + (i & 1), 0);
          printf("[ps5-compute-filtered] phase=%u case=%u rc=%d dispatches=%u words=%u/80 first=%08x next=%08x\n",

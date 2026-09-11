@@ -21,6 +21,9 @@ image_at = source.index("static int\nps5_resource_linear_image_descriptor(")
 image_descriptor = source[image_at:source.index("\nstruct pipe_resource *", image_at)]
 array_at = source.index("static bool\nps5_compute_image_array_resource(")
 array_layout = source[array_at:source.index("static unsigned\nps5_texture_format_size(", array_at)]
+barrier_at = source.index("static void\nps5_memory_barrier(")
+barrier = source[barrier_at:source.index("static bool\nps5_draw_primitive(", barrier_at)]
+assert "context->base.memory_barrier = ps5_memory_barrier;" in source
 code = r'''
 #include <assert.h>
 #include <stdint.h>
@@ -155,9 +158,20 @@ static int ps5_agc_compute_execute(struct pipe_screen *s, const PsbcShaderOutput
     for (unsigned i=0; i<15*4; ++i) assert(((uint32_t *)t->data)[i]==0);
     ++submitted; return 0;
 }
-''' + '\n#define PS5_ENABLE_BORDER_COLOR_CANDIDATE 1\n' + sampler_helpers + functions + r'''
+static unsigned barrier_flushes;
+static void ps5_flush(struct pipe_context *context, struct pipe_fence_handle **fence, unsigned flags) {
+    assert(context && !fence && !flags); ++barrier_flushes;
+}
+''' + barrier + '\n#define PS5_ENABLE_BORDER_COLOR_CANDIDATE 1\n' + sampler_helpers + functions + r'''
 int main(void) {
     struct pipe_screen screen={.resource_destroy=destroy}, other_screen={0};
+    struct pipe_context barrier_context={0};
+    ps5_memory_barrier(&barrier_context,0);
+    assert(!barrier_flushes);
+    for(unsigned mask=1;mask<=PIPE_BARRIER_ALL;++mask) {
+        ps5_memory_barrier(&barrier_context,mask);
+        assert(barrier_flushes==mask);
+    }
     uint8_t table_data[PS5_COMPUTE_DESCRIPTOR_BYTES], output[256];
     struct ps5_resource table={.data=table_data};
     struct ps5_resource buffer={.base={.screen=&screen,.target=PIPE_BUFFER,.width0=256},.data=output};
