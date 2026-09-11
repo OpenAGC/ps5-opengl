@@ -148,6 +148,52 @@ static uint32_t expected_red(unsigned kind, unsigned x, float sign)
    return word;
 }
 
+static nir_shader *compute_mip(unsigned operation, unsigned unit, unsigned level)
+{
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
+      psbc_get_nir_options(PSBC_STAGE_COMPUTE), "compute-mip");
+   b.shader->info.workgroup_size[0] = 16;
+   b.shader->info.workgroup_size[1] = b.shader->info.workgroup_size[2] = 1;
+   b.shader->info.num_ssbos = 1;
+   b.shader->info.num_textures = unit + 1;
+   BITSET_SET(b.shader->info.textures_used, unit);
+   nir_tex_instr *tex = nir_tex_instr_create(b.shader, operation == 1 ? 1 : 2);
+   tex->op = operation == 1 ? nir_texop_txs : operation >= 2 ? nir_texop_txl : nir_texop_txf;
+   tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
+   tex->texture_index = tex->sampler_index = unit;
+   tex->coord_components = operation == 1 ? 0 : 2;
+   tex->dest_type = operation == 1 ? nir_type_int32 : nir_type_float32;
+   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_lod, operation >= 2 ?
+      nir_imm_float(&b, level + (operation == 3 ? 0.5 : 0)) : nir_imm_int(&b, level));
+   if (operation != 1)
+      tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_coord, operation >= 2 ?
+         nir_imm_vec2(&b, 0.5, 0.5) : nir_imm_ivec2(&b, 0, 0));
+   nir_def_init(&tex->instr, &tex->def, operation == 1 ? 2 : 4, 32);
+   nir_builder_instr_insert(&b, &tex->instr);
+   nir_def *value = operation == 1 ? nir_vec4(&b, nir_channel(&b, &tex->def, 0),
+      nir_channel(&b, &tex->def, 1), nir_imm_int(&b, 0), nir_imm_int(&b, 1)) : &tex->def;
+   nir_def *id = nir_channel(&b, nir_load_local_invocation_id(&b), 0);
+   nir_store_ssbo(&b, value, nir_imm_int(&b, 0), nir_imul_imm(&b, id, 16), .write_mask = 15, .align_mul = 16);
+   return b.shader;
+}
+
+static unsigned count_mip(const uint32_t *words, unsigned operation, unsigned physical_level)
+{
+   uint32_t expected[4] = {0, 0, 0, 0x3f800000};
+   if (operation == 1) {
+      expected[0] = 16u >> physical_level;
+      expected[1] = 8u >> physical_level;
+      expected[3] = 1;
+   } else {
+      float value = (float)(1u << physical_level) * (operation == 3 ? 1.5f : 1.0f);
+      memcpy(expected, &value, 4);
+   }
+   unsigned correct = 0;
+   for (unsigned i = 0; i < 80; ++i)
+      correct += words[i] == (i < 8 || i >= 72 ? GUARD_WORD : expected[(i - 8) % 4]);
+   return correct;
+}
+
 /* operation: fetch, size, then nearest/linear pairs for edge, repeat, mirror. */
 static unsigned count_sampled(const uint32_t *words, float sign, unsigned operation, unsigned kind)
 {
@@ -197,6 +243,98 @@ static unsigned count_pixels(const uint8_t *pixels, unsigned stride, float sign)
       for (unsigned x = 0; x < 8; ++x)
          correct += !memcmp(pixels + y * stride + 4 * x, expected, sizeof(expected));
    return correct;
+}
+
+static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes)
+{
+   int status = 1;
+   struct pipe_resource *image = NULL;
+   struct pipe_sampler_view *views[3] = {0};
+   void *states[2] = {0}, *shaders[4][2][4] = {{{0}}};
+   const unsigned first[3] = {0, 1, 2}, last[3] = {3, 3, 2};
+   const struct pipe_resource templ = {.target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_R32_FLOAT,
+      .width0 = 16, .height0 = 8, .depth0 = 1, .array_size = 1, .last_level = 3,
+      .bind = PIPE_BIND_SAMPLER_VIEW};
+   image = pipe->screen->resource_create(pipe->screen, &templ);
+   void *data = NULL; size_t size = 0;
+   if (!image || ps5_resource_info(image, &data, &size, NULL) || !data || size != 3840) goto cleanup;
+   memset(data, 0xcd, size);
+   for (unsigned level = 0; level < 4; ++level) {
+      struct pipe_transfer *transfer = NULL;
+      uint8_t *mapped = pipe_texture_map(pipe, image, level, 0, PIPE_MAP_WRITE,
+         0, 0, 16 >> level, 8 >> level, &transfer);
+      if (!mapped) goto cleanup;
+      const float value = (float)(1u << level);
+      for (unsigned y = 0; y < (8u >> level); ++y) for (unsigned x = 0; x < (16u >> level); ++x)
+         memcpy(mapped + y * transfer->stride + x * 4, &value, 4);
+      pipe->texture_unmap(pipe, transfer);
+   }
+   for (unsigned i = 0; i < 3; ++i) {
+      struct pipe_sampler_view sv = {.target = PIPE_TEXTURE_2D, .format = PIPE_FORMAT_R32_FLOAT,
+         .swizzle_r = PIPE_SWIZZLE_X, .swizzle_g = PIPE_SWIZZLE_Y,
+         .swizzle_b = PIPE_SWIZZLE_Z, .swizzle_a = PIPE_SWIZZLE_W};
+      sv.u.tex.first_level = first[i]; sv.u.tex.last_level = last[i];
+      views[i] = pipe->create_sampler_view(pipe, image, &sv);
+      if (!views[i]) goto cleanup;
+   }
+   for (unsigned i = 0; i < 2; ++i) {
+      const struct pipe_sampler_state ss = {.wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
+         .wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE, .wrap_r = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
+         .min_img_filter = PIPE_TEX_FILTER_NEAREST, .mag_img_filter = PIPE_TEX_FILTER_NEAREST,
+         .min_mip_filter = i ? PIPE_TEX_MIPFILTER_LINEAR : PIPE_TEX_MIPFILTER_NEAREST, .max_lod = 3};
+      states[i] = pipe->create_sampler_state(pipe, &ss);
+      if (!states[i]) goto cleanup;
+   }
+   for (unsigned op = 0; op < 4; ++op) for (unsigned unit = 0; unit < 2; ++unit)
+      for (unsigned level = 0; level < (op == 3 ? 1u : 4u); ++level) {
+         struct pipe_compute_state cs = {.ir_type = PIPE_SHADER_IR_NIR,
+            .prog = compute_mip(op, unit ? 7 : 0, level)};
+         shaders[op][unit][level] = pipe->create_compute_state(pipe, &cs);
+         if (!shaders[op][unit][level]) goto cleanup;
+      }
+   unsigned expected_dispatches = 0;
+   if (ps5_context_last_compute_status(pipe, &expected_dispatches)) goto cleanup;
+   const struct pipe_grid_info grid = {.work_dim = 1, .block = {16, 1, 1}, .grid = {1, 1, 1}};
+   for (unsigned view = 0; view < 3; ++view) for (unsigned op = 0; op < 4; ++op)
+      for (unsigned unit = 0; unit < 2; ++unit)
+         for (unsigned level = 0; level < (op == 3 ? (last[view] > first[view] ? 1u : 0u) : last[view] - first[view] + 1); ++level) {
+            const unsigned slot = unit ? 7 : 0;
+            pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, slot, 1, 0, &views[view]);
+            pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, slot, 1, &states[op == 3]);
+            pipe->bind_compute_state(pipe, shaders[op][unit][level]);
+            memset(words, 0xcd, bytes);
+            pipe->launch_grid(pipe, &grid);
+            unsigned dispatches = 0;
+            int rc = ps5_context_last_compute_status(pipe, &dispatches);
+            unsigned correct = count_mip(words, op, first[view] + level);
+            printf("[ps5-compute-mip] view=%u op=%u unit=%u lod=%u rc=%d dispatches=%u words=%u/80 first=%08x,%08x\n",
+               view, op, slot, level, rc, dispatches, correct, words[8], words[9]);
+            fflush(stdout);
+            if (rc || dispatches != ++expected_dispatches || correct != 80) goto cleanup;
+         }
+   /* Check all uploaded pixels and row padding after sampling. */
+   unsigned offset = 0, correct = 0;
+   for (unsigned level = 4; level-- > 0;) {
+      const float value = (float)(1u << level); uint32_t bits; memcpy(&bits, &value, 4);
+      for (unsigned y = 0; y < (8u >> level); ++y) for (unsigned x = 0; x < 64; ++x)
+         correct += ((uint32_t *)data)[offset + y * 64 + x] == (x < (16u >> level) ? bits : GUARD_WORD);
+      offset += (8u >> level) * 64;
+   }
+   printf("[ps5-compute-mip] image=%u/960\n", correct);
+   status = correct == 960 ? 0 : 1;
+cleanup:
+   pipe->bind_compute_state(pipe, NULL);
+   void *none = NULL;
+   pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 0, 1, &none);
+   pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 7, 1, &none);
+   pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 0, 8, NULL);
+   for (unsigned i = 0; i < 3; ++i) pipe_sampler_view_reference(&views[i], NULL);
+   for (unsigned i = 0; i < 2; ++i) if (states[i]) pipe->delete_sampler_state(pipe, states[i]);
+   for (unsigned op = 0; op < 4; ++op) for (unsigned unit = 0; unit < 2; ++unit)
+      for (unsigned level = 0; level < 4; ++level)
+         if (shaders[op][unit][level]) pipe->delete_compute_state(pipe, shaders[op][unit][level]);
+   pipe_resource_reference(&image, NULL);
+   return status;
 }
 
 int main(void)
@@ -415,6 +553,7 @@ int main(void)
       printf("[ps5-compute-filtered] phase=%u image=%u/%u\n", phase, image_ok, IMAGE_WORDS);
       if (image_ok != IMAGE_WORDS) goto cleanup;
    }
+   if (run_mips(pipe, sample_words, sample_bytes)) goto cleanup;
    status = 0;
 cleanup:
    if (pipe) {

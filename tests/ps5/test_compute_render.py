@@ -18,7 +18,7 @@ code = r'''
 #include "compiler/nir/nir_builder.h"
 #include "util/format/u_format.h"
 #include "ps5_agc_package.h"
-''' + source[source.index("#define IMAGE_WORDS"):source.index("int main(void)")] + r'''
+''' + source[source.index("#define IMAGE_WORDS"):source.index("static int run_mips(")] + r'''
 static void compile(nir_shader *nir, PsbcCompileOptions *options) {
     nir_validate_shader(nir, "compute-render input");
     PsbcShaderOutput out = {0};
@@ -60,8 +60,8 @@ int main(void) {
      * This is compiler/package coverage, not native sampler qualification. */
     for(unsigned unit=0;unit<=7;unit+=7) for(unsigned test=0;test<6;++test) {
         nir_shader *checked=compute_sample(test,unit);
-        unsigned used=0, filtered=0;
-        assert(ps5_compute_texture_usage(checked,&used,&filtered));
+        unsigned used=0, filtered=0, max_lod[8];
+        assert(ps5_compute_texture_usage(checked,&used,&filtered,max_lod));
         assert(used==(1u<<unit) && filtered==(test>=4 ? 1u<<unit : 0));
         ralloc_free(checked);
         PsbcCompileOptions sampled=options;
@@ -75,6 +75,32 @@ int main(void) {
         assert(psbc_compile_nir(missing,&options,&rejected)!=PSBC_RESULT_OK);
         assert(!rejected.machine_code);
         psbc_free_output(&rejected); ralloc_free(missing);
+    }
+    for(unsigned unit=0;unit<=7;unit+=7) for(unsigned op=0;op<4;++op)
+        for(unsigned level=0;level<(op==3 ? 1u : 4u);++level) {
+            nir_shader *checked=compute_mip(op,unit,level);
+            unsigned used=0, filtered=0, max_lod[8];
+            assert(ps5_compute_texture_usage(checked,&used,&filtered,max_lod));
+            assert(used==(1u<<unit) && filtered==(op>=2 ? 1u<<unit : 0));
+            assert(max_lod[unit]==level+(op==3));
+            PsbcCompileOptions sampled=options;
+            sampled.descriptor_binding_count=4;
+            sampled.descriptor_bindings[3]=(PsbcDescriptorBinding){.binding=unit,
+                .type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,.array_size=1,.stride=48,.offset=752+unit*48};
+            compile(checked,&sampled);
+        }
+    for(unsigned op=0;op<4;++op) for(unsigned level=0;level<(op==3 ? 3u : 4u);++level) {
+        uint32_t words[80]; memset(words,0xcd,sizeof(words));
+        const uint32_t reds[2][4]={{0x3f800000,0x40000000,0x40800000,0x41000000},
+                                  {0x3fc00000,0x40400000,0x40c00000,0}};
+        for(unsigned i=0;i<16;++i) {
+            const uint32_t value[4]={op==1 ? 16u>>level : reds[op==3][level],
+                op==1 ? 8u>>level : 0,0,op==1 ? 1 : 0x3f800000u};
+            memcpy(words+8+i*4,value,16);
+        }
+        assert(count_mip(words,op,level)==80);
+        words[0]^=1; words[8]^=1;
+        assert(count_mip(words,op,level)==78);
     }
     for(unsigned fault=0;fault<7;++fault) {
         nir_shader *checked=compute_sample(fault>=5 ? 4 : 0,0);
@@ -92,10 +118,10 @@ int main(void) {
         if(fault==4) {
             nir_builder b=nir_builder_create(nir_shader_get_entrypoint(checked));
             b.cursor=nir_before_instr(&tex->instr);
-            nir_src_rewrite(&tex->src[1].src,nir_imm_int(&b,1));
+            nir_src_rewrite(&tex->src[1].src,nir_imm_int(&b,16));
         }
-        unsigned used=0, filtered=0;
-        assert(!ps5_compute_texture_usage(checked,&used,&filtered));
+        unsigned used=0, filtered=0, max_lod[8];
+        assert(!ps5_compute_texture_usage(checked,&used,&filtered,max_lod));
         ralloc_free(checked);
     }
     options = (PsbcCompileOptions){.target=PSBC_TARGET_PS5, .stage=PSBC_STAGE_VERTEX,

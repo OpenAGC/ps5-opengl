@@ -32,7 +32,8 @@ static int ps5_resource_storage_image_descriptor(struct pipe_resource *r,uint32_
     const uint32_t srd[8]={(uintptr_t)r->data>>8,0,0x80000000,0x90000204,63,0x400000,0,0};
     memcpy(d,srd,sizeof(srd)); return 0;
 }
-static int ps5_resource_sampled_image_descriptor(struct pipe_resource *r,uint32_t d[8]) {
+static int ps5_resource_sampled_image_descriptor(struct pipe_resource *r,unsigned first,unsigned last,uint32_t d[8]) {
+    if(first || last) return -1;
     return ps5_resource_storage_image_descriptor(r,d);
 }
 static unsigned locked, allocations, submissions, dispatches, flushes, userdata_count;
@@ -231,7 +232,16 @@ static void submission_contract(PsbcShaderOutput *out) {
         sampled[10]=((filters&1)!=0)<<20 | ((filters&2)!=0)<<22;
         assert(!ps5_agc_compute_execute(&screen,out,&table,all,47,groups));
     }
-    sampled[8]=sampled[10]=0;
+    sampled[9]=0x300000; sampled[10]=0x08500000;
+    assert(!ps5_agc_compute_execute(&screen,out,&table,all,47,groups));
+    const uint32_t bad_lods[]={0x1000000,0xf01000,0xf01,0x100};
+    for(unsigned i=0;i<4;++i) {
+        sampled[9]=bad_lods[i];
+        assert(ps5_agc_compute_execute(&screen,out,&table,all,47,groups)<0);
+    }
+    sampled[9]=0; sampled[10]=0x0c000000;
+    assert(ps5_agc_compute_execute(&screen,out,&table,all,47,groups)<0);
+    sampled[8]=sampled[9]=sampled[10]=0;
     const unsigned sampled_submissions=submissions;
     for(unsigned word=0;word<12;++word) {
         sampled[word]^=1;

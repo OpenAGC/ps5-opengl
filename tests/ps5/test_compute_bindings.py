@@ -14,7 +14,9 @@ source = (ROOT / "src/gallium/ps5/ps5_screen.c").read_text()
 begin = source.index("static void\nps5_set_shader_buffers(")
 functions = source[begin:source.index("\n#endif", begin)]
 sampler_at = source.index("static bool\nps5_texture_descriptor_wrap(")
-sampler_helpers = source[sampler_at:source.index("static bool\nps5_texture_descriptor_mip_filter(", sampler_at)]
+sampler_helpers = source[sampler_at:source.index("static bool\nps5_float_is_finite(", sampler_at)]
+extent_at = source.index("static unsigned\nps5_linear_mip_storage_extent(")
+extent_helper = source[extent_at:source.index("static bool\nps5_packed_depth_sample_layout(", extent_at)]
 image_at = source.index("static int\nps5_resource_linear_image_descriptor(")
 image_descriptor = source[image_at:source.index("\nstruct pipe_resource *", image_at)]
 code = r'''
@@ -38,9 +40,10 @@ code = r'''
 struct ps5_resource {
     struct pipe_resource base; uint8_t *data;
     size_t size, render_staging_size, depth_staging_size;
-    unsigned level_stride[1];
+    unsigned level_stride[PIPE_MAX_TEXTURE_LEVELS];
+    size_t level_offset[PIPE_MAX_TEXTURE_LEVELS];
 };
-struct ps5_compute_shader { PsbcShaderOutput output; unsigned textures, filtered_textures; };
+struct ps5_compute_shader { PsbcShaderOutput output; unsigned textures, filtered_textures, texture_lod[8]; };
 struct ps5_sampler_state { struct pipe_sampler_state base; };
 struct ps5_context {
     struct pipe_context base;
@@ -72,7 +75,7 @@ static bool ps5_texture_descriptor_format(enum pipe_format f,uint32_t *word) {
     *word=f==PIPE_FORMAT_R32_UINT ? 0x1400000 : f==PIPE_FORMAT_R32_SINT ? 0x1500000 : 0x1600000;
     return true;
 }
-''' + image_descriptor + r'''
+''' + extent_helper + image_descriptor + r'''
 static int ps5_resource_info(struct pipe_resource *base, void **address, size_t *size, size_t *allocation) {
     (void)allocation;
     if (fail_info) return -1;
@@ -102,7 +105,7 @@ static int ps5_agc_compute_execute(struct pipe_screen *s, const PsbcShaderOutput
         const struct ps5_resource *t=(const struct ps5_resource *)table;
         for(unsigned i=0;i<8;++i) {
             uint32_t expected[12]={0};
-            assert(!ps5_resource_sampled_image_descriptor(buffers[i],expected));
+            assert(!ps5_resource_sampled_image_descriptor(buffers[i],0,0,expected));
             if (with_filtered & (1u<<i))
                 memcpy(expected+8,expected_sampler,16);
             assert(!memcmp(t->data+PS5_COMPUTE_TEXTURE_OFFSET+i*48,expected,48));
@@ -330,6 +333,23 @@ int main(void) {
     assert(descriptor[0]==(uint32_t)((uintptr_t)pixels>>8));
     assert(descriptor[2]==(4u|(2u<<14)|0x80000000u));
     assert(descriptor[3]==0x90000204 && descriptor[4]==63 && descriptor[5]==0x400000);
+    _Alignas(256) uint8_t mip_pixels[3840];
+    struct ps5_resource mip=image;
+    mip.data=mip_pixels; mip.size=sizeof(mip_pixels);
+    mip.base.width0=16; mip.base.height0=8; mip.base.last_level=3;
+    const size_t offsets[4]={1792,768,256,0};
+    for(unsigned level=0;level<4;++level) {mip.level_offset[level]=offsets[level];mip.level_stride[level]=256;}
+    assert(!ps5_resource_sampled_image_descriptor(&mip.base,1,2,descriptor));
+    assert(descriptor[3]==0x90021204 && descriptor[4]==0 && descriptor[5]==0x400030);
+    assert(ps5_resource_storage_image_descriptor(&mip.base,descriptor)<0);
+    for(unsigned fault=0;fault<12;++fault) {
+        struct ps5_resource bad=mip;
+        if(fault<4) bad.level_offset[fault]+=256;
+        if(fault>=4 && fault<8) bad.level_stride[fault-4]+=256;
+        if(fault==8) bad.size--;
+        if(fault==9) bad.base.last_level=PIPE_MAX_TEXTURE_LEVELS;
+        assert(ps5_resource_sampled_image_descriptor(&bad.base,fault==10 ? 3 : 1,fault==11 ? 4 : 2,descriptor)<0);
+    }
     const enum pipe_format scalar_formats[]={PIPE_FORMAT_R32_UINT,PIPE_FORMAT_R32_SINT,PIPE_FORMAT_R32_FLOAT};
     for(unsigned i=0;i<3;++i) {
         struct ps5_resource typed=image; typed.base.format=scalar_formats[i];
@@ -465,6 +485,15 @@ int main(void) {
         assert(!context.last_compute_status && submitted==++before_filter);
     }
     struct ps5_sampler_state valid=sampler;
+    sampler.base.min_mip_filter=PIPE_TEX_MIPFILTER_LINEAR;
+    sampler.base.max_lod=3;
+    ps5_set_compute_sampler_states(&context.base,0,8,states);
+    assert(!context.compute_samplers_invalid && context.compute_samplers[7][1]==0x300000 &&
+        context.compute_samplers[7][2]==0x08500000);
+    cs.texture_lod[7]=1;
+    ps5_launch_grid(&context.base,&good); /* Even valid sampler state cannot exceed the view. */
+    assert(context.last_compute_status<0 && submitted==before_filter);
+    cs.texture_lod[7]=0;
     for(unsigned fault=0;fault<12;++fault) {
         sampler=valid;
         if(fault==0) sampler.base.wrap_s=PIPE_TEX_WRAP_REPEAT;
@@ -473,9 +502,9 @@ int main(void) {
         if(fault==3) sampler.base.compare_mode=1;
         if(fault==4) sampler.base.unnormalized_coords=1;
         if(fault==5) sampler.base.max_anisotropy=2;
-        if(fault==6) sampler.base.min_mip_filter=PIPE_TEX_MIPFILTER_LINEAR;
+        if(fault==6) sampler.base.min_mip_filter=3;
         if(fault==7) sampler.base.min_lod=1;
-        if(fault==8) sampler.base.max_lod=1;
+        if(fault==8) sampler.base.max_lod=16;
         if(fault==9) sampler.base.lod_bias=1;
         ps5_set_compute_sampler_states(&context.base,fault==10 ? 8 : 0,8,fault==11 ? NULL : states);
         assert(context.compute_samplers_invalid && context.compute_sampler_mask==255);

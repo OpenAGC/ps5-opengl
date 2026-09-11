@@ -732,15 +732,19 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
             if (!nonzero)
                continue;
             if (image || sampled) {
-               /* Zero for fetch/size; repeat/mirror/edge base-level nearest/linear for txl.
+               /* Zero for fetch/size; bounded repeat/mirror/edge and mip filtering for txl.
                 * No border-table pointers or unqualified descriptor bits. */
-               if (sampled && ((srd[8] != 0 && srd[8] != 0x49u && srd[8] != 0x92u) || srd[9] ||
-                   (srd[10] & ~UINT32_C(0x00500000)) || srd[11]))
+               if (sampled && ((srd[8] != 0 && srd[8] != 0x49u && srd[8] != 0x92u) ||
+                   (srd[9] & 0xff000000u) || (srd[9] & 0xfffu) > 0xf00u ||
+                   ((srd[9] >> 12) & 0xfffu) > 0xf00u ||
+                   (srd[9] & 0xfffu) > ((srd[9] >> 12) & 0xfffu) ||
+                   (srd[10] & ~UINT32_C(0x0c500000)) || (srd[10] >> 26) == 3 || srd[11]))
                   goto cleanup;
                bool owned = false;
                for (unsigned j = 0; j < buffer_count; ++j) {
                   uint32_t expected[8];
-                  int rc = sampled ? ps5_resource_sampled_image_descriptor(buffers[j], expected) :
+                  int rc = sampled ? ps5_resource_sampled_image_descriptor(buffers[j],
+                        (srd[3] >> 12) & 15u, (srd[3] >> 16) & 15u, expected) :
                                      ps5_resource_storage_image_descriptor(buffers[j], expected);
                   if (!rc &&
                       !memcmp(srd, expected, sizeof(expected)))
