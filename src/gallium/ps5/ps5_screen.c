@@ -10461,8 +10461,9 @@ ps5_set_compute_sampler_states(struct pipe_context *base, unsigned start, unsign
       if (!states[i]) continue;
       const struct pipe_sampler_state *s = &((const struct ps5_sampler_state *)states[i])->base;
       uint32_t wrap, min_filter, mag_filter;
-      /* ponytail: base-level clamp-only sampling; expand with mip/view qualification. */
-      if (s->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE || s->wrap_t != s->wrap_s ||
+      /* ponytail: base-level, matching-axis wrap modes; expand with view qualification. */
+      if ((s->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE && s->wrap_s != PIPE_TEX_WRAP_REPEAT &&
+           s->wrap_s != PIPE_TEX_WRAP_MIRROR_REPEAT) || s->wrap_t != s->wrap_s ||
           s->wrap_r != s->wrap_s || s->compare_mode || s->unnormalized_coords ||
           s->max_anisotropy > 1 || s->min_mip_filter != PIPE_TEX_MIPFILTER_NONE ||
           s->min_lod != 0 || s->max_lod != 0 || s->lod_bias != 0 ||

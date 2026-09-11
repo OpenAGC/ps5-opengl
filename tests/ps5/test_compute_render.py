@@ -58,11 +58,11 @@ int main(void) {
     for(unsigned kind=0;kind<3;++kind) compile(build_compute(kind), &options);
     /* Sampled descriptors coexist with the three existing compute banks.
      * This is compiler/package coverage, not native sampler qualification. */
-    for(unsigned unit=0;unit<=7;unit+=7) for(unsigned test=0;test<5;++test) {
+    for(unsigned unit=0;unit<=7;unit+=7) for(unsigned test=0;test<6;++test) {
         nir_shader *checked=compute_sample(test,unit);
         unsigned used=0, filtered=0;
         assert(ps5_compute_texture_usage(checked,&used,&filtered));
-        assert(used==(1u<<unit) && filtered==(test==4 ? 1u<<unit : 0));
+        assert(used==(1u<<unit) && filtered==(test>=4 ? 1u<<unit : 0));
         ralloc_free(checked);
         PsbcCompileOptions sampled=options;
         sampled.descriptor_binding_count=4;
@@ -155,7 +155,7 @@ int main(void) {
     psbc_shutdown();
     for (unsigned kind=0;kind<3;++kind) for (unsigned phase=0; phase<4; ++phase) {
         float sign=phase&1 ? 1 : -1;
-        for(unsigned size_query=0;size_query<(kind==0 ? 4u : 2u);++size_query) {
+        for(unsigned size_query=0;size_query<(kind==0 ? 8u : 2u);++size_query) {
             uint32_t sampled[80]; memset(sampled,0xcd,sizeof(sampled));
             for(unsigned i=0;i<16;++i) {
                 if(size_query==1) {
@@ -166,7 +166,8 @@ int main(void) {
                     memcpy(sampled+8+i*4,value,16);
                     if(size_query>=2) {
                         const uint32_t bits[2][2]={{0x3f800000,0x40400000},{0x3f700000,0x40440000}};
-                        sampled[8+i*4]=bits[size_query-2][i&1] ^ (sign<0 ? 0x80000000u : 0);
+                        sampled[8+i*4]=bits[size_query&1][(i&1)^(size_query==4 || size_query==5)] ^
+                            (sign<0 ? 0x80000000u : 0);
                     }
                 }
             }
@@ -220,4 +221,4 @@ with tempfile.TemporaryDirectory() as directory:
     subprocess.run(["g++", "-o", executable, obj, package, str(PSBC / "libpsbc.a"),
         "-pthread", "-lm"], check=True)
     subprocess.run([executable], check=True, timeout=30)
-print("PASS: CS/VS/FS packages; 10 compute-sampling layouts and 10 missing-layout rejections; readback/guard oracles (host only)")
+print("PASS: CS/VS/FS packages; 12 compute-sampling layouts and 12 missing-layout rejections; readback/guard oracles (host only)")

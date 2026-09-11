@@ -732,11 +732,10 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
             if (!nonzero)
                continue;
             if (image || sampled) {
-               /* Zero for fetch/size; clamp-edge, base-level nearest/linear for txl.
+               /* Zero for fetch/size; repeat/mirror/edge base-level nearest/linear for txl.
                 * No border-table pointers or unqualified descriptor bits. */
-               if (sampled && ((srd[8] != 0 && srd[8] != 0x92u) || srd[9] ||
-                   (srd[10] & ~UINT32_C(0x00500000)) || srd[11] ||
-                   (!srd[8] && srd[10])))
+               if (sampled && ((srd[8] != 0 && srd[8] != 0x49u && srd[8] != 0x92u) || srd[9] ||
+                   (srd[10] & ~UINT32_C(0x00500000)) || srd[11]))
                   goto cleanup;
                bool owned = false;
                for (unsigned j = 0; j < buffer_count; ++j) {

@@ -452,8 +452,10 @@ int main(void) {
         .wrap_t=PIPE_TEX_WRAP_CLAMP_TO_EDGE,.wrap_r=PIPE_TEX_WRAP_CLAMP_TO_EDGE,
         .min_mip_filter=PIPE_TEX_MIPFILTER_NONE}};
     void *states[8]; for(unsigned i=0;i<8;++i) states[i]=&sampler;
-    expected_sampler[0]=0x92;
-    for(unsigned filter=0;filter<4;++filter) {
+    const unsigned wraps[3]={PIPE_TEX_WRAP_REPEAT,PIPE_TEX_WRAP_MIRROR_REPEAT,PIPE_TEX_WRAP_CLAMP_TO_EDGE};
+    for(unsigned wrap=0;wrap<3;++wrap) for(unsigned filter=0;filter<4;++filter) {
+        sampler.base.wrap_s=sampler.base.wrap_t=sampler.base.wrap_r=wraps[wrap];
+        expected_sampler[0]=wrap*0x49;
         sampler.base.min_img_filter=filter&1 ? PIPE_TEX_FILTER_LINEAR : PIPE_TEX_FILTER_NEAREST;
         sampler.base.mag_img_filter=filter&2 ? PIPE_TEX_FILTER_LINEAR : PIPE_TEX_FILTER_NEAREST;
         ps5_set_compute_sampler_states(&context.base,0,8,states);
