@@ -379,6 +379,10 @@ static void native_cases(void) {
         for (unsigned i=0; i<OUTPUT_WORDS; ++i) output[i]=GUARD_WORD;
         for (unsigned i=0; i<cases[test].words; ++i) {
             output[i]=17+3*(test==SHARED ? (i^32) : i);
+            if(test==COUNTER_SEQUENCE) {
+                const uint32_t values[]={100,100,100,99,99,103,50,200,8,24,27,7,42};
+                output[i]=values[i];
+            }
             if(test==LIMIT_SHARED) output[i]=8*(17+3*(i^512))+28;
             if (test==GRID || test==INDIRECT) output[i]+=73;
             if (test==INDIRECT_ARGS) output[i]=i==1 ? 3 : 2;
@@ -448,6 +452,58 @@ static void native_cases(void) {
         psbc_free_output(&out); ralloc_free(nir);
     }
 }
+static void atomic_counter_lowering(void) {
+    const nir_intrinsic_op operations[]={nir_intrinsic_atomic_counter_inc,
+        nir_intrinsic_atomic_counter_pre_dec, nir_intrinsic_atomic_counter_post_dec,
+        nir_intrinsic_atomic_counter_read, nir_intrinsic_atomic_counter_add,
+        nir_intrinsic_atomic_counter_min, nir_intrinsic_atomic_counter_max,
+        nir_intrinsic_atomic_counter_and, nir_intrinsic_atomic_counter_or,
+        nir_intrinsic_atomic_counter_xor, nir_intrinsic_atomic_counter_exchange,
+        nir_intrinsic_atomic_counter_comp_swap};
+    for (unsigned binding=0; binding<=7; binding+=7) {
+        for (unsigned operation=0; operation<ARRAY_SIZE(operations); ++operation) {
+            nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
+                psbc_get_nir_options(PSBC_STAGE_COMPUTE), "atomic-counter-lowering");
+            b.shader->info.workgroup_size[0]=16;
+            b.shader->info.workgroup_size[1]=b.shader->info.workgroup_size[2]=1;
+            b.shader->info.num_ssbos=8; b.shader->info.num_abos=1;
+            nir_variable *counter=nir_variable_create(b.shader, nir_var_uniform,
+                glsl_atomic_uint_type(), "counter");
+            counter->data.binding=binding; counter->data.explicit_binding=true;
+            nir_intrinsic_instr *atomic=nir_intrinsic_instr_create(b.shader, operations[operation]);
+            for (unsigned source=0; source<nir_intrinsic_infos[operations[operation]].num_srcs; ++source)
+                atomic->src[source]=nir_src_for_ssa(nir_imm_int(&b, source ? source+3 : 12));
+            nir_intrinsic_set_base(atomic, binding);
+            nir_intrinsic_set_range_base(atomic, 16);
+            nir_def_init(&atomic->instr, &atomic->def, 1, 32);
+            nir_builder_instr_insert(&b, &atomic->instr);
+            nir_store_ssbo(&b, &atomic->def, nir_imm_int(&b, 0), nir_imm_int(&b, 0),
+                .align_mul=4, .write_mask=1);
+            assert(nir_lower_atomics_to_ssbo(b.shader, 0));
+            assert(!b.shader->info.num_abos && b.shader->info.num_ssbos==9+binding);
+            nir_opt_constant_folding(b.shader);
+            unsigned lowered=0;
+            nir_foreach_function_impl(impl, b.shader) nir_foreach_block(block, impl)
+                nir_foreach_instr(instr, block) {
+                    if(instr->type!=nir_instr_type_intrinsic) continue;
+                    nir_intrinsic_instr *intr=nir_instr_as_intrinsic(instr);
+                    for(unsigned i=0;i<ARRAY_SIZE(operations);++i) assert(intr->intrinsic!=operations[i]);
+                    if(intr->intrinsic==nir_intrinsic_ssbo_atomic ||
+                       intr->intrinsic==nir_intrinsic_ssbo_atomic_swap || intr->intrinsic==nir_intrinsic_load_ssbo) {
+                        assert(nir_src_as_uint(intr->src[0])==8+binding);
+                        assert(nir_src_as_uint(intr->src[1])==28); ++lowered;
+                    }
+                }
+            assert(lowered==1);
+            nir_validate_shader(b.shader, "atomic counters lowered to reserved SSBO bank");
+            PsbcShaderOutput out={0};
+            assert(psbc_compile_nir(b.shader, &opts, &out)==PSBC_RESULT_OK);
+            assert(out.machine_code_size && !out.metadata.scratch_valid);
+            printf("Atomic counter lowering: operation=%u binding=%u SSBO=%u PASS\n", operation,binding,8+binding);
+            psbc_free_output(&out); ralloc_free(b.shader);
+        }
+    }
+}
 static void scratch_contract(void) {
     nir_shader *nir=create_probe_shader(SCRATCH);
     PsbcShaderOutput out={0};
@@ -481,7 +537,7 @@ static void scratch_contract(void) {
 int main(void) {
     psbc_init();
     for (unsigned i=0; i<4; ++i) compiled(i&1, i&2);
-    shapes(); native_cases(); scratch_contract(); compiled(false, false); psbc_shutdown();
+    shapes(); native_cases(); atomic_counter_lowering(); scratch_contract(); compiled(false, false); psbc_shutdown();
 }
 '''
 with tempfile.TemporaryDirectory() as directory:

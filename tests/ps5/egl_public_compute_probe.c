@@ -31,6 +31,7 @@ enum { CONTROL, GRID, SHARED, ATOMIC, FP32, FP64, BUFFER_RANGES, BUFFER_ALIAS,
        IMAGE_SINT_STORE, IMAGE_SINT_LOAD, IMAGE_SINT_ATOMIC, POST_SINT,
        IMAGE_FLOAT_STORE, IMAGE_FLOAT_LOAD, POST_FLOAT,
        LIMIT_X, LIMIT_Y, LIMIT_3D, LIMIT_Z, LIMIT_SHARED, POST_LIMITS,
+       COUNTER_SEQUENCE, POST_COUNTER,
        SCRATCH, SCRATCH_GRID, POST_SCRATCH };
 static const struct {
    const char *name;
@@ -73,6 +74,8 @@ static const struct {
    {"limit-local-z64", {1, 1, 64}, {1, 1, 1}, 64},
    {"limit-shared32k-cross-wave", {1024, 1, 1}, {1, 1, 1}, 1024},
    {"post-limits-control", {16, 1, 1}, {1, 1, 1}, 16},
+   {"atomic-counter-sequence", {1, 1, 1}, {1, 1, 1}, 13},
+   {"post-counter-control", {16, 1, 1}, {1, 1, 1}, 16},
    {"scratch-private-16", {16, 1, 1}, {1, 1, 1}, 16},
    {"scratch-private-128-grid", {64, 1, 1}, {4, 1, 1}, 256},
    {"post-scratch-control", {16, 1, 1}, {1, 1, 1}, 16},
@@ -85,6 +88,34 @@ static nir_shader *create_probe_shader(unsigned test)
    for (unsigned axis = 0; axis < 3; ++axis)
       b.shader->info.workgroup_size[axis] = cases[test].local[axis];
    b.shader->info.num_ssbos = 16;
+   if (test == COUNTER_SEQUENCE) {
+      b.shader->info.num_ssbos = 8;
+      b.shader->info.num_abos = 1;
+      nir_variable *counter = nir_variable_create(b.shader, nir_var_uniform,
+         glsl_atomic_uint_type(), "counter");
+      counter->data.binding = 7;
+      counter->data.explicit_binding = true;
+      nir_def *offset = nir_imm_int(&b, 48), *results[12];
+      results[0] = nir_atomic_counter_inc(&b, 32, offset, .base = 7);
+      results[1] = nir_atomic_counter_pre_dec(&b, 32, offset, .base = 7);
+      results[2] = nir_atomic_counter_post_dec(&b, 32, offset, .base = 7);
+      results[3] = nir_atomic_counter_read(&b, 32, offset, .base = 7);
+      results[4] = nir_atomic_counter_add(&b, 32, offset, nir_imm_int(&b, 4), .base = 7);
+      results[5] = nir_atomic_counter_min(&b, 32, offset, nir_imm_int(&b, 50), .base = 7);
+      results[6] = nir_atomic_counter_max(&b, 32, offset, nir_imm_int(&b, 200), .base = 7);
+      results[7] = nir_atomic_counter_and(&b, 32, offset, nir_imm_int(&b, 15), .base = 7);
+      results[8] = nir_atomic_counter_or(&b, 32, offset, nir_imm_int(&b, 16), .base = 7);
+      results[9] = nir_atomic_counter_xor(&b, 32, offset, nir_imm_int(&b, 3), .base = 7);
+      results[10] = nir_atomic_counter_exchange(&b, 32, offset, nir_imm_int(&b, 7), .base = 7);
+      results[11] = nir_atomic_counter_comp_swap(&b, 32, offset,
+         nir_imm_int(&b, 7), nir_imm_int(&b, 42), .base = 7);
+      for (unsigned i = 0; i < ARRAY_SIZE(results); ++i)
+         nir_store_ssbo(&b, results[i], nir_imm_int(&b, OUTPUT_BINDING), nir_imm_int(&b, i * 4),
+            .align_mul = 4, .write_mask = 1);
+      nir_lower_atomics_to_ssbo(b.shader, 0);
+      nir_validate_shader(b.shader, "native atomic-counter sequence");
+      return b.shader;
+   }
    b.shader->info.num_ubos = test == UBO_RANGES ? 15 : test == UBO_COPY ? 1 : 0;
    b.shader->info.num_images = test >= IMAGE_STORE && test <= IMAGE_ATOMIC ? 8 : 0;
    if ((test >= IMAGE_SINT_STORE && test <= IMAGE_SINT_ATOMIC) ||
@@ -255,6 +286,10 @@ static unsigned count_correct(unsigned test, const uint32_t *output)
          }
       } else {
          uint32_t expected = 17 + 3 * (test == SHARED ? (i ^ 32) : i);
+         if (test == COUNTER_SEQUENCE) {
+            const uint32_t values[] = {100, 100, 100, 99, 99, 103, 50, 200, 8, 24, 27, 7, 42};
+            expected = values[i];
+         }
          if (test == LIMIT_SHARED) expected = 8 * (17 + 3 * (i ^ 512)) + 28;
          if (test == GRID || test == INDIRECT)
             expected += 7 * 2 + 11 * 3 + 13 * 2;
@@ -407,6 +442,8 @@ int main(void)
          memset(prefix, 0xcd, (OUTPUT_WORDS + PREFIX_WORDS) * sizeof(uint32_t));
       if (test == ATOMIC)
          ((uint32_t *)output)[256] = 0;
+      if (test == COUNTER_SEQUENCE)
+         ((uint32_t *)output)[12] = 100;
       struct pipe_shader_buffer bindings[31] = {0};
       uint32_t user_constants[16];
       for (unsigned i = 0; i < ARRAY_SIZE(user_constants); ++i)
@@ -414,6 +451,8 @@ int main(void)
       bindings[OUTPUT_BINDING] = (struct pipe_shader_buffer){
          output_buffer, PREFIX_WORDS * sizeof(uint32_t), cases[test].words * sizeof(uint32_t)
       };
+      if (test == COUNTER_SEQUENCE)
+         bindings[15] = bindings[OUTPUT_BINDING]; /* Mesa reserves SSBO8..15 for counters. */
       if (test == BUFFER_RANGES || test == UBO_RANGES) {
          for (unsigned i = 0; i < 15; ++i)
             bindings[i + (OUTPUT_BINDING == 0)] = (struct pipe_shader_buffer){
