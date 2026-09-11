@@ -4,7 +4,7 @@
 
 /* Internal CS -> sampled draw -> CS fetch/size transitions. Twelve alternating
  * R32_FLOAT/UINT/SINT phases verify channels and padding at units 0 and 7.
- * Native qualified: 966 dispatches, 12 draws, including typed arrays and dynamic integer LODs.
+ * Native qualified: 1020 dispatches, 12 draws, including typed arrays and bounded dynamic LODs.
  * No public compute cap or display qualification: this test never swaps. */
 #include <stdio.h>
 #include <string.h>
