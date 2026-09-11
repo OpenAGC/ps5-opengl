@@ -10455,10 +10455,9 @@ ps5_create_compute_state(struct pipe_context *base,
     * before the usage validator requires an explicit, bounded LOD. */
    const nir_lower_tex_options tex_options = {.lower_invalid_implicit_lod = true};
    nir_lower_tex(nir, &tex_options);
-   /* Match graphics: Mesa's unpacked default uniforms occupy CB0. Check the
-    * resulting count after lowering, including the newly reserved slot. */
-   if (nir->num_uniforms)
-      nir_lower_uniforms_to_ubo(nir, false, false);
+   /* Mesa binds user blocks after CB0 even without default uniforms.
+    * Normalize both forms before checking the reserved-slot capacity. */
+   nir_lower_uniforms_to_ubo(nir, false, false);
    if (nir->info.num_ubos > PS5_COMPUTE_CONSTANT_SLOTS ||
        nir->info.num_images > PS5_COMPUTE_IMAGE_SLOTS ||
        nir->info.num_textures > PS5_COMPUTE_TEXTURE_SLOTS ||

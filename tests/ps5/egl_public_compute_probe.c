@@ -117,6 +117,7 @@ static nir_shader *create_probe_shader(unsigned test)
       return b.shader;
    }
    b.shader->info.num_ubos = test == UBO_RANGES ? 15 : test == UBO_COPY ? 1 : 0;
+   b.shader->info.first_ubo_is_default_ubo = true; /* These fixtures use pipe CB indices. */
    b.shader->info.num_images = test >= IMAGE_STORE && test <= IMAGE_ATOMIC ? 8 : 0;
    if ((test >= IMAGE_SINT_STORE && test <= IMAGE_SINT_ATOMIC) ||
        test == IMAGE_FLOAT_STORE || test == IMAGE_FLOAT_LOAD)

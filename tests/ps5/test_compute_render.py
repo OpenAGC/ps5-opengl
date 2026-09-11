@@ -84,6 +84,35 @@ int main(void) {
     assert(uniform_out[0].machine_code_size==uniform_out[1].machine_code_size);
     assert(!memcmp(uniform_out[0].machine_code,uniform_out[1].machine_code,uniform_out[0].machine_code_size));
     for(unsigned i=0;i<2;++i) psbc_free_output(&uniform_out[i]);
+    for(unsigned explicit_ubo=0;explicit_ubo<2;++explicit_ubo) {
+        nir_shader *nir=build_compute_user_ubo(explicit_ubo);
+        assert(!nir->num_uniforms);
+        assert(prepare_compute_nir(nir) && nir->info.num_ubos==2 && nir->info.first_ubo_is_default_ubo);
+        assert(prepare_compute_nir(nir) && nir->info.num_ubos==2);
+        nir_opt_constant_folding(nir);
+        unsigned loads=0;
+        nir_foreach_function_impl(impl,nir) nir_foreach_block(block,impl) nir_foreach_instr(instr,block)
+            if(instr->type==nir_instr_type_intrinsic) {
+                nir_intrinsic_instr *intr=nir_instr_as_intrinsic(instr);
+                if(intr->intrinsic==nir_intrinsic_load_ubo) {
+                    assert(nir_src_as_uint(intr->src[0])==1); ++loads;
+                }
+            }
+        assert(loads==1);
+        nir_validate_shader(nir,"user UBO without default uniforms");
+        assert(psbc_compile_nir(nir,&options,&uniform_out[explicit_ubo])==PSBC_RESULT_OK);
+        assert(!uniform_out[explicit_ubo].metadata.scratch_valid);
+        ralloc_free(nir);
+    }
+    assert(uniform_out[0].machine_code_size==uniform_out[1].machine_code_size);
+    assert(!memcmp(uniform_out[0].machine_code,uniform_out[1].machine_code,uniform_out[0].machine_code_size));
+    for(unsigned i=0;i<2;++i) psbc_free_output(&uniform_out[i]);
+    for(unsigned blocks=14;blocks<=15;++blocks) {
+        nir_shader *nir=build_compute_user_ubo(false); nir->info.num_ubos=blocks;
+        assert(prepare_compute_nir(nir)==(blocks==14));
+        assert(nir->info.num_ubos==blocks+1);
+        ralloc_free(nir);
+    }
     for(unsigned blocks=14;blocks<=15;++blocks) {
         nir_shader *nir=build_compute_uniforms(false); nir->info.num_ubos=blocks;
         assert(prepare_compute_nir(nir)==(blocks==14));

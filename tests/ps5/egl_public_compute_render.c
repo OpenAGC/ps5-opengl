@@ -31,6 +31,7 @@ static nir_shader *build_compute(unsigned kind)
    b.shader->info.workgroup_size[0] = 16;
    b.shader->info.workgroup_size[1] = b.shader->info.workgroup_size[2] = 1;
    b.shader->info.num_ubos = b.shader->info.num_images = 1;
+   b.shader->info.first_ubo_is_default_ubo = true; /* Fixture uses pipe CB0. */
    nir_def *zero = nir_imm_int(&b, 0);
    nir_def *x = nir_iadd_imm(&b, nir_channel(&b, nir_load_local_invocation_id(&b), 0), 1);
    nir_def *sign = nir_load_ubo(&b, 1, 32, zero, zero, .align_mul = 4, .range = 4);
@@ -69,6 +70,24 @@ static nir_shader *build_compute_uniforms(bool explicit_ubo)
    for (unsigned lane = 0; lane < 4; ++lane)
       value = nir_iadd(&b, value, nir_imul_imm(&b, nir_channel(&b, defaults, lane), 1u << lane));
    nir_store_ssbo(&b, value, zero, nir_imul_imm(&b, id, 4), .align_mul = 4, .write_mask = 1);
+   return b.shader;
+}
+
+static nir_shader *build_compute_user_ubo(bool explicit_ubo)
+{
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
+      psbc_get_nir_options(PSBC_STAGE_COMPUTE), "compute-user-ubo-only");
+   b.shader->info.workgroup_size[0] = 16;
+   b.shader->info.workgroup_size[1] = b.shader->info.workgroup_size[2] = 1;
+   b.shader->info.num_ubos = explicit_ubo ? 2 : 1;
+   b.shader->info.first_ubo_is_default_ubo = explicit_ubo;
+   b.shader->info.num_ssbos = 1;
+   nir_def *zero = nir_imm_int(&b, 0);
+   nir_def *id = nir_channel(&b, nir_load_local_invocation_id(&b), 0);
+   nir_def *value = nir_load_ubo(&b, 1, 32, nir_imm_int(&b, explicit_ubo ? 1 : 0),
+      zero, .align_mul = 4, .range = 4);
+   nir_store_ssbo(&b, nir_iadd(&b, value, id), zero, nir_imul_imm(&b, id, 4),
+      .align_mul = 4, .write_mask = 1);
    return b.shader;
 }
 
@@ -246,6 +265,7 @@ static nir_shader *write_mip(unsigned level, bool array, unsigned kind)
    b.shader->info.workgroup_size[0] = 16;
    b.shader->info.workgroup_size[1] = b.shader->info.workgroup_size[2] = 1;
    b.shader->info.num_images = b.shader->info.num_ubos = 1;
+   b.shader->info.first_ubo_is_default_ubo = true; /* Fixture uses pipe CB0. */
    nir_def *zero = nir_imm_int(&b, 0);
    nir_def *id = nir_iadd(&b, nir_channel(&b, nir_load_local_invocation_id(&b), 0),
       nir_imul_imm(&b, nir_channel(&b, nir_load_workgroup_id(&b), 0), 16));
@@ -706,14 +726,14 @@ cleanup:
 static int run_compute_uniforms(struct pipe_context *pipe, uint32_t *words, size_t bytes)
 {
    int status = 1;
-   void *shaders[2] = {0};
+   void *shaders[4] = {0};
    struct pipe_resource *ubo = pipe_buffer_create(pipe->screen, PIPE_BIND_CONSTANT_BUFFER, PIPE_USAGE_DEFAULT, 32);
    if (!ubo || bytes != 320) goto out;
-   for (unsigned explicit_ubo = 0; explicit_ubo < 2; ++explicit_ubo) {
+   for (unsigned variant = 0; variant < ARRAY_SIZE(shaders); ++variant) {
       const struct pipe_compute_state cs = {.ir_type = PIPE_SHADER_IR_NIR,
-         .prog = build_compute_uniforms(explicit_ubo)};
-      shaders[explicit_ubo] = pipe->create_compute_state(pipe, &cs);
-      if (!shaders[explicit_ubo]) goto out;
+         .prog = variant < 2 ? build_compute_uniforms(variant & 1) : build_compute_user_ubo(variant & 1)};
+      shaders[variant] = pipe->create_compute_state(pipe, &cs);
+      if (!shaders[variant]) goto out;
    }
    unsigned expected_dispatches = 0;
    if (ps5_context_last_compute_status(pipe, &expected_dispatches)) goto out;
@@ -727,17 +747,18 @@ static int run_compute_uniforms(struct pipe_context *pipe, uint32_t *words, size
       pipe->set_constant_buffer(pipe, MESA_SHADER_COMPUTE, 0, &cb0);
       pipe->set_constant_buffer(pipe, MESA_SHADER_COMPUTE, 1, &cb1);
       memset(defaults, 0, sizeof(defaults)); /* Driver must retain a copy of CB0. */
-      for (unsigned explicit_ubo = 0; explicit_ubo < 2; ++explicit_ubo) {
+      for (unsigned variant = 0; variant < ARRAY_SIZE(shaders); ++variant) {
          memset(words, 0xcd, bytes);
-         pipe->bind_compute_state(pipe, shaders[explicit_ubo]);
+         pipe->bind_compute_state(pipe, shaders[variant]);
          pipe->launch_grid(pipe, &grid);
          pipe->memory_barrier(pipe, PIPE_BARRIER_ALL);
          unsigned dispatches = 0, correct = 0;
          int rc = ps5_context_last_compute_status(pipe, &dispatches);
+         const unsigned base = variant < 2 ? 4907 + pass * 16 : user;
          for (unsigned i = 0; i < 80; ++i)
-            correct += words[i] == (i >= 8 && i < 24 ? 4907 + pass * 16 + i - 8 : GUARD_WORD);
-         printf("[ps5-compute-default-uniforms] pass=%u explicit=%u rc=%d dispatches=%u words=%u/80\n",
-            pass, explicit_ubo, rc, dispatches, correct);
+            correct += words[i] == (i >= 8 && i < 24 ? base + i - 8 : GUARD_WORD);
+         printf("[ps5-compute-default-uniforms] pass=%u explicit=%u user-only=%u rc=%d dispatches=%u words=%u/80\n",
+            pass, variant & 1, variant >= 2, rc, dispatches, correct);
          fflush(stdout);
          if (rc || dispatches != ++expected_dispatches || correct != 80) goto out;
       }
@@ -745,10 +766,10 @@ static int run_compute_uniforms(struct pipe_context *pipe, uint32_t *words, size
    status = 0;
 out:
    pipe->bind_compute_state(pipe, NULL);
-   for (unsigned i = 0; i < 2; ++i) {
+   for (unsigned i = 0; i < ARRAY_SIZE(shaders); ++i)
       if (shaders[i]) pipe->delete_compute_state(pipe, shaders[i]);
+   for (unsigned i = 0; i < 2; ++i)
       pipe->set_constant_buffer(pipe, MESA_SHADER_COMPUTE, i, NULL);
-   }
    pipe_resource_reference(&ubo, NULL);
    return status;
 }
