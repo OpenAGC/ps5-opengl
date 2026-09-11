@@ -518,7 +518,7 @@ index 945737d..2e49126 100644
  
  	psbc_free_output(&output);
 diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
-index bacbc6a..c261928 100644
+index bacbc6a..ee967cf 100644
 --- a/libpsbc/psbc_compile.c
 +++ b/libpsbc/psbc_compile.c
 @@ -12,6 +12,7 @@
@@ -697,7 +697,6 @@ index bacbc6a..c261928 100644
 +        slot.ssa->num_components != 1 || slot.ssa->bit_size != 32 ||
 +        (nir_src_is_const(slot) && nir_src_as_uint(slot) >= bank->array_size) ||
 +        nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_2D ||
-+        nir_intrinsic_image_array(intr) ||
 +        (format != PIPE_FORMAT_R32_UINT && format != PIPE_FORMAT_R32_SINT &&
 +         format != PIPE_FORMAT_R32_FLOAT) || (atomic && format == PIPE_FORMAT_R32_FLOAT)) {
 +        state->valid = false;
@@ -706,7 +705,8 @@ index bacbc6a..c261928 100644
 +    b->cursor = nir_before_instr(instruction);
 +    const enum glsl_base_type type = format == PIPE_FORMAT_R32_UINT ? GLSL_TYPE_UINT :
 +                                    format == PIPE_FORMAT_R32_SINT ? GLSL_TYPE_INT : GLSL_TYPE_FLOAT;
-+    const glsl_type* image = glsl_image_type(GLSL_SAMPLER_DIM_2D, false, type);
++    const glsl_type* image = glsl_image_type(GLSL_SAMPLER_DIM_2D,
++        nir_intrinsic_image_array(intr), type);
 +    nir_variable* var = nir_variable_create(b->shader, nir_var_image,
 +        glsl_array_type(image, bank->array_size, 0), "gallium_storage_images");
 +    var->data.descriptor_set = 0;

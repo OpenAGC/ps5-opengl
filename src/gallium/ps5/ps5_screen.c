@@ -198,6 +198,7 @@ struct ps5_compute_shader {
    unsigned textures;
    unsigned filtered_textures;
    unsigned texture_lod[PS5_COMPUTE_TEXTURE_SLOTS];
+   unsigned array_textures;
 };
 
 struct ps5_context {
@@ -3669,11 +3670,12 @@ ps5_resource_linear_image_descriptor(struct pipe_resource *base, uint32_t descri
 {
    const struct ps5_resource *resource = (const struct ps5_resource *)base;
    uint32_t format;
-   if (!base || !descriptor || base->target != PIPE_TEXTURE_2D ||
+   if (!base || !descriptor || (base->target != PIPE_TEXTURE_2D && base->target != PIPE_TEXTURE_2D_ARRAY) ||
        (base->format != PIPE_FORMAT_R32_UINT && base->format != PIPE_FORMAT_R32_SINT &&
         base->format != PIPE_FORMAT_R32_FLOAT) || !base->width0 || !base->height0 ||
        base->width0 > PS5_MAX_TEXTURE_2D_SIZE || base->height0 > PS5_MAX_TEXTURE_2D_SIZE ||
-       base->depth0 != 1 || base->array_size != 1 || base->last_level >= PIPE_MAX_TEXTURE_LEVELS ||
+       base->depth0 != 1 || !base->array_size || base->array_size > 8 ||
+       (base->target == PIPE_TEXTURE_2D && base->array_size != 1) || base->last_level >= PIPE_MAX_TEXTURE_LEVELS ||
        base->last_level > 15 || first_level > last_level || last_level > base->last_level ||
        base->nr_samples > 1 || base->nr_storage_samples > 1 ||
        !(base->bind & required_bind) ||
@@ -3693,8 +3695,11 @@ ps5_resource_linear_image_descriptor(struct pipe_resource *base, uint32_t descri
          return -1;
       offset += span;
    }
-   /* Same reverse-ordered linear mip storage and view encoding as graphics.
-    * ponytail: arrays and tiled formats need their own bounds contract. */
+   if (base->target == PIPE_TEXTURE_2D_ARRAY &&
+       (resource->layer_stride != offset || offset > resource->size / base->array_size))
+      return -1;
+   /* Same reverse-ordered linear mip storage and layer encoding as graphics.
+    * ponytail: full arrays of at most eight layers; sublayers/tiled formats remain gated. */
    const uintptr_t address = (uintptr_t)resource->data;
    const unsigned pitch = resource->level_stride[0] / 4u;
    const uint32_t srd[8] = {
@@ -3703,8 +3708,10 @@ ps5_resource_linear_image_descriptor(struct pipe_resource *base, uint32_t descri
       ((base->width0 - 1u) >> 2) | ((base->height0 - 1u) << 14) | UINT32_C(0x80000000),
       /* R32 has one stored channel: logical identity expands to (R,0,0,1),
        * not hardware XYZW (which replicates R). Shared by loads and fetches. */
-      UINT32_C(0x90000204) | (first_level << 12) | (last_level << 16),
-      !base->last_level && pitch > base->width0 ? pitch - 1u : 0,
+      (base->target == PIPE_TEXTURE_2D_ARRAY ? UINT32_C(0xd0000204) : UINT32_C(0x90000204)) |
+         (first_level << 12) | (last_level << 16),
+      base->target == PIPE_TEXTURE_2D_ARRAY ? base->array_size - 1 :
+         !base->last_level && pitch > base->width0 ? pitch - 1u : 0,
       UINT32_C(0x00400000) | (base->last_level << 4), 0, 0,
    };
    memcpy(descriptor, srd, sizeof(srd));
@@ -10166,10 +10173,11 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
 /* ponytail: constant-LOD 2D fetch/size and explicit-LOD float sampling only;
  * expanded operations need their own sampler and mip/view qualification. */
 static bool
-ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *filtered, unsigned max_lod[8])
+ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *filtered, unsigned max_lod[8], unsigned *arrays)
 {
    *used = 0;
    *filtered = 0;
+   *arrays = 0;
    memset(max_lod, 0, 8 * sizeof(*max_lod));
    nir_foreach_function_impl(impl, nir) {
       nir_foreach_block(block, impl) {
@@ -10178,7 +10186,7 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *filtered, u
                continue;
             nir_tex_instr *tex = nir_instr_as_tex(instr);
             if ((tex->op != nir_texop_txf && tex->op != nir_texop_txs && tex->op != nir_texop_txl) ||
-                tex->sampler_dim != GLSL_SAMPLER_DIM_2D || tex->is_array ||
+                tex->sampler_dim != GLSL_SAMPLER_DIM_2D ||
                 tex->is_shadow || tex->texture_index >= PS5_COMPUTE_TEXTURE_SLOTS ||
                 tex->def.bit_size != 32 ||
                 tex->num_srcs != (tex->op == nir_texop_txs ? 1 : 2))
@@ -10189,7 +10197,7 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *filtered, u
             unsigned coords = 0, lods = 0;
             for (unsigned i = 0; i < tex->num_srcs; ++i) {
                if (tex->src[i].src_type == nir_tex_src_coord) {
-                  if (tex->op == nir_texop_txs || tex->coord_components != 2)
+                  if (tex->op == nir_texop_txs || tex->coord_components != 2 + tex->is_array)
                      return false;
                   ++coords;
                } else if (tex->src[i].src_type == nir_tex_src_lod) {
@@ -10207,7 +10215,11 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *filtered, u
             }
             if (lods != 1 || coords != (tex->op == nir_texop_txs ? 0u : 1u))
                return false;
+            if ((*used & (1u << tex->texture_index)) &&
+                (((*arrays & (1u << tex->texture_index)) != 0) != tex->is_array))
+               return false;
             *used |= 1u << tex->texture_index;
+            if (tex->is_array) *arrays |= 1u << tex->texture_index;
             if (tex->op == nir_texop_txl)
                *filtered |= 1u << tex->texture_index;
          }
@@ -10228,13 +10240,13 @@ ps5_create_compute_state(struct pipe_context *base,
    if (!templ || templ->ir_type != PIPE_SHADER_IR_NIR || !templ->prog)
       return NULL;
    nir_shader *nir = (nir_shader *)templ->prog; /* Gallium transfers ownership. */
-   unsigned textures = 0, filtered = 0, max_lod[8];
+   unsigned textures = 0, filtered = 0, max_lod[8], arrays = 0;
    if (nir->info.stage != MESA_SHADER_COMPUTE || nir->num_uniforms ||
        nir->info.num_ubos > PS5_COMPUTE_CONSTANT_SLOTS ||
        nir->info.num_images > PS5_COMPUTE_IMAGE_SLOTS ||
        nir->info.num_textures > PS5_COMPUTE_TEXTURE_SLOTS ||
        nir->info.num_ssbos > PS5_COMPUTE_STORAGE_SLOTS ||
-       !ps5_compute_texture_usage(nir, &textures, &filtered, max_lod))
+       !ps5_compute_texture_usage(nir, &textures, &filtered, max_lod, &arrays))
       goto cleanup;
    if (!context->compute_descriptors) {
       struct pipe_resource desc = {
@@ -10280,6 +10292,7 @@ ps5_create_compute_state(struct pipe_context *base,
    if (shader) {
       shader->textures = textures;
       shader->filtered_textures = filtered;
+      shader->array_textures = arrays;
       memcpy(shader->texture_lod, max_lod, sizeof(max_lod));
       uint8_t *package = NULL;
       size_t package_size = 0;
@@ -10425,7 +10438,7 @@ ps5_set_shader_images(struct pipe_context *base, mesa_shader_stage stage,
           !(v->access & PIPE_IMAGE_ACCESS_READ_WRITE) ||
           ((v->access | v->shader_access) & ~(PIPE_IMAGE_ACCESS_READ_WRITE |
               PIPE_IMAGE_ACCESS_COHERENT | PIPE_IMAGE_ACCESS_VOLATILE)) ||
-          v->u.tex.first_layer || v->u.tex.last_layer ||
+          v->u.tex.first_layer || v->u.tex.last_layer != v->resource->array_size - 1 ||
           v->u.tex.single_layer_view || v->u.tex.is_2d_view_of_3d ||
           ps5_resource_storage_image_descriptor(v->resource, v->u.tex.level, descriptor))
          return;
@@ -10453,9 +10466,9 @@ ps5_set_compute_sampler_views(struct pipe_context *base, unsigned start, unsigne
       const struct pipe_sampler_view *v = views[i];
       uint32_t descriptor[8];
       if (v && (!v->texture || v->texture->screen != base->screen ||
-          v->target != PIPE_TEXTURE_2D || v->format != v->texture->format ||
+          v->target != v->texture->target || v->format != v->texture->format ||
           v->u.tex.first_layer ||
-          v->u.tex.last_layer || v->swizzle_r != PIPE_SWIZZLE_X ||
+          v->u.tex.last_layer != v->texture->array_size - 1 || v->swizzle_r != PIPE_SWIZZLE_X ||
           v->swizzle_g != PIPE_SWIZZLE_Y || v->swizzle_b != PIPE_SWIZZLE_Z ||
           v->swizzle_a != PIPE_SWIZZLE_W ||
           ps5_resource_sampled_image_descriptor(v->texture, v->u.tex.first_level, v->u.tex.last_level, descriptor)))
@@ -10580,6 +10593,8 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
             (uint32_t *)(table->data + PS5_COMPUTE_TEXTURE_OFFSET + i * 48)))
          return;
       if (context->cs->texture_lod[i] > view->u.tex.last_level - view->u.tex.first_level)
+         return;
+      if ((view->target == PIPE_TEXTURE_2D_ARRAY) != ((context->cs->array_textures & (1u << i)) != 0))
          return;
       if (context->cs->filtered_textures & (1u << i)) {
          if (!(context->compute_sampler_mask & (1u << i)) || view->format != PIPE_FORMAT_R32_FLOAT)

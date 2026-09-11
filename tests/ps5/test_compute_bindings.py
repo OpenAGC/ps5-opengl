@@ -39,11 +39,11 @@ code = r'''
 #define PS5_MAX_CONSTANT_BUFFER_SIZE 0x4000u
 struct ps5_resource {
     struct pipe_resource base; uint8_t *data;
-    size_t size, render_staging_size, depth_staging_size;
+    size_t size, render_staging_size, depth_staging_size, layer_stride;
     unsigned level_stride[PIPE_MAX_TEXTURE_LEVELS];
     size_t level_offset[PIPE_MAX_TEXTURE_LEVELS];
 };
-struct ps5_compute_shader { PsbcShaderOutput output; unsigned textures, filtered_textures, texture_lod[8]; };
+struct ps5_compute_shader { PsbcShaderOutput output; unsigned textures, filtered_textures, texture_lod[8], array_textures; };
 struct ps5_sampler_state { struct pipe_sampler_state base; };
 struct ps5_context {
     struct pipe_context base;
@@ -354,6 +354,21 @@ int main(void) {
         assert(mip.base.reference.count==1);
     }
     assert(ps5_resource_storage_image_descriptor(&mip.base,4,descriptor)<0);
+    struct ps5_resource layered=mip;
+    _Alignas(256) uint8_t array_pixels[3*3840];
+    layered.data=array_pixels;
+    layered.base.target=PIPE_TEXTURE_2D_ARRAY; layered.base.array_size=3;
+    layered.size=sizeof(array_pixels); layered.layer_stride=3840;
+    assert(!ps5_resource_sampled_image_descriptor(&layered.base,1,2,descriptor));
+    assert(descriptor[3]==0xd0021204 && descriptor[4]==2);
+    for(unsigned fault=0;fault<4;++fault) {
+        struct ps5_resource bad=layered;
+        if(fault==0) bad.size--;
+        if(fault==1) bad.layer_stride++;
+        if(fault==2) bad.base.array_size=9;
+        if(fault==3) bad.base.array_size=0;
+        assert(ps5_resource_storage_image_descriptor(&bad.base,1,descriptor)<0);
+    }
     for(unsigned fault=0;fault<12;++fault) {
         struct ps5_resource bad=mip;
         if(fault<4) bad.level_offset[fault]+=256;
@@ -452,6 +467,10 @@ int main(void) {
     unsigned before_sampled=submitted;
     ps5_launch_grid(&context.base,&good);
     assert(!context.last_compute_status && submitted==before_sampled+1);
+    cs.array_textures=1;
+    ps5_launch_grid(&context.base,&good);
+    assert(context.last_compute_status<0 && submitted==before_sampled+1);
+    cs.array_textures=0;
     for(unsigned fault=0;fault<7;++fault) {
         struct pipe_sampler_view bad=sampled;
         if(fault==0) bad.u.tex.first_level=1;
