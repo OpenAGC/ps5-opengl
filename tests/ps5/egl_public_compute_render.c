@@ -148,7 +148,7 @@ static uint32_t expected_red(unsigned kind, unsigned x, float sign)
    return word;
 }
 
-static nir_shader *compute_mip(unsigned operation, unsigned unit, unsigned level, unsigned layers, unsigned kind)
+static nir_shader *compute_mip(unsigned operation, unsigned unit, unsigned level, unsigned layers, unsigned kind, bool dynamic)
 {
    const bool array = layers > 1;
    nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
@@ -167,7 +167,7 @@ static nir_shader *compute_mip(unsigned operation, unsigned unit, unsigned level
    tex->texture_index = tex->sampler_index = unit;
    tex->coord_components = operation == 1 ? 0 : array ? 3 : 2;
    tex->dest_type = operation == 1 || kind == 2 ? nir_type_int32 : kind == 1 ? nir_type_uint32 : nir_type_float32;
-   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_lod, operation >= 2 ?
+   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_lod, dynamic ? nir_iand_imm(&b, id, level) : operation >= 2 ?
       nir_imm_float(&b, level + (operation == 3 ? 0.5 : 0)) : nir_imm_int(&b, level));
    if (operation != 1) {
       nir_def *coord = operation >= 2 ? nir_imm_vec2(&b, 0.5, 0.5) : nir_imm_ivec2(&b, 0, 0);
@@ -243,6 +243,25 @@ static unsigned count_mip(const uint32_t *words, unsigned operation, unsigned ph
    return correct;
 }
 
+static unsigned count_dynamic_mip(const uint32_t *words, unsigned operation, unsigned first,
+                                 unsigned mask, float sign, unsigned layers, unsigned kind)
+{
+   unsigned correct = 0;
+   for (unsigned i = 0; i < 80; ++i) {
+      uint32_t expected = GUARD_WORD;
+      if (i >= 8 && i < 72) {
+         const unsigned id = (i - 8) / 4, level = first + (id & mask);
+         const uint32_t value[4] = {
+            operation ? 16u >> level : mip_word(kind, level, id % layers, sign, false),
+            operation ? 8u >> level : 0, operation && layers > 1 ? layers : 0,
+            operation || kind ? 1 : 0x3f800000u};
+         expected = value[(i - 8) % 4];
+      }
+      correct += words[i] == expected;
+   }
+   return correct;
+}
+
 /* operation: fetch, size, then nearest/linear pairs for edge, repeat, mirror. */
 static unsigned count_sampled(const uint32_t *words, float sign, unsigned operation, unsigned kind)
 {
@@ -300,7 +319,9 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
    struct pipe_resource *image = NULL;
    struct pipe_sampler_view *views[3] = {0};
    void *states[2] = {0}, *shaders[4][2][4] = {{{0}}}, *writers[4] = {0};
+   void *dynamic_shaders[3][2][2] = {{{0}}};
    const unsigned first[3] = {0, 1, 2}, last[3] = {3, 3, 2};
+   const unsigned masks[3] = {3, 1, 0};
    const struct pipe_resource templ = {.target = layers > 1 ? PIPE_TEXTURE_2D_ARRAY : PIPE_TEXTURE_2D,
       .format = image_formats[kind],
       .width0 = 16, .height0 = 8, .depth0 = 1, .array_size = layers, .last_level = 3,
@@ -339,7 +360,7 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
    for (unsigned op = 0; op < (kind ? 2u : 4u); ++op) for (unsigned unit = 0; unit < 2; ++unit)
       for (unsigned level = 0; level < (op == 3 ? 1u : 4u); ++level) {
          struct pipe_compute_state cs = {.ir_type = PIPE_SHADER_IR_NIR,
-            .prog = compute_mip(op, unit ? 7 : 0, level, layers, kind)};
+            .prog = compute_mip(op, unit ? 7 : 0, level, layers, kind, false)};
          shaders[op][unit][level] = pipe->create_compute_state(pipe, &cs);
          if (!shaders[op][unit][level]) goto cleanup;
       }
@@ -348,6 +369,13 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
       writers[level] = pipe->create_compute_state(pipe, &cs);
       if (!writers[level]) goto cleanup;
    }
+   for (unsigned view = 0; view < 3; ++view) for (unsigned op = 0; op < 2; ++op)
+      for (unsigned unit = 0; unit < 2; ++unit) {
+         struct pipe_compute_state cs = {.ir_type = PIPE_SHADER_IR_NIR,
+            .prog = compute_mip(op, unit ? 7 : 0, masks[view], layers, kind, true)};
+         dynamic_shaders[view][op][unit] = pipe->create_compute_state(pipe, &cs);
+         if (!dynamic_shaders[view][op][unit]) goto cleanup;
+      }
    unsigned expected_dispatches = 0;
    if (ps5_context_last_compute_status(pipe, &expected_dispatches)) goto cleanup;
    const struct pipe_grid_info grid = {.work_dim = 1, .block = {16, 1, 1}, .grid = {1, 1, 1}};
@@ -390,6 +418,21 @@ static int run_mips(struct pipe_context *pipe, uint32_t *words, size_t bytes, un
             fflush(stdout);
             if (rc || dispatches != ++expected_dispatches || correct != 80) goto cleanup;
          }
+   for (unsigned view = 0; view < 3; ++view) for (unsigned op = 0; op < 2; ++op)
+      for (unsigned unit = 0; unit < 2; ++unit) {
+         const unsigned slot = unit ? 7 : 0;
+         pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, slot, 1, 0, &views[view]);
+         pipe->bind_compute_state(pipe, dynamic_shaders[view][op][unit]);
+         memset(words, 0xcd, bytes);
+         pipe->launch_grid(pipe, &grid);
+         unsigned dispatches = 0;
+         int rc = ps5_context_last_compute_status(pipe, &dispatches);
+         unsigned correct = count_dynamic_mip(words, op, first[view], masks[view], sign, layers, kind);
+         printf("[ps5-compute-dynamic-mip] kind=%u layers=%u pass=%u view=%u op=%u unit=%u rc=%d dispatches=%u words=%u/80\n",
+            kind, layers, pass, view, op, slot, rc, dispatches, correct);
+         fflush(stdout);
+         if (rc || dispatches != ++expected_dispatches || correct != 80) goto cleanup;
+      }
    /* Check all uploaded pixels and row padding after sampling. */
    unsigned offset = 0, correct = 0;
    for (unsigned layer = 0; layer < layers; ++layer) for (unsigned level = 4; level-- > 0;) {
@@ -412,6 +455,9 @@ cleanup:
    for (unsigned i = 0; i < 3; ++i) pipe_sampler_view_reference(&views[i], NULL);
    for (unsigned i = 0; i < 2; ++i) if (states[i]) pipe->delete_sampler_state(pipe, states[i]);
    for (unsigned i = 0; i < 4; ++i) if (writers[i]) pipe->delete_compute_state(pipe, writers[i]);
+   for (unsigned view = 0; view < 3; ++view) for (unsigned op = 0; op < 2; ++op)
+      for (unsigned unit = 0; unit < 2; ++unit)
+         if (dynamic_shaders[view][op][unit]) pipe->delete_compute_state(pipe, dynamic_shaders[view][op][unit]);
    for (unsigned op = 0; op < 4; ++op) for (unsigned unit = 0; unit < 2; ++unit)
       for (unsigned level = 0; level < 4; ++level)
          if (shaders[op][unit][level]) pipe->delete_compute_state(pipe, shaders[op][unit][level]);

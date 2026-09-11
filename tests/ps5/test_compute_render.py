@@ -82,7 +82,7 @@ int main(void) {
     for(unsigned kind=0;kind<3;++kind) for(unsigned count=0;count<3;++count)
       for(unsigned unit=0;unit<=7;unit+=7) for(unsigned op=0;op<(kind ? 2u : 4u);++op)
         for(unsigned level=0;level<(op==3 ? 1u : 4u);++level) {
-            nir_shader *checked=compute_mip(op,unit,level,layer_counts[count],kind);
+            nir_shader *checked=compute_mip(op,unit,level,layer_counts[count],kind,false);
             unsigned used=0, filtered=0, max_lod[8], arrays=0;
             assert(ps5_compute_texture_usage(checked,&used,&filtered,max_lod,&arrays));
             assert(arrays==(layer_counts[count]>1 ? 1u<<unit : 0));
@@ -114,6 +114,54 @@ int main(void) {
         assert(count_mip(words,op,level,negative ? -1 : 1,layers,kind)==80);
         words[0]^=1; words[8]^=1;
         assert(count_mip(words,op,level,negative ? -1 : 1,layers,kind)==78);
+    }
+    for(unsigned kind=0;kind<3;++kind) for(unsigned count=0;count<3;++count)
+      for(unsigned op=0;op<2;++op) for(unsigned unit=0;unit<=7;unit+=7)
+      for(unsigned mask=0;mask<=3;mask=mask*2+1) {
+        nir_shader *nir=compute_mip(op,unit,mask,layer_counts[count],kind,true);
+        unsigned used=0,filtered=0,max_lod[8],arrays=0;
+        assert(ps5_compute_texture_usage(nir,&used,&filtered,max_lod,&arrays));
+        assert(used==(1u<<unit) && !filtered && max_lod[unit]==mask);
+        PsbcCompileOptions sampled=options;
+        sampled.descriptor_binding_count=4;
+        sampled.descriptor_bindings[3]=(PsbcDescriptorBinding){.binding=unit,
+            .type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,.array_size=1,.stride=48,.offset=752+unit*48};
+        compile(nir,&sampled);
+        for(unsigned negative=0;negative<2;++negative) {
+            uint32_t words[80]; memset(words,0xcd,sizeof(words));
+            const uint32_t float_words[4]={0x3f800000,0x40000000,0x40800000,0x41000000};
+            for(unsigned i=0;i<16;++i) {
+                unsigned level=i&mask,layer=i%layer_counts[count];
+                float value; memcpy(&value,&float_words[level],4);
+                value=(value+16.0f*layer)*(negative ? -1 : 1);
+                uint32_t bits; memcpy(&bits,&value,4);
+                if(kind==1) bits=(negative ? 0x80000000u : 0x10000000u)+layer*65536u+(1u<<level);
+                if(kind==2) bits=(uint32_t)((negative ? -1 : 1)*(int)(1000+layer*16+(1u<<level)));
+                const uint32_t channels[4]={op ? 16u>>level : bits,op ? 8u>>level : 0,
+                    op && layer_counts[count]>1 ? layer_counts[count] : 0,op || kind ? 1 : 0x3f800000u};
+                memcpy(words+8+i*4,channels,16);
+            }
+            assert(count_dynamic_mip(words,op,0,mask,negative ? -1 : 1,layer_counts[count],kind)==80);
+            words[0]^=1; words[8]^=1;
+            assert(count_dynamic_mip(words,op,0,mask,negative ? -1 : 1,layer_counts[count],kind)==78);
+        }
+      }
+    for(unsigned fault=0;fault<4;++fault) {
+        nir_shader *nir=compute_mip(fault==3 ? 2 : 0,0,fault ? 16 : 31,8,0,true);
+        if(fault>=2) {
+            nir_foreach_block(block,nir_shader_get_entrypoint(nir)) nir_foreach_instr_safe(instr,block) {
+                if(instr->type!=nir_instr_type_tex) continue;
+                nir_tex_instr *tex=nir_instr_as_tex(instr);
+                nir_builder b=nir_builder_create(nir_shader_get_entrypoint(nir));
+                b.cursor=nir_before_instr(instr);
+                nir_def *zero=nir_imm_int(&b,0);
+                nir_def *lod=nir_load_ubo(&b,1,32,zero,zero,.align_mul=4,.range=4);
+                nir_src_rewrite(&tex->src[0].src,fault==3 ? nir_u2f32(&b,nir_iand_imm(&b,lod,3)) : lod);
+            }
+        }
+        unsigned used=0,filtered=0,max_lod[8],arrays=0;
+        assert(!ps5_compute_texture_usage(nir,&used,&filtered,max_lod,&arrays));
+        ralloc_free(nir);
     }
     for(unsigned fault=0;fault<7;++fault) {
         nir_shader *checked=compute_sample(fault>=5 ? 4 : 0,0);

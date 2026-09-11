@@ -10182,7 +10182,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
 }
 
 #ifdef PS5_NATIVE_TITLE_RUNTIME
-/* ponytail: constant-LOD 2D fetch/size and explicit-LOD float sampling only;
+/* ponytail: bounded integer-LOD 2D fetch/size and constant-LOD float sampling only;
  * expanded operations need their own sampler and mip/view qualification. */
 static bool
 ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *filtered, unsigned max_lod[8], unsigned *arrays)
@@ -10213,12 +10213,23 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *filtered, u
                      return false;
                   ++coords;
                } else if (tex->src[i].src_type == nir_tex_src_lod) {
-                  if (!nir_src_is_const(tex->src[i].src))
+                  nir_src source = tex->src[i].src;
+                  if (source.ssa->num_components != 1 || source.ssa->bit_size != 32)
                      return false;
-                  float lod = tex->op == nir_texop_txl ? nir_src_as_float(tex->src[i].src) :
-                                                       (float)nir_src_as_uint(tex->src[i].src);
-                  if (!(lod >= 0 && lod <= 15)) return false;
-                  unsigned ceiling = (unsigned)lod + (lod > (unsigned)lod);
+                  unsigned ceiling;
+                  if (nir_src_is_const(source)) {
+                     float lod = tex->op == nir_texop_txl ? nir_src_as_float(source) :
+                                                          (float)nir_src_as_uint(source);
+                     if (!(lod >= 0 && lod <= 15)) return false;
+                     ceiling = (unsigned)lod + (lod > (unsigned)lod);
+                  } else {
+                     if (tex->op == nir_texop_txl) return false;
+                     struct hash_table *ranges = _mesa_pointer_hash_table_create(NULL);
+                     if (!ranges) return false;
+                     ceiling = nir_unsigned_upper_bound(nir, ranges, nir_get_scalar(source.ssa, 0));
+                     _mesa_hash_table_destroy(ranges, NULL);
+                     if (ceiling > 15) return false;
+                  }
                   max_lod[tex->texture_index] = MAX2(max_lod[tex->texture_index], ceiling);
                   ++lods;
                } else {
