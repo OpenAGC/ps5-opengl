@@ -2072,12 +2072,11 @@ static int append_shader_state(uint8_t *memory, void *vertex, void *pixel,
 static int append_hull_shader_state(void *hull, agc_register_t *sh,
                                     uint32_t *sh_count)
 {
-    agc_register_t *hull_cx = *(agc_register_t **)((uint8_t *)hull + 24);
     agc_register_t *hull_sh = *(agc_register_t **)((uint8_t *)hull + 32);
     uint32_t hull_cx_count = *((uint8_t *)hull + 91);
     uint32_t hull_sh_count = *((uint8_t *)hull + 92);
 
-    if (!hull_cx || !hull_sh || hull_cx_count || hull_sh_count != 2 ||
+    if (!hull_sh || hull_cx_count || hull_sh_count != 2 ||
         *sh_count + hull_sh_count + 1 > 32)
         return -1;
     memcpy(sh + *sh_count, hull_sh, hull_sh_count * sizeof(*sh));
