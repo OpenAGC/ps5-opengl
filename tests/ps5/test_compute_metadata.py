@@ -136,7 +136,9 @@ static int submit(void *p) {
     assert(locked && s->words && s->word_count && saved_marker && !*saved_marker && flushes>=3);
     assert(saved_tmpring==expected_tmpring);
     if (expect_private || expect_scratch) {
-        uintptr_t address=saved_userdata[0] | ((uint64_t)saved_userdata[1]<<32);
+        assert(((saved_userdata[1]>>31)!=0)==expect_scratch);
+        uintptr_t address=saved_userdata[0] |
+            ((uint64_t)(saved_userdata[1]&0x7fffffffu)<<32);
         assert(address==(uintptr_t)mapped_memory+0xc000);
         assert(mapped_size>0x10000);
         const size_t size=mapped_size-0x10000;
@@ -167,7 +169,7 @@ static void submission_contract(PsbcShaderOutput *out) {
     expect_private=out->metadata.compute_private_stride!=0;
     expect_scratch=out->metadata.scratch_buffer_backed;
     expected_tmpring=expect_scratch ? PS5_AGC_COMPUTE_SCRATCH_WAVES |
-        (out->metadata.scratch_bytes_per_wave/1024u<<12) : 0;
+        ((out->metadata.scratch_bytes_per_wave|1024u)/1024u<<12) : 0;
     _Alignas(16) uint32_t table_data[31*4+8*8+8*12]={0}, output[32]={0};
     const size_t logical_output=64;
     table_data[0]=(uintptr_t)output; table_data[1]=(uintptr_t)output>>32;

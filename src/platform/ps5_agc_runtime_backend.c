@@ -791,8 +791,12 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
    /* Bounded command area, separate cache line for completion, then header/code. */
    const int64_t direct_size = sceKernelGetDirectMemorySize();
    struct ps5_agc_compute_memory_layout layout;
+   /* GFX10 scratch descriptors require swizzling and an odd 1 KiB stride
+    * multiple, matching Mesa's ac_compute_scratch_wavesize contract. */
+   const uint32_t scratch_stride = m->scratch_buffer_backed ?
+      (m->scratch_bytes_per_wave | 1024u) : 0;
    if (direct_size <= 0 || ps5_agc_compute_plan_memory(code_size, m->compute_private_stride,
-         m->scratch_buffer_backed ? m->scratch_bytes_per_wave : 0,
+         scratch_stride,
          m->compute_workgroup_size, groups, (size_t)direct_size, &layout))
       goto cleanup;
    memory_size = layout.allocation_size;
@@ -814,11 +818,12 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
       memset(memory + auxiliary_offset + auxiliary_size, 0xa5, 0x4000u);
       const uintptr_t address = (uintptr_t)memory + auxiliary_offset;
       user_data[0] = (uint32_t)address;
-      user_data[1] = (uint32_t)(address >> 32);
+      user_data[1] = (uint32_t)(address >> 32) |
+                     (layout.scratch_size ? UINT32_C(0x80000000) : 0);
    }
    if (layout.scratch_size)
       tmpring_size = PS5_AGC_COMPUTE_SCRATCH_WAVES |
-                    (m->scratch_bytes_per_wave / 1024u << 12);
+                    (scratch_stride / 1024u << 12);
    if (agc.create_shader(&program, memory + 0x4000, memory + 0x5000) ||
        program != memory + 0x4000)
       goto cleanup;
