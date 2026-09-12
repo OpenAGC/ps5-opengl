@@ -269,6 +269,7 @@ ps5_agc_package_build(const PsbcShaderOutput *shader,
    uint8_t *header;
    bool has_linkage;
    bool patch_esgs;
+   bool hull_layout = false;
    const PsbcRegisterWrite *linkage_primitive_override = NULL;
 
    if (!shader || !package || !package_size || !shader->machine_code ||
@@ -354,15 +355,36 @@ ps5_agc_package_build(const PsbcShaderOutput *shader,
              linkage_primitive_override->value > 2u)
             return -3;
       }
+   } else if (metadata->hardware_stage == PSBC_HW_STAGE_HULL &&
+              metadata->source_stage == PSBC_STAGE_TESS_CTRL &&
+              !metadata->context_register_count && !has_linkage &&
+              !metadata->input_semantic_count &&
+              !metadata->output_semantic_count) {
+      /* libSceAgc's register-default metadata maps shader selector 3 to
+       * GFX10 SPI_SHADER_PGM_LO_LS (SH offset 0x148). */
+      agc_stage = 3;
+      pgm_lo = 0x148;
+      rsrc1 = 0x10a;
+      pgm_hi = rsrc2 = 0;
+      patch_esgs = false;
+      hull_layout = true;
    } else {
       return -3;
    }
-   if (!register_pair_valid(shader_registers,
-                            metadata->shader_register_count,
-                            pgm_lo, pgm_hi, true) ||
-       !register_pair_valid(shader_registers,
-                            metadata->shader_register_count,
-                            rsrc1, rsrc2, false))
+   if (hull_layout ?
+       (metadata->shader_register_count != 2 ||
+        !find_register(shader_registers, metadata->shader_register_count,
+                       pgm_lo) ||
+        find_register(shader_registers, metadata->shader_register_count,
+                      pgm_lo)->value ||
+        !find_register(shader_registers, metadata->shader_register_count,
+                       rsrc1)) :
+       (!register_pair_valid(shader_registers,
+                             metadata->shader_register_count,
+                             pgm_lo, pgm_hi, true) ||
+        !register_pair_valid(shader_registers,
+                             metadata->shader_register_count,
+                             rsrc1, rsrc2, false)))
       return -4;
    if (has_linkage &&
        (metadata->linkage_ge_cntl.offset != 0x25b ||
