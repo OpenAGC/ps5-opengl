@@ -89,7 +89,7 @@ static const struct {
    {"scratch-private-16", {16, 1, 1}, {1, 1, 1}, 16},
    {"scratch-private-128-grid", {64, 1, 1}, {4, 1, 1}, 256},
    {"post-scratch-control", {16, 1, 1}, {1, 1, 1}, 16},
-   {"buffer-register-spill", {64, 1, 1}, {1, 1, 1}, OUTPUT_WORDS},
+   {"private-buffer-register-spill", {64, 1, 1}, {1, 1, 1}, OUTPUT_WORDS},
 };
 
 static nir_shader *create_probe_shader(unsigned test)
@@ -107,6 +107,16 @@ static nir_shader *create_probe_shader(unsigned test)
          values[i] = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 1),
             nir_iadd_imm(&b, base, i * 16), .align_mul = 16,
             .access = ACCESS_VOLATILE);
+      b.shader->scratch_size = 16;
+      nir_store_scratch(&b, nir_channel(&b, values[0], 0), nir_imm_int(&b, 0),
+         .align_mul = 4, .write_mask = 1);
+      nir_barrier(&b, .memory_scope = SCOPE_INVOCATION,
+         .memory_semantics = NIR_MEMORY_ACQ_REL,
+         .memory_modes = nir_var_shader_temp);
+      nir_def *private_value = nir_load_scratch(&b, 1, 32,
+         nir_imm_int(&b, 0), .align_mul = 4);
+      values[0] = nir_vec4(&b, private_value, nir_channel(&b, values[0], 1),
+         nir_channel(&b, values[0], 2), nir_channel(&b, values[0], 3));
       nir_barrier(&b, .execution_scope = SCOPE_WORKGROUP,
          .memory_scope = SCOPE_DEVICE, .memory_semantics = NIR_MEMORY_ACQ_REL,
          .memory_modes = nir_var_mem_ssbo);
@@ -394,7 +404,7 @@ static unsigned count_image_correct(unsigned test, unsigned slot, const uint32_t
 int main(void)
 {
 #ifdef PS5_COMPUTE_BUFFER_SPILL_PROBE
-   printf("[ps5-compute] buffer-spill probe entered vectors=%u\n", BUFFER_SPILL_VECTORS);
+   printf("[ps5-compute] private-plus-spill probe entered vectors=%u\n", BUFFER_SPILL_VECTORS);
    fflush(stdout);
 #endif
    int status = 1;
@@ -710,7 +720,7 @@ cleanup:
       pipe_resource_reference(&buffers[i], NULL);
    screen->destroy(screen);
 #ifdef PS5_COMPUTE_BUFFER_SPILL_PROBE
-   printf("[ps5-compute] completed status=%d (public Gallium buffer-spill probe)\n", status);
+   printf("[ps5-compute] completed status=%d (public Gallium private-plus-spill probe)\n", status);
 #else
    printf("[ps5-compute] completed status=%d (internal probe; GL caps unchanged; scratch excluded)\n", status);
 #endif

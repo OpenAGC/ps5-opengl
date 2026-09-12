@@ -853,7 +853,23 @@ static void spill_contract(void) {
     assert(!out.metadata.scratch_size_per_thread); /* NIR private bytes exclude ACO spills. */
     assert(!out.metadata.compute_private_stride); /* Opt-in must not disguise ACO spills. */
     scratch_machine_code("buffer-register-spill",&out);
-    submission_contract(&out); /* Must reject before native allocation/submission. */
+    submission_contract(&out);
+    psbc_free_output(&out);
+
+    b.shader->scratch_size=16;
+    nir_store_scratch(&b,id,nir_imm_int(&b,0),.align_mul=4,.write_mask=1);
+    nir_def *private_value=nir_load_scratch(&b,1,32,nir_imm_int(&b,0),
+        .align_mul=4);
+    nir_store_ssbo(&b,private_value,nir_imm_int(&b,0),nir_imm_int(&b,0),
+        .align_mul=4,.write_mask=1,.access=ACCESS_VOLATILE);
+    nir_validate_shader(b.shader,"private-plus-register-spill input");
+    assert(psbc_compile_nir(b.shader,&spill_options,&out)==PSBC_RESULT_OK);
+    assert(out.metadata.scratch_buffer_backed && out.metadata.scratch_bytes_per_wave &&
+        !out.metadata.compute_private_stride && out.metadata.compute_lds_bytes>=1024);
+    printf("Private plus register spill host-only: LDS=%u wave-bytes=%u code=%zu\n",
+        out.metadata.compute_lds_bytes,out.metadata.scratch_bytes_per_wave,
+        out.machine_code_size);
+    submission_contract(&out);
     psbc_free_output(&out); ralloc_free(b.shader);
 
     nir_builder rejected=nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
