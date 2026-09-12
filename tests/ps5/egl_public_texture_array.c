@@ -15,10 +15,14 @@
 #define HEIGHT 1080
 #define SIZE 64
 
-#ifdef PS5_CUBE_ARRAY_TEST
+#if defined(PS5_CUBE_ARRAY_TEST)
 #define ARRAY_TARGET GL_TEXTURE_CUBE_MAP_ARRAY
 #define ARRAY_DEPTH 18
 #define ARRAY_NAME "ps5-egl-cube-array"
+#elif defined(PS5_GL43_TEXTURE_VIEW_TEST)
+#define ARRAY_TARGET GL_TEXTURE_2D_ARRAY
+#define ARRAY_DEPTH 3
+#define ARRAY_NAME "ps5-egl-texture-view"
 #else
 #define ARRAY_TARGET GL_TEXTURE_2D_ARRAY_EXT
 #define ARRAY_DEPTH 3
@@ -55,7 +59,7 @@ hash32(const void *data, size_t size)
    return hash;
 }
 
-#ifdef PS5_CUBE_ARRAY_TEST
+#if defined(PS5_CUBE_ARRAY_TEST) || defined(PS5_GL43_TEXTURE_VIEW_TEST)
 static int
 has_indexed_extension(const char *name)
 {
@@ -71,7 +75,8 @@ has_indexed_extension(const char *name)
 }
 #endif
 
-#ifndef PS5_CORE33_ARRAY_MIPMAP_TEST
+#if !defined(PS5_CORE33_ARRAY_MIPMAP_TEST) && \
+    !defined(PS5_GL43_TEXTURE_VIEW_TEST)
 static int
 has_extension(const char *extensions, const char *name)
 {
@@ -117,7 +122,17 @@ draw_oracle(GLint layer_uniform, GLint lod_uniform, float layer, float lod,
 int
 main(void)
 {
-#ifdef PS5_CUBE_ARRAY_TEST
+#ifdef PS5_GL43_TEXTURE_VIEW_TEST
+   static const char *vertex_source =
+      "#version 420 core\n"
+      "layout(location=0) in vec2 a_position;\n"
+      "void main() { gl_Position = vec4(a_position, 0.0, 1.0); }\n";
+   static const char *fragment_source =
+      "#version 420 core\n"
+      "uniform sampler2D u_array;\n"
+      "layout(location=0) out vec4 color;\n"
+      "void main() { color=texture(u_array,vec2(0.5)); }\n";
+#elif defined(PS5_CUBE_ARRAY_TEST)
    static const char *vertex_source =
       "#version 330 core\n"
       "layout(location=0) in vec2 a_position;\n"
@@ -174,10 +189,16 @@ main(void)
       EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
       EGL_NONE,
    };
-#ifdef PS5_CORE33_ARRAY_MIPMAP_TEST
+#if defined(PS5_CORE33_ARRAY_MIPMAP_TEST) || \
+    defined(PS5_GL43_TEXTURE_VIEW_TEST)
    const EGLint context_attributes[] = {
+#ifdef PS5_GL43_TEXTURE_VIEW_TEST
+      EGL_CONTEXT_MAJOR_VERSION_KHR, 4,
+      EGL_CONTEXT_MINOR_VERSION_KHR, 2,
+#else
       EGL_CONTEXT_MAJOR_VERSION_KHR, 3,
       EGL_CONTEXT_MINOR_VERSION_KHR, 3,
+#endif
       EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR,
       EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR,
       EGL_NONE,
@@ -191,10 +212,12 @@ main(void)
    EGLContext context = EGL_NO_CONTEXT;
    EGLint egl_major = 0, egl_minor = 0, count = 0, width = 0, height = 0;
    GLuint vs = 0, fs = 0, program = 0, vao = 0, vbo = 0, texture = 0;
+   GLuint view_texture = 0;
    GLint linked = GL_FALSE, sampler = -1, layer = -1, lod = -1;
    GLint max_layers = 0;
    const GLubyte *version = NULL, *glsl = NULL;
-#ifndef PS5_CORE33_ARRAY_MIPMAP_TEST
+#if !defined(PS5_CORE33_ARRAY_MIPMAP_TEST) && \
+    !defined(PS5_GL43_TEXTURE_VIEW_TEST)
    const char *extensions = NULL;
 #endif
    GLenum cleanup_gl_error = GL_NO_ERROR;
@@ -236,10 +259,13 @@ main(void)
    glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS_EXT, &max_layers);
    if (!version || !glsl)
       goto cleanup;
-#ifdef PS5_CORE33_ARRAY_MIPMAP_TEST
+#if defined(PS5_CORE33_ARRAY_MIPMAP_TEST) || \
+    defined(PS5_GL43_TEXTURE_VIEW_TEST)
    extension_present =
 #ifdef PS5_CUBE_ARRAY_TEST
       has_indexed_extension("GL_ARB_texture_cube_map_array");
+#elif defined(PS5_GL43_TEXTURE_VIEW_TEST)
+      has_indexed_extension("GL_ARB_texture_view");
 #else
       1;
 #endif
@@ -265,7 +291,10 @@ main(void)
    sampler = glGetUniformLocation(program, "u_array");
    layer = glGetUniformLocation(program, "u_layer");
    lod = glGetUniformLocation(program, "u_lod");
-   if (sampler < 0 || layer < 0
+   if (sampler < 0
+#ifndef PS5_GL43_TEXTURE_VIEW_TEST
+       || layer < 0
+#endif
 #ifdef PS5_CORE33_ARRAY_MIPMAP_TEST
        || lod < 0
 #endif
@@ -299,17 +328,39 @@ main(void)
 #else
                    0);
 #endif
+#ifdef PS5_GL43_TEXTURE_VIEW_TEST
+   {
+      PFNGLTEXTUREVIEWPROC texture_view =
+         (PFNGLTEXTUREVIEWPROC)eglGetProcAddress("glTextureView");
+      glTexStorage3D(ARRAY_TARGET, 1, GL_RGBA8, SIZE, SIZE, ARRAY_DEPTH);
+      glTexSubImage3D(ARRAY_TARGET, 0, 0, 0, 0, SIZE, SIZE, ARRAY_DEPTH,
+                      GL_RGBA, GL_UNSIGNED_BYTE, texels);
+      glGenTextures(1, &view_texture);
+      if (!texture_view)
+         goto cleanup;
+      texture_view(view_texture, GL_TEXTURE_2D, texture, GL_RGBA8, 0, 1, 1, 1);
+      glBindTexture(GL_TEXTURE_2D, view_texture);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+   }
+#else
    glTexImage3D(ARRAY_TARGET, 0, GL_RGBA8, SIZE, SIZE, ARRAY_DEPTH, 0,
                 GL_RGBA, GL_UNSIGNED_BYTE, texels);
+#endif
 #ifdef PS5_CORE33_ARRAY_MIPMAP_TEST
    glGenerateMipmap(ARRAY_TARGET);
 #endif
 
    glViewport(0, 0, WIDTH, HEIGHT);
    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
+#ifdef PS5_GL43_TEXTURE_VIEW_TEST
+   layers_ok &= draw_oracle(layer, lod, 0.0f, 0.0f,
+                            colors[1], hashes[1], pixels);
+#else
    for (unsigned z = 0; z < 3; ++z)
       layers_ok &= draw_oracle(layer, lod, (float)z, 0.0f,
                                colors[z], hashes[z], pixels);
+#endif
 #ifdef PS5_CORE33_ARRAY_MIPMAP_TEST
    for (unsigned z = 0; z < 3; ++z)
       mipmaps_ok &= draw_oracle(layer, lod, (float)z, 6.0f,
@@ -320,7 +371,10 @@ main(void)
    passed = egl_major == 1 && egl_minor == 4 && width == WIDTH &&
             height == HEIGHT && extension_present && max_layers >= 256 &&
             layers_ok && mipmaps_ok &&
-#ifdef PS5_CORE33_ARRAY_MIPMAP_TEST
+#ifdef PS5_GL43_TEXTURE_VIEW_TEST
+            strncmp((const char *)version, "4.2 ", 4) == 0 &&
+            strncmp((const char *)glsl, "4.20", 4) == 0;
+#elif defined(PS5_CORE33_ARRAY_MIPMAP_TEST)
             strncmp((const char *)version, "3.3 ", 4) == 0 &&
             strncmp((const char *)glsl, "3.30", 4) == 0;
 #else
@@ -329,6 +383,8 @@ main(void)
 #endif
 
 cleanup:
+   if (view_texture)
+      glDeleteTextures(1, &view_texture);
    if (texture)
       glDeleteTextures(1, &texture);
    if (vbo)

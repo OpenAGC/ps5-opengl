@@ -729,7 +729,7 @@ require("PS5_MAX_TEXTURE_2D_SIZE PS5_MAX_RENDER_SIZE" in SCREEN and
         "(((texture->base.width0 - 1u) & 3u) << 30)" in SCREEN and
         "((texture->base.height0 - 1u) << 14)" in SCREEN and
         "(UINT32_C(1) << 31); /* GFX10 RESOURCE_LEVEL. */" in SCREEN and
-        "texture->base.target == PIPE_TEXTURE_2D &&\n          !texture->base.last_level &&" in SCREEN and
+        "view->target == PIPE_TEXTURE_2D &&\n          !texture->base.last_level &&" in SCREEN and
         "descriptor[4] = pitch - 1u; /* GFX10.3 custom linear pitch. */" in SCREEN and
         "return MAX2((extent + BITFIELD_BIT(level) - 1u) >> level, 1u);" in SCREEN and
         SCREEN.count("ps5_linear_mip_storage_extent(") >= 9 and

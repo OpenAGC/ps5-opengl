@@ -1173,6 +1173,34 @@ ps5_sampled_texture_target(enum pipe_texture_target target)
 }
 
 static bool
+ps5_texture_view_target_compatible(enum pipe_texture_target storage,
+                                   enum pipe_texture_target view)
+{
+   if (storage == view)
+      return true;
+   if ((storage == PIPE_TEXTURE_1D || storage == PIPE_TEXTURE_1D_ARRAY) &&
+       (view == PIPE_TEXTURE_1D || view == PIPE_TEXTURE_1D_ARRAY))
+      return true;
+   if ((storage == PIPE_TEXTURE_2D || storage == PIPE_TEXTURE_2D_ARRAY ||
+        ps5_cube_texture_target(storage)) &&
+       (view == PIPE_TEXTURE_2D || view == PIPE_TEXTURE_2D_ARRAY ||
+        ps5_cube_texture_target(view)))
+      return true;
+   return false;
+}
+
+static bool
+ps5_texture_view_format_compatible(enum pipe_format storage,
+                                   enum pipe_format view)
+{
+   return ps5_sampled_texture_format(storage) &&
+          ps5_sampled_texture_format(view) &&
+          util_format_get_blocksize(storage) == util_format_get_blocksize(view) &&
+          util_format_get_blockwidth(storage) == util_format_get_blockwidth(view) &&
+          util_format_get_blockheight(storage) == util_format_get_blockheight(view);
+}
+
+static bool
 ps5_linear_sampled_layout(const struct pipe_resource *resource)
 {
    /* Reuse the native render/sample layout for single-mip color images. CPU
@@ -2592,6 +2620,7 @@ ps5_prepare_texture(struct ps5_context *context,
       unsigned format_size;
       unsigned descriptor_format_size;
       unsigned descriptor_stride;
+      unsigned view_layers;
       bool tiled_render_target;
       bool tiled_depth_target;
       bool depth_texture;
@@ -2615,6 +2644,7 @@ ps5_prepare_texture(struct ps5_context *context,
       if (!view || !view->texture)
          return false;
       texture = (struct ps5_resource *)view->texture;
+      view_layers = view->u.tex.last_layer - view->u.tex.first_layer + 1;
       descriptor = (uint32_t *)(table->data + binding->offset);
       if (texture->base.target == PIPE_BUFFER) {
          const unsigned texel_size = util_format_get_blocksize(view->format);
@@ -2741,22 +2771,21 @@ ps5_prepare_texture(struct ps5_context *context,
                     texture->base.width0 * format_size
               : texture->level_stride[0] !=
                    ((format_size * texture->base.width0 + 255u) & ~255u)) ||
-          view->target != texture->base.target ||
-          view->format != texture->base.format ||
+          !ps5_texture_view_target_compatible(texture->base.target,
+                                              view->target) ||
+          !ps5_texture_view_format_compatible(texture->base.format,
+                                              view->format) ||
           view->u.tex.first_level > view->u.tex.last_level ||
           view->u.tex.last_level > texture->base.last_level ||
-          ((texture->base.target == PIPE_TEXTURE_1D ||
-            texture->base.target == PIPE_TEXTURE_2D ||
-            texture->base.target == PIPE_TEXTURE_RECT) &&
-           (view->u.tex.first_layer || view->u.tex.last_layer)) ||
-          (ps5_cube_texture_target(texture->base.target) &&
-           (view->u.tex.first_layer ||
-            view->u.tex.last_layer != texture->base.array_size - 1)) ||
-          ((texture->base.target == PIPE_TEXTURE_1D_ARRAY ||
-            texture->base.target == PIPE_TEXTURE_2D_ARRAY) &&
-           (view->u.tex.first_layer > view->u.tex.last_layer ||
-            view->u.tex.last_layer >= texture->base.array_size)) ||
-          (texture->base.target == PIPE_TEXTURE_3D &&
+          view->u.tex.first_layer > view->u.tex.last_layer ||
+          view->u.tex.last_layer >= ps5_texture_level_layers(
+             &texture->base, view->u.tex.first_level) ||
+          ((view->target == PIPE_TEXTURE_1D ||
+            view->target == PIPE_TEXTURE_2D ||
+            view->target == PIPE_TEXTURE_RECT) && view_layers != 1) ||
+          (view->target == PIPE_TEXTURE_CUBE && view_layers != 6) ||
+          (view->target == PIPE_TEXTURE_CUBE_ARRAY && view_layers % 6) ||
+          (view->target == PIPE_TEXTURE_3D &&
            (view->u.tex.first_layer || view->u.tex.last_layer)) ||
           (sampler->min_mip_filter != PIPE_TEX_MIPFILTER_NONE &&
            !PS5_ENABLE_TEXTURE_MIPMAP_CANDIDATE) ||
@@ -2798,7 +2827,8 @@ ps5_prepare_texture(struct ps5_context *context,
       lod_bias = ps5_texture_descriptor_lod_bias(sampler->lod_bias);
 
       texture_address = (uintptr_t)texture->data +
-         (staged_packed_depth ? texture->depth_staging_offset : 0);
+         (staged_packed_depth ? texture->depth_staging_offset : 0) +
+         (size_t)view->u.tex.first_layer * texture->layer_stride;
       if ((uint32_t)(texture_address >> 32) != metadata->address32_hi ||
           (texture_address & 0xffu))
          return false;
@@ -2811,40 +2841,40 @@ ps5_prepare_texture(struct ps5_context *context,
                       ((texture->base.height0 - 1u) << 14) |
                       (UINT32_C(1) << 31); /* GFX10 RESOURCE_LEVEL. */
       descriptor[3] = (tiled_depth_target && multisampled
-                           ? (texture->base.target == PIPE_TEXTURE_2D_ARRAY
+                           ? (view->target == PIPE_TEXTURE_2D_ARRAY
                                  ? UINT32_C(0xf1820000)
                                  : UINT32_C(0xe1820000))
                        : tiled_depth_target
-                           ? (texture->base.target == PIPE_TEXTURE_1D
+                           ? (view->target == PIPE_TEXTURE_1D
                                  ? UINT32_C(0x81800000)
-                              : texture->base.target ==
+                              : view->target ==
                                    PIPE_TEXTURE_1D_ARRAY
                                  ? UINT32_C(0xc1800000)
-                              : ps5_cube_texture_target(texture->base.target)
+                              : ps5_cube_texture_target(view->target)
                                  ? UINT32_C(0xb1800000)
-                              : texture->base.target ==
+                              : view->target ==
                                    PIPE_TEXTURE_2D_ARRAY
                                  ? UINT32_C(0xd1800000)
-                              : texture->base.target == PIPE_TEXTURE_3D
+                              : view->target == PIPE_TEXTURE_3D
                                  ? UINT32_C(0xa1800000)
                                  : UINT32_C(0x91800000))
                        : multisampled
-                           ? (texture->base.target == PIPE_TEXTURE_2D_ARRAY
+                           ? (view->target == PIPE_TEXTURE_2D_ARRAY
                                  ? UINT32_C(0xf1b20000)
                                  : UINT32_C(0xe1b20000))
                        : tiled_render_target
-                           ? (texture->base.target == PIPE_TEXTURE_2D_ARRAY
+                           ? (view->target == PIPE_TEXTURE_2D_ARRAY
                                  ? UINT32_C(0xd1b00000)
                                  : UINT32_C(0x91b00000))
-                        : texture->base.target == PIPE_TEXTURE_1D
+                        : view->target == PIPE_TEXTURE_1D
                            ? UINT32_C(0x80000000)
-                       : texture->base.target == PIPE_TEXTURE_1D_ARRAY
+                       : view->target == PIPE_TEXTURE_1D_ARRAY
                           ? UINT32_C(0xc0000000)
-                       : ps5_cube_texture_target(texture->base.target)
+                       : ps5_cube_texture_target(view->target)
                            ? UINT32_C(0xb0000000)
-                       : texture->base.target == PIPE_TEXTURE_2D_ARRAY
+                       : view->target == PIPE_TEXTURE_2D_ARRAY
                           ? UINT32_C(0xd0000000)
-                       : texture->base.target == PIPE_TEXTURE_3D
+                       : view->target == PIPE_TEXTURE_3D
                           ? UINT32_C(0xa0000000)
                           : UINT32_C(0x90000000)) |
                       swizzle[0] |
@@ -2853,16 +2883,14 @@ ps5_prepare_texture(struct ps5_context *context,
                       (view->u.tex.first_level << 12) |
                       (view->u.tex.last_level << 16);
       /* CUBE encodes cube count, while array images encode face/layer bounds. */
-      descriptor[4] = ps5_cube_texture_target(texture->base.target)
-                         ? texture->base.array_size / 6u - 1u
-                      : texture->base.target == PIPE_TEXTURE_3D
+      descriptor[4] = ps5_cube_texture_target(view->target)
+                         ? view_layers / 6u - 1u
+                      : view->target == PIPE_TEXTURE_3D
                          ? texture->base.depth0 - 1
-                      : texture->base.target == PIPE_TEXTURE_1D_ARRAY
-                         ? view->u.tex.last_layer |
-                              (view->u.tex.first_layer << 16)
-                         : view->u.tex.last_layer |
-                              (view->u.tex.first_layer << 16);
-      if (texture->base.target == PIPE_TEXTURE_2D &&
+                      : view->target == PIPE_TEXTURE_1D_ARRAY ||
+                        view->target == PIPE_TEXTURE_2D_ARRAY
+                         ? view_layers - 1u : 0;
+      if (view->target == PIPE_TEXTURE_2D &&
           !texture->base.last_level &&
           !tiled_render_target && !tiled_depth_target && !multisampled &&
           !util_format_is_compressed(texture->base.format)) {
@@ -11770,24 +11798,24 @@ ps5_create_sampler_view(struct pipe_context *base,
    if (!texture || !templ ||
        !ps5_sampled_texture_target(texture->target) ||
        !ps5_sampled_texture_format(texture->format) ||
-       templ->target != texture->target ||
        !ps5_sampled_texture_target(templ->target) ||
-       templ->format != texture->format ||
+       !ps5_texture_view_target_compatible(texture->target, templ->target) ||
+       !ps5_texture_view_format_compatible(texture->format, templ->format) ||
        templ->u.tex.first_level > templ->u.tex.last_level ||
        templ->u.tex.last_level > texture->last_level ||
        (templ->u.tex.last_level && !PS5_ENABLE_TEXTURE_MIPMAP_CANDIDATE) ||
-       ((texture->target == PIPE_TEXTURE_1D ||
-         texture->target == PIPE_TEXTURE_2D ||
-         texture->target == PIPE_TEXTURE_RECT) &&
-        (templ->u.tex.first_layer || templ->u.tex.last_layer)) ||
-       (ps5_cube_texture_target(texture->target) &&
-        (templ->u.tex.first_layer ||
-         templ->u.tex.last_layer != texture->array_size - 1)) ||
-       ((texture->target == PIPE_TEXTURE_1D_ARRAY ||
-         texture->target == PIPE_TEXTURE_2D_ARRAY) &&
-        (templ->u.tex.first_layer > templ->u.tex.last_layer ||
-         templ->u.tex.last_layer >= texture->array_size)) ||
-       (texture->target == PIPE_TEXTURE_3D &&
+       templ->u.tex.first_layer > templ->u.tex.last_layer ||
+       templ->u.tex.last_layer >=
+          ps5_texture_level_layers(texture, templ->u.tex.first_level) ||
+       ((templ->target == PIPE_TEXTURE_1D ||
+         templ->target == PIPE_TEXTURE_2D ||
+         templ->target == PIPE_TEXTURE_RECT) &&
+        templ->u.tex.first_layer != templ->u.tex.last_layer) ||
+       (templ->target == PIPE_TEXTURE_CUBE &&
+        templ->u.tex.last_layer - templ->u.tex.first_layer + 1 != 6) ||
+       (templ->target == PIPE_TEXTURE_CUBE_ARRAY &&
+        (templ->u.tex.last_layer - templ->u.tex.first_layer + 1) % 6) ||
+       (templ->target == PIPE_TEXTURE_3D &&
         (templ->u.tex.first_layer || templ->u.tex.last_layer)))
       return NULL;
    view = calloc(1, sizeof(*view));
@@ -12549,6 +12577,7 @@ ps5_screen_create(void)
       PS5_ENABLE_GLSL_430_CANDIDATE;
    caps->framebuffer_no_attachment = PS5_ENABLE_GLSL_430_CANDIDATE;
    caps->robust_buffer_access_behavior = PS5_ENABLE_GLSL_430_CANDIDATE;
+   caps->sampler_view_target = PS5_ENABLE_GLSL_430_CANDIDATE;
    caps->gl_begin_end_buffer_size = 512 * 1024;
    caps->min_map_buffer_alignment = 64;
    vs_caps = (struct pipe_shader_caps *)

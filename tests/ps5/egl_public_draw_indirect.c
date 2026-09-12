@@ -195,7 +195,9 @@ main(void)
    EGLContext context = EGL_NO_CONTEXT;
    EGLint count = 0;
    GLuint programs[2] = {0}, vao = 0, buffers[4] = {0}, empty_fbo = 0;
+#ifdef PS5_GL43_FRAMEBUFFER_NO_ATTACHMENTS_TEST
    GLenum empty_status = 0;
+#endif
    unsigned green_count = 0, cyan_count = 0, draws = 0;
 #ifdef PS5_FP64_VERTEX_TEST
    unsigned base_instance_count = 0;
