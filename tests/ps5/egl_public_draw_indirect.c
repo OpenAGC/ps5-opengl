@@ -210,6 +210,7 @@ main(void)
 #ifdef PS5_FP64_VERTEX_TEST
    GLint max_texture = 0, max_renderbuffer = 0, max_cube = 0;
    GLint max_3d = 0, max_layers = 0, max_vertex_ubos = 0;
+   GLint max_vertex_stride = 0;
 #endif
 #ifdef PS5_VIEWPORT_ARRAY_TEST
    int viewport_array = 0;
@@ -236,6 +237,7 @@ main(void)
    glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &max_3d);
    glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &max_layers);
    glGetIntegerv(GL_MAX_VERTEX_UNIFORM_BLOCKS, &max_vertex_ubos);
+   glGetIntegerv(GL_MAX_VERTEX_ATTRIB_STRIDE, &max_vertex_stride);
    printf("[%s] limits texture=%d renderbuffer=%d cube=%d 3d=%d layers=%d\n",
           TEST_NAME, max_texture, max_renderbuffer, max_cube, max_3d,
           max_layers);
@@ -269,6 +271,14 @@ main(void)
           has_extension("GL_ARB_texture_buffer_range"),
           has_extension("GL_ARB_texture_query_levels"),
           has_extension("GL_ARB_texture_view"));
+   printf("[%s] gl44-prereqs stride=%d storage=%d layouts=%d query-buffer=%d "
+          "mirror-clamp=%d stencil8=%d packed-float-vertex=%d\n", TEST_NAME,
+          max_vertex_stride, has_extension("GL_ARB_buffer_storage"),
+          has_extension("GL_ARB_enhanced_layouts"),
+          has_extension("GL_ARB_query_buffer_object"),
+          has_extension("GL_ARB_texture_mirror_clamp_to_edge"),
+          has_extension("GL_ARB_texture_stencil8"),
+          has_extension("GL_ARB_vertex_type_10f_11f_11f_rev"));
 #endif
 #ifdef PS5_VIEWPORT_ARRAY_TEST
    viewport_array = has_extension("GL_ARB_viewport_array");
