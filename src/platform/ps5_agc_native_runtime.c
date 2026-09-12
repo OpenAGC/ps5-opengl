@@ -108,6 +108,11 @@ static uint32_t runtime_interp_control_valid;
 static uint32_t runtime_point_coord_input;
 static uint32_t runtime_polygon_offset[6];
 static uint32_t runtime_polygon_offset_valid;
+static const uint8_t *runtime_hs_package;
+static unsigned int runtime_hs_package_len;
+static uint32_t runtime_hs_rsrc2;
+static uint32_t runtime_ls_hs_config;
+static uint32_t runtime_tf_param;
 
 int ps5_agc_gate2_set_packages(const void *vs, size_t vs_size,
                                const void *ps, size_t ps_size)
@@ -119,6 +124,21 @@ int ps5_agc_gate2_set_packages(const void *vs, size_t vs_size,
     runtime_vs_package_len = (unsigned int)vs_size;
     runtime_ps_package = ps;
     runtime_ps_package_len = (unsigned int)ps_size;
+    return 0;
+}
+
+int ps5_agc_gate2_set_tessellation(const void *hs, size_t hs_size,
+                                   uint32_t hs_rsrc2,
+                                   uint32_t ls_hs_config,
+                                   uint32_t tf_param)
+{
+    if ((!hs != !hs_size) || hs_size > UINT32_MAX)
+        return -1;
+    runtime_hs_package = hs;
+    runtime_hs_package_len = (unsigned int)hs_size;
+    runtime_hs_rsrc2 = hs_rsrc2;
+    runtime_ls_hs_config = ls_hs_config;
+    runtime_tf_param = tf_param;
     return 0;
 }
 
@@ -190,6 +210,10 @@ int ps5_agc_gate2_set_draw_state(uint32_t primitive_type,
     case 5: /* TRIFAN */
     case 6: /* TRISTRIP */
         if (draw_count < 3)
+            return -1;
+        break;
+    case 9: /* PATCH */
+        if (draw_count < 3 || draw_count % 3)
             return -1;
         break;
     case 10: /* LINELIST_ADJ */
@@ -593,6 +617,10 @@ int ps5_agc_gate2_set_point_coord_input(uint32_t enabled)
 #define AGC_INDEX_SIZE_32 1u
 #define TEXTURE_WIDTH 64u
 #define TEXTURE_HEIGHT 64u
+#define TESS_OFFCHIP_WORKGROUPS 160u
+#define TESS_FACTOR_WORKGROUPS 120u
+#define TESS_OFFCHIP_BYTES (TESS_OFFCHIP_WORKGROUPS * 32768u)
+#define TESS_FACTOR_BYTES (TESS_FACTOR_WORKGROUPS * 1024u)
 #define NATIVE_COLOR_FORMAT_RGBA8_UNORM 1u
 #define NATIVE_COLOR_SWIZZLE_64KB_R_X 27u
 
@@ -720,6 +748,18 @@ static uint32_t *set_linkage_uc_state(const agc_api_t *agc,
         uc[count++] = (agc_register_t){
             0x0260, 0, runtime_ngg_ge_pc_alloc
         };
+    }
+    if (runtime_hs_package) {
+        uintptr_t factor = (uintptr_t)(memory + WORK_BYTES +
+                                       TESS_OFFCHIP_BYTES);
+        uc[count++] = (agc_register_t){0x024e, 0,
+                                       TESS_FACTOR_BYTES / 4u};
+        uc[count++] = (agc_register_t){0x024f, 0,
+                                       TESS_OFFCHIP_WORKGROUPS - 1u};
+        uc[count++] = (agc_register_t){0x0250, 0,
+                                       (uint32_t)(factor >> 8)};
+        uc[count++] = (agc_register_t){0x0261, 0,
+                                       (uint32_t)(factor >> 40)};
     }
     return agc->set_uc(command, uc, count);
 }
@@ -2029,6 +2069,23 @@ static int append_shader_state(uint8_t *memory, void *vertex, void *pixel,
     return 0;
 }
 
+static int append_hull_shader_state(void *hull, agc_register_t *sh,
+                                    uint32_t *sh_count)
+{
+    agc_register_t *hull_cx = *(agc_register_t **)((uint8_t *)hull + 24);
+    agc_register_t *hull_sh = *(agc_register_t **)((uint8_t *)hull + 32);
+    uint32_t hull_cx_count = *((uint8_t *)hull + 91);
+    uint32_t hull_sh_count = *((uint8_t *)hull + 92);
+
+    if (!hull_cx || !hull_sh || hull_cx_count || hull_sh_count != 2 ||
+        *sh_count + hull_sh_count + 1 > 32)
+        return -1;
+    memcpy(sh + *sh_count, hull_sh, hull_sh_count * sizeof(*sh));
+    *sh_count += hull_sh_count;
+    sh[(*sh_count)++] = (agc_register_t){0x010b, 0, runtime_hs_rsrc2};
+    return 0;
+}
+
 static uint32_t last_register_value(const agc_register_t *registers,
                                     uint32_t count, uint16_t offset)
 {
@@ -2373,10 +2430,14 @@ int main(void)
     PS5_PROFILE_MARK(0);
 #endif
     const uint8_t *vs_header, *vs_code, *ps_header, *ps_code;
+    const uint8_t *hs_header = NULL, *hs_code = NULL;
     size_t vs_header_size = 0, vs_code_size = 0;
     size_t ps_header_size = 0, ps_code_size = 0;
+    size_t hs_header_size = 0, hs_code_size = 0;
+    size_t hs_header_at = 0, hs_code_at = 0;
     size_t vs_header_at = WORK_BYTES, vs_code_at = 0;
     size_t ps_header_at = 0, ps_code_at = 0;
+    size_t tess_descriptors_at = 0;
     size_t work_bytes = WORK_BYTES;
 #ifndef PS5_NATIVE_TITLE_RUNTIME
     void *agc_module = NULL, *driver_module = NULL, *video_module = NULL;
@@ -2398,7 +2459,7 @@ int main(void)
 #ifdef AGC_DEPTH_TEST_VARIANT
     uint8_t *depth = NULL;
 #endif
-    void *vertex = NULL, *pixel = NULL;
+    void *vertex = NULL, *pixel = NULL, *hull = NULL;
     int video_handle = -1, video_open_attempts = 0, buffers_registered = 0;
     int64_t render_marker = RENDER_MARKER;
 #ifdef AGC_RUNTIME_PACKAGES
@@ -2418,7 +2479,8 @@ int main(void)
     int depth_unmap_rc = 0, depth_release_rc = 0;
 #endif
     int work_unmap_rc = 0, work_release_rc = 0;
-    int init_rc = -1, vertex_rc = -1, pixel_rc = -1, link_rc = -1;
+    int init_rc = -1, vertex_rc = -1, pixel_rc = -1, hull_rc = -1;
+    int link_rc = -1;
     int work_alloc_rc = -1, work_map_rc = -1;
     int framebuffer_alloc_rc = -1, framebuffer_map_rc = -1;
 #ifdef AGC_OFFSCREEN_COLOR_VARIANT
@@ -2526,6 +2588,20 @@ int main(void)
         printf(LOG_PREFIX " invalid embedded shader package\n");
         goto cleanup;
     }
+    if (runtime_hs_package &&
+        shader_sections(runtime_hs_package, runtime_hs_package_len,
+                        &hs_header, &hs_header_size,
+                        &hs_code, &hs_code_size) != 0) {
+        printf(LOG_PREFIX " invalid hull shader package\n");
+        goto cleanup;
+    }
+    if (runtime_hs_package) {
+        tess_descriptors_at = (WORK_BYTES + TESS_OFFCHIP_BYTES +
+                               TESS_FACTOR_BYTES + 0xfffu) & ~0xfffu;
+        hs_header_at = tess_descriptors_at + 0x1000u;
+        hs_code_at = (hs_header_at + hs_header_size + 0xfffu) & ~0xfffu;
+        vs_header_at = (hs_code_at + hs_code_size + 0xfffu) & ~0xfffu;
+    }
     vs_code_at = (vs_header_at + vs_header_size + 0xfffu) & ~0xfffu;
     ps_header_at = (vs_code_at + vs_code_size + 0xfffu) & ~0xfffu;
     ps_code_at = (ps_header_at + ps_header_size + 0xfffu) & ~0xfffu;
@@ -2533,6 +2609,11 @@ int main(void)
     if (validate_shader_header(vs_header, vs_header_size, vs_code_size, 2) ||
         validate_shader_header(ps_header, ps_header_size, ps_code_size, 1)) {
         printf(LOG_PREFIX " embedded shader header validation failed\n");
+        goto cleanup;
+    }
+    if (runtime_hs_package &&
+        validate_shader_header(hs_header, hs_header_size, hs_code_size, 3)) {
+        printf(LOG_PREFIX " hull shader header validation failed\n");
         goto cleanup;
     }
 
@@ -2613,9 +2694,30 @@ int main(void)
     memcpy(memory + vs_code_at, vs_code, vs_code_size);
     memcpy(memory + ps_header_at, ps_header, ps_header_size);
     memcpy(memory + ps_code_at, ps_code, ps_code_size);
+    if (runtime_hs_package) {
+        uint32_t *descriptors = (uint32_t *)(memory + tess_descriptors_at);
+        uintptr_t offchip = (uintptr_t)(memory + WORK_BYTES);
+        uintptr_t factor = offchip + TESS_OFFCHIP_BYTES;
+
+        memcpy(memory + hs_header_at, hs_header, hs_header_size);
+        memcpy(memory + hs_code_at, hs_code, hs_code_size);
+        descriptors[20] = (uint32_t)factor;
+        descriptors[21] = (uint32_t)(factor >> 32);
+        descriptors[22] = TESS_FACTOR_BYTES;
+        descriptors[23] = UINT32_C(0x3004dfac);
+        descriptors[24] = (uint32_t)offchip;
+        descriptors[25] = (uint32_t)(offchip >> 32);
+        descriptors[26] = TESS_OFFCHIP_BYTES;
+        descriptors[27] = UINT32_C(0x3004dfac);
+    }
+    if (runtime_hs_package)
+        hull_rc = agc.create_shader(&hull, memory + hs_header_at,
+                                    memory + hs_code_at);
+    else
+        hull_rc = 0;
     vertex_rc = agc.create_shader(&vertex, memory + vs_header_at,
                                   memory + vs_code_at);
-    if (vertex_rc == 0)
+    if (hull_rc == 0 && vertex_rc == 0)
         pixel_rc = agc.create_shader(&pixel, memory + ps_header_at,
                                      memory + ps_code_at);
     if (pixel_rc == 0)
@@ -2998,8 +3100,15 @@ int main(void)
                             framebuffer) != 0 ||
 #endif
         append_shader_state(memory, vertex, pixel, cx, &cx_count,
-                            sh, &sh_count) != 0)
+                            sh, &sh_count) != 0 ||
+        (runtime_hs_package &&
+         append_hull_shader_state(hull, sh, &sh_count) != 0))
         goto receipt;
+    if (runtime_hs_package) {
+        cx[cx_count++] = (agc_register_t){0x02d6, 0,
+                                         runtime_ls_hs_config};
+        cx[cx_count++] = (agc_register_t){0x02db, 0, runtime_tf_param};
+    }
 #ifdef AGC_RENDER_TO_TEXTURE_VARIANT
     scanout_cx = (agc_register_t *)(memory + 0x4800);
     if (append_target_state(scanout_cx, &scanout_cx_count,
@@ -3040,6 +3149,15 @@ int main(void)
     set_linkage_uc_state(&agc, &command, memory);
     agc.set_sh(&command, sh, sh_count);
 #ifdef AGC_RUNTIME_PACKAGES
+    if (runtime_hs_package) {
+        uintptr_t descriptors = (uintptr_t)(memory + tess_descriptors_at);
+        uint32_t pointer[2] = {
+            (uint32_t)descriptors, (uint32_t)(descriptors >> 32)
+        };
+
+        agc.set_sh_direct(&command, 0x102, pointer, 2);
+        agc.set_sh_direct(&command, 0x082, pointer, 2);
+    }
     if (runtime_vertex_user_data_count)
         agc.set_sh_direct(&command, 0x8c, runtime_vertex_user_data,
                           runtime_vertex_user_data_count);
@@ -3852,10 +3970,10 @@ receipt:
 #endif
     {
     printf(LOG_PREFIX " init=%08" PRIx32 " vertex=%08" PRIx32
-           " pixel=%08" PRIx32 " link=%08" PRIx32
+           " hull=%08" PRIx32 " pixel=%08" PRIx32 " link=%08" PRIx32
            " video=%08" PRIx32 " video_attempts=%d registered=%d result=%d\n",
-           (uint32_t)init_rc, (uint32_t)vertex_rc, (uint32_t)pixel_rc,
-           (uint32_t)link_rc, (uint32_t)video_handle,
+           (uint32_t)init_rc, (uint32_t)vertex_rc, (uint32_t)hull_rc,
+           (uint32_t)pixel_rc, (uint32_t)link_rc, (uint32_t)video_handle,
            video_open_attempts, buffers_registered, result);
     printf(LOG_PREFIX " dmem_limit=%016" PRIx64
            " work=%08" PRIx32 "/%08" PRIx32 "/%016" PRIx64

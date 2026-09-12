@@ -685,6 +685,16 @@ egl_public_tess_hull_package.o: egl_public_tess_hull_package.c \
 	$(PROJECT)/src/platform/ps5_agc_package.h $(PSBC)/libpsbc/psbc_compile.h
 	$(CC) $(CFLAGS) -I$(PSBC)/libpsbc -I$(PROJECT)/src/platform -c -o $@ $<
 
+egl_public_tessellation_runtime.o: tessellation_runtime_gate.c \
+	$(PROJECT)/src/platform/ps5_agc_package.h \
+	$(PROJECT)/src/platform/ps5_scanout.h $(PSBC)/libpsbc/psbc_compile.h
+	$(CC) $(CFLAGS) $(PSBC_CFLAGS) -I$(PROJECT)/src/platform -c -o $@ $<
+
+tessellation_runtime_gate.elf: egl_public_tessellation_runtime.o \
+	gate2_empty_backend.o ps5_agc_package.o $(PSBC)/libpsbc.ps5.a
+	$(CXX) -o $@ egl_public_tessellation_runtime.o gate2_empty_backend.o \
+		ps5_agc_package.o $(PSBC)/libpsbc.ps5.a $(LDFLAGS)
+
 egl_public_private_array.o: egl_public_private_array.c private_array_fixture.h $(PROJECT)/src/platform/ps5_agc_package.h $(PSBC)/libpsbc/psbc_compile.h
 	$(CC) $(CFLAGS) $(PSBC_CFLAGS) -I$(PROJECT)/src/platform \
 		-Wno-unreachable-code-generic-assoc -c -o $@ $<
