@@ -155,7 +155,7 @@ main(void)
           glsl ? glsl : "(null)", draw_indirect, gpu_shader5);
    if (!draw_indirect
 #ifdef PS5_GLSL_400_TEST
-       || !gpu_shader5 || !glsl || strncmp(glsl, "4.00", 4)
+       || !gpu_shader5
 #endif
        )
       goto done;
