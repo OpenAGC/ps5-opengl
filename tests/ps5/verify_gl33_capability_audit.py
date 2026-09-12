@@ -883,7 +883,7 @@ require("egl_public_core33_sampler_array.o:" in MAKEFILE and
 require("PS5_ENABLE_TEXTURE_MIPMAP_CANDIDATE" in SCREEN and
         "(view->u.tex.first_level << 12)" in SCREEN and
         "(view->u.tex.last_level << 16)" in SCREEN and
-        "((multisampled ? 2u : texture->base.last_level) << 4)" in SCREEN and
+        "((multisampled ? 2u : descriptor_last_level) << 4)" in SCREEN and
         "(mip_filter << 26)" in SCREEN and
         "descriptor[9] = min_lod | (max_lod << 12)" in SCREEN and
         "descriptor[10] = lod_bias |" in SCREEN and
@@ -1865,7 +1865,7 @@ require("resource->base.bind & PIPE_BIND_DEPTH_STENCIL" in SCREEN and
 
 require("format == PIPE_FORMAT_Z32_FLOAT" in SCREEN and
         "ps5_sampled_texture_target(target)" in SCREEN and
-        "!depth_texture || sampler->compare_func > PIPE_FUNC_ALWAYS" in
+        "!depth_texture || stencil_texture ||\n            sampler->compare_func > PIPE_FUNC_ALWAYS" in
         SCREEN and
         "egl_public_core33_depth_array.o:" in MAKEFILE and
         DEPTH_ARRAY.count("glTexImage3D") == 2 and

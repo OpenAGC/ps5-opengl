@@ -1058,9 +1058,12 @@ ps5_sampled_texture_format(enum pipe_format format)
           (PS5_ENABLE_RGB10_A2UI_CANDIDATE &&
            format == PIPE_FORMAT_R10G10B10A2_UINT) ||
           (PS5_ENABLE_DEPTH_TEXTURE_CANDIDATE &&
-           (format == PIPE_FORMAT_Z32_FLOAT ||
-            (PS5_ENABLE_PACKED_DEPTH_STENCIL &&
-             format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT))) ||
+            (format == PIPE_FORMAT_Z32_FLOAT ||
+             (PS5_ENABLE_PACKED_DEPTH_STENCIL &&
+              format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT) ||
+             (PS5_ENABLE_GLSL_430_CANDIDATE &&
+              (format == PIPE_FORMAT_X32_S8X24_UINT ||
+               format == PIPE_FORMAT_S8_UINT)))) ||
           (PS5_ENABLE_CORE_TEXTURE_FORMATS_CANDIDATE &&
            ps5_core_sampled_texture_format(format));
 }
@@ -1193,6 +1196,9 @@ static bool
 ps5_texture_view_format_compatible(enum pipe_format storage,
                                    enum pipe_format view)
 {
+   if (storage == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT &&
+       view == PIPE_FORMAT_X32_S8X24_UINT)
+      return PS5_ENABLE_GLSL_430_CANDIDATE;
    return ps5_sampled_texture_format(storage) &&
           ps5_sampled_texture_format(view) &&
           util_format_get_blocksize(storage) == util_format_get_blocksize(view) &&
@@ -1411,6 +1417,10 @@ ps5_texture_format_size(enum pipe_format format)
    case PIPE_FORMAT_Z32_FLOAT: return 4;
    case PIPE_FORMAT_Z32_FLOAT_S8X24_UINT:
       return PS5_ENABLE_PACKED_DEPTH_STENCIL ? 8 : 0;
+   case PIPE_FORMAT_X32_S8X24_UINT:
+      return PS5_ENABLE_GLSL_430_CANDIDATE ? 8 : 0;
+   case PIPE_FORMAT_S8_UINT:
+      return PS5_ENABLE_GLSL_430_CANDIDATE ? 1 : 0;
    default: return 0;
    }
 }
@@ -1451,6 +1461,13 @@ ps5_texture_descriptor_format(enum pipe_format format, uint32_t *word1)
       if (PS5_ENABLE_DEPTH_TEXTURE_CANDIDATE) {
          *word1 = UINT32_C(0x01600000);
          return true;
+      }
+      return false;
+   case PIPE_FORMAT_X32_S8X24_UINT:
+   case PIPE_FORMAT_S8_UINT:
+      if (PS5_ENABLE_GLSL_430_CANDIDATE) {
+         *word1 = gfx10_format_table[PIPE_FORMAT_S8_UINT].img_format << 20;
+         return *word1 != 0;
       }
       return false;
    default: return false;
@@ -2620,10 +2637,13 @@ ps5_prepare_texture(struct ps5_context *context,
       unsigned format_size;
       unsigned descriptor_format_size;
       unsigned descriptor_stride;
+      unsigned descriptor_last_level;
       unsigned view_layers;
+      size_t sampled_layer_stride;
       bool tiled_render_target;
       bool tiled_depth_target;
       bool depth_texture;
+      bool stencil_texture;
       bool staged_packed_depth;
       bool multisampled;
 
@@ -2685,6 +2705,9 @@ ps5_prepare_texture(struct ps5_context *context,
       depth_texture = texture->base.format == PIPE_FORMAT_Z32_FLOAT ||
                       texture->base.format ==
                          PIPE_FORMAT_Z32_FLOAT_S8X24_UINT;
+      stencil_texture =
+         texture->base.format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT &&
+         view->format == PIPE_FORMAT_X32_S8X24_UINT;
       multisampled = PS5_ENABLE_MSAA4_CANDIDATE &&
                      texture->base.nr_samples == 4 &&
                      texture->base.nr_storage_samples == 4;
@@ -2702,11 +2725,19 @@ ps5_prepare_texture(struct ps5_context *context,
                            ((texture->base.bind & PIPE_BIND_DEPTH_STENCIL) ||
                             multisampled) &&
                            !texture->depth_staging_size;
-      descriptor_format_size = format_size;
-      descriptor_stride = texture->level_stride[0];
+      descriptor_format_size = stencil_texture ? 1u : format_size;
+      descriptor_stride = stencil_texture ? texture->base.width0
+                                           : texture->level_stride[0];
+      descriptor_last_level = stencil_texture ? 0u : texture->base.last_level;
+      sampled_layer_stride = stencil_texture
+         ? ps5_tiled_stencil_surface_size_samples(
+              texture->base.width0, texture->base.height0,
+              texture->base.nr_samples)
+         : texture->layer_stride;
       staged_packed_depth =
          texture->base.format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT &&
-         !tiled_depth_target && texture->depth_staging_size;
+         !stencil_texture && !tiled_depth_target &&
+         texture->depth_staging_size;
       if (!ps5_sampled_texture_target(texture->base.target) ||
           !ps5_sampled_texture_format(texture->base.format) ||
           !texture->base.width0 || !texture->base.height0 ||
@@ -2786,11 +2817,15 @@ ps5_prepare_texture(struct ps5_context *context,
           (view->target == PIPE_TEXTURE_CUBE && view_layers != 6) ||
           (view->target == PIPE_TEXTURE_CUBE_ARRAY && view_layers % 6) ||
           (view->target == PIPE_TEXTURE_3D &&
-           (view->u.tex.first_layer || view->u.tex.last_layer)) ||
+            (view->u.tex.first_layer || view->u.tex.last_layer)) ||
+          (stencil_texture &&
+           (!texture->stencil_data || multisampled ||
+            view->u.tex.first_level || view->u.tex.last_level)) ||
           (sampler->min_mip_filter != PIPE_TEX_MIPFILTER_NONE &&
            !PS5_ENABLE_TEXTURE_MIPMAP_CANDIDATE) ||
           (sampler->compare_mode &&
-           (!depth_texture || sampler->compare_func > PIPE_FUNC_ALWAYS)) ||
+           (!depth_texture || stencil_texture ||
+            sampler->compare_func > PIPE_FUNC_ALWAYS)) ||
           sampler->unnormalized_coords ||
           sampler->max_anisotropy > 1 ||
           !ps5_float_is_finite(sampler->min_lod) ||
@@ -2826,9 +2861,10 @@ ps5_prepare_texture(struct ps5_context *context,
       max_lod = ps5_texture_descriptor_unsigned_lod(sampler->max_lod);
       lod_bias = ps5_texture_descriptor_lod_bias(sampler->lod_bias);
 
-      texture_address = (uintptr_t)texture->data +
+      texture_address = (uintptr_t)(stencil_texture ? texture->stencil_data
+                                                    : texture->data) +
          (staged_packed_depth ? texture->depth_staging_offset : 0) +
-         (size_t)view->u.tex.first_layer * texture->layer_stride;
+         (size_t)view->u.tex.first_layer * sampled_layer_stride;
       if ((uint32_t)(texture_address >> 32) != metadata->address32_hi ||
           (texture_address & 0xffu))
          return false;
@@ -2840,11 +2876,11 @@ ps5_prepare_texture(struct ps5_context *context,
       descriptor[2] = ((texture->base.width0 - 1u) >> 2) |
                       ((texture->base.height0 - 1u) << 14) |
                       (UINT32_C(1) << 31); /* GFX10 RESOURCE_LEVEL. */
-      descriptor[3] = (tiled_depth_target && multisampled
+      descriptor[3] = ((tiled_depth_target || stencil_texture) && multisampled
                            ? (view->target == PIPE_TEXTURE_2D_ARRAY
                                  ? UINT32_C(0xf1820000)
                                  : UINT32_C(0xe1820000))
-                       : tiled_depth_target
+                       : tiled_depth_target || stencil_texture
                            ? (view->target == PIPE_TEXTURE_1D
                                  ? UINT32_C(0x81800000)
                               : view->target ==
@@ -2892,7 +2928,8 @@ ps5_prepare_texture(struct ps5_context *context,
                          ? view_layers - 1u : 0;
       if (view->target == PIPE_TEXTURE_2D &&
           !texture->base.last_level &&
-          !tiled_render_target && !tiled_depth_target && !multisampled &&
+          !tiled_render_target && !tiled_depth_target && !stencil_texture &&
+          !multisampled &&
           !util_format_is_compressed(texture->base.format)) {
          unsigned pitch = descriptor_stride / descriptor_format_size;
 
@@ -2900,7 +2937,7 @@ ps5_prepare_texture(struct ps5_context *context,
             descriptor[4] = pitch - 1u; /* GFX10.3 custom linear pitch. */
       }
       descriptor[5] = UINT32_C(0x00400000) |
-                      ((multisampled ? 2u : texture->base.last_level) << 4);
+                      ((multisampled ? 2u : descriptor_last_level) << 4);
       descriptor[8] = wrap[0] | (wrap[1] << 3) | (wrap[2] << 6) |
                       (sampler->compare_mode ?
                          sampler->compare_func << 12 : 0) |
@@ -2925,7 +2962,10 @@ ps5_prepare_texture(struct ps5_context *context,
                 descriptor[9], descriptor[10]);
       }
       flush_size = MAX2(flush_size, binding->offset + binding->stride);
-      if (tiled_render_target || tiled_depth_target) {
+      if (stencil_texture) {
+          ps5_flush_gpu_data(texture->stencil_data,
+                             texture->stencil_allocation_size);
+      } else if (tiled_render_target || tiled_depth_target) {
          size_t tiled_size = multisampled
             ? tiled_depth_target
                ? ps5_tiled_rgba8_msaa4_surface_size(texture->base.width0,
@@ -4141,8 +4181,16 @@ ps5_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
                   (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW)) &&
               !(bindings & ~(PIPE_BIND_RENDER_TARGET |
                               PIPE_BIND_SAMPLER_VIEW))) ||
-              ps5_msaa4_depth_support(format, target, sample_count,
-                                      storage_sample_count, bindings));
+               ps5_msaa4_depth_support(format, target, sample_count,
+                                       storage_sample_count, bindings));
+
+   if (PS5_ENABLE_GLSL_430_CANDIDATE &&
+       (format == PIPE_FORMAT_X24S8_UINT ||
+        format == PIPE_FORMAT_X32_S8X24_UINT ||
+        format == PIPE_FORMAT_S8_UINT))
+      return ps5_sampled_texture_target(target) && sample_count <= 1 &&
+             storage_sample_count <= 1 &&
+             bindings == PIPE_BIND_SAMPLER_VIEW;
 
    if (target == PIPE_BUFFER)
       return sample_count <= 1 && storage_sample_count <= 1 &&

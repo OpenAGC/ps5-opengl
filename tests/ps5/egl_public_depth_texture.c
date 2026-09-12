@@ -127,7 +127,35 @@ matching_pixels(const uint32_t *pixels)
 int
 main(void)
 {
-#ifdef PS5_CORE_33_TEST
+#ifdef PS5_GL43_STENCIL_TEXTURE_TEST
+   static const char *vertex_source =
+      "#version 430 core\n"
+      "layout(location = 0) in vec2 a_position;\n"
+      "uniform float u_ndc_depth;\n"
+      "void main() { gl_Position = vec4(a_position, u_ndc_depth, 1.0); }\n";
+   static const char *producer_source =
+      "#version 430 core\n"
+      "out vec4 frag_color;\n"
+      "void main() { frag_color = vec4(0.0, 0.0, 1.0, 1.0); }\n";
+   static const char *raw_source =
+      "#version 430 core\n"
+      "uniform usampler2D u_depth_texture;\n"
+      "out vec4 frag_color;\n"
+      "void main() {\n"
+      "  uint s = texture(u_depth_texture, vec2(0.5)).r;\n"
+      "  frag_color = s == 0x5au ? vec4(0.0, 1.0, 0.0, 1.0)\n"
+      "                            : vec4(1.0, 0.0, 0.0, 1.0);\n"
+      "}\n";
+   static const char *shadow_source =
+      "#version 430 core\n"
+      "uniform sampler2DShadow u_depth_texture;\n"
+      "out vec4 frag_color;\n"
+      "void main() {\n"
+      "  float visible = texture(u_depth_texture, vec3(0.5, 0.5, 0.125));\n"
+      "  frag_color = visible > 0.5 ? vec4(0.0, 1.0, 0.0, 1.0)\n"
+      "                             : vec4(1.0, 0.0, 0.0, 1.0);\n"
+      "}\n";
+#elif defined(PS5_CORE_33_TEST)
    static const char *vertex_source =
       "#version 330\n"
       "layout(location = 0) in vec2 a_position;\n"
@@ -198,8 +226,13 @@ main(void)
    };
 #ifdef PS5_CORE_33_TEST
    const EGLint context_attributes[] = {
+#ifdef PS5_GL43_STENCIL_TEXTURE_TEST
+      EGL_CONTEXT_MAJOR_VERSION_KHR, 4,
+      EGL_CONTEXT_MINOR_VERSION_KHR, 3,
+#else
       EGL_CONTEXT_MAJOR_VERSION_KHR, 3,
       EGL_CONTEXT_MINOR_VERSION_KHR, 3,
+#endif
       EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR,
       EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR,
       EGL_NONE,
@@ -236,7 +269,8 @@ main(void)
 #endif
    uint32_t raw_hash = 0, shadow_hash = 0;
    unsigned raw_matching = 0, shadow_matching = 0;
-   int depth_float = 0, fbo_extension = 0, made_current = 0, passed = 0;
+   int depth_float = 0, fbo_extension = 0, stencil_texturing = 1;
+   int made_current = 0, passed = 0;
 
    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
    if (display == EGL_NO_DISPLAY ||
@@ -275,6 +309,9 @@ main(void)
    snprintf(glsl_text, sizeof(glsl_text), "%s", glsl);
    depth_float = has_core_extension("GL_ARB_depth_buffer_float");
    fbo_extension = has_core_extension("GL_ARB_framebuffer_object");
+#ifdef PS5_GL43_STENCIL_TEXTURE_TEST
+   stencil_texturing = has_core_extension("GL_ARB_stencil_texturing");
+#endif
 #else
    extensions = (const char *)glGetString(GL_EXTENSIONS);
    if (!extensions)
@@ -283,7 +320,7 @@ main(void)
    fbo_extension = has_extension(extensions, "GL_ARB_framebuffer_object") ||
                    has_extension(extensions, "GL_EXT_framebuffer_object");
 #endif
-   if (!depth_float || !fbo_extension)
+   if (!depth_float || !fbo_extension || !stencil_texturing)
       goto cleanup;
 
    if (compile_shader(GL_VERTEX_SHADER, vertex_source, &vs) ||
@@ -323,9 +360,16 @@ main(void)
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, 0);
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_NONE);
-   glTexImage2D(GL_TEXTURE_2D, 0, GL_DEPTH_COMPONENT32F,
+   glTexImage2D(GL_TEXTURE_2D, 0,
+#ifdef PS5_GL43_STENCIL_TEXTURE_TEST
+                GL_DEPTH32F_STENCIL8,
+                TARGET_WIDTH, TARGET_HEIGHT, 0,
+                GL_DEPTH_STENCIL, GL_FLOAT_32_UNSIGNED_INT_24_8_REV, NULL);
+#else
+                GL_DEPTH_COMPONENT32F,
                 TARGET_WIDTH, TARGET_HEIGHT, 0,
                 GL_DEPTH_COMPONENT, GL_FLOAT, NULL);
+#endif
    glGetTexLevelParameteriv(GL_TEXTURE_2D, 0, GL_TEXTURE_INTERNAL_FORMAT,
                             &internal_format);
 
@@ -337,12 +381,22 @@ main(void)
    glBindFramebuffer(GL_FRAMEBUFFER, framebuffer);
    glFramebufferRenderbuffer(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0,
                              GL_RENDERBUFFER, color);
-   glFramebufferTexture2D(GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT,
+   glFramebufferTexture2D(GL_FRAMEBUFFER,
+#ifdef PS5_GL43_STENCIL_TEXTURE_TEST
+                          GL_DEPTH_STENCIL_ATTACHMENT,
+#else
+                          GL_DEPTH_ATTACHMENT,
+#endif
                           GL_TEXTURE_2D, depth_texture, 0);
    framebuffer_status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
    setup_error = glGetError();
    if (framebuffer_status != GL_FRAMEBUFFER_COMPLETE ||
-       internal_format != GL_DEPTH_COMPONENT32F ||
+       internal_format !=
+#ifdef PS5_GL43_STENCIL_TEXTURE_TEST
+          GL_DEPTH32F_STENCIL8 ||
+#else
+          GL_DEPTH_COMPONENT32F ||
+#endif
        setup_error != GL_NO_ERROR)
       goto cleanup;
 
@@ -362,8 +416,12 @@ main(void)
    glEnable(GL_DEPTH_TEST);
    glDepthFunc(GL_ALWAYS);
    glDepthMask(GL_TRUE);
+#ifdef PS5_GL43_STENCIL_TEXTURE_TEST
+   glClearBufferfi(GL_DEPTH_STENCIL, 0, 1.0f, 0x5a);
+#else
    glClearDepth(1.0);
    glClear(GL_DEPTH_BUFFER_BIT);
+#endif
    glUseProgram(producer);
    glUniform1f(producer_depth, -0.5f);
    glDrawArrays(GL_TRIANGLES, 0, 3);
@@ -372,6 +430,11 @@ main(void)
    glBindFramebuffer(GL_FRAMEBUFFER, 0);
    glViewport(0, 0, DISPLAY_WIDTH, DISPLAY_HEIGHT);
    glDisable(GL_DEPTH_TEST);
+#ifdef PS5_GL43_STENCIL_TEXTURE_TEST
+   glBindTexture(GL_TEXTURE_2D, depth_texture);
+   glTexParameteri(GL_TEXTURE_2D, GL_DEPTH_STENCIL_TEXTURE_MODE,
+                   GL_STENCIL_INDEX);
+#endif
    glUseProgram(raw);
    glUniform1f(raw_depth, 0.0f);
    glUniform1i(raw_sampler, 0);
@@ -385,6 +448,10 @@ main(void)
    raw_matching = matching_pixels(pixels);
 
    glBindTexture(GL_TEXTURE_2D, depth_texture);
+#ifdef PS5_GL43_STENCIL_TEXTURE_TEST
+   glTexParameteri(GL_TEXTURE_2D, GL_DEPTH_STENCIL_TEXTURE_MODE,
+                   GL_DEPTH_COMPONENT);
+#endif
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE,
                    GL_COMPARE_R_TO_TEXTURE);
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LESS);
@@ -404,16 +471,31 @@ main(void)
             width == DISPLAY_WIDTH && height == DISPLAY_HEIGHT &&
             depth_float && fbo_extension &&
             framebuffer_status == GL_FRAMEBUFFER_COMPLETE &&
-            internal_format == GL_DEPTH_COMPONENT32F &&
+            internal_format ==
+#ifdef PS5_GL43_STENCIL_TEXTURE_TEST
+               GL_DEPTH32F_STENCIL8 && stencil_texturing &&
+#else
+               GL_DEPTH_COMPONENT32F &&
+#endif
             raw_matching == CROP_SIZE * CROP_SIZE &&
             raw_hash == GREEN_HASH && raw_error == GL_NO_ERROR &&
             shadow_matching == CROP_SIZE * CROP_SIZE &&
             shadow_hash == GREEN_HASH && shadow_error == GL_NO_ERROR;
 #ifdef PS5_CORE_33_TEST
-   passed &= context_version == 3 &&
+   passed &= context_version ==
+#ifdef PS5_GL43_STENCIL_TEXTURE_TEST
+             4 &&
+#else
+             3 &&
+#endif
              profile_mask == EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR &&
+#ifdef PS5_GL43_STENCIL_TEXTURE_TEST
+             strncmp(version_text, "4.3 ", 4) == 0 &&
+             strncmp(glsl_text, "4.30", 4) == 0;
+#else
              strncmp(version_text, "3.3 ", 4) == 0 &&
              strncmp(glsl_text, "3.30", 4) == 0;
+#endif
 #endif
    if (!eglSwapBuffers(display, surface))
       passed = 0;
