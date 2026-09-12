@@ -522,7 +522,7 @@ index 945737d..c84de60 100644
  
  	psbc_free_output(&output);
 diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
-index bacbc6a..578f322 100644
+index bacbc6a..772728b 100644
 --- a/libpsbc/psbc_compile.c
 +++ b/libpsbc/psbc_compile.c
 @@ -12,6 +12,7 @@
@@ -1523,7 +1523,7 @@ index bacbc6a..578f322 100644
          ac_info->has_fma_mix = true;
      } else if (gfxlevel == GFX10) {
          ac_info->max_waves_per_simd = 20;
-@@ -928,26 +1791,947 @@ static void setup_target(PsbcTarget target,
+@@ -928,26 +1791,970 @@ static void setup_target(PsbcTarget target,
      }
  }
  
@@ -1732,7 +1732,8 @@ index bacbc6a..578f322 100644
 +            return false;
 +        if (v->data.location == VARYING_SLOT_POS && !v->data.patch) {
 +            if (s == MESA_SHADER_TESS_CTRL || (s == MESA_SHADER_TESS_EVAL && input)) {
-+                if (!glsl_type_is_array(type) || glsl_get_length(type) != 3)
++                if (!glsl_type_is_array(type) || !glsl_get_length(type) ||
++                    glsl_get_length(type) > 32)
 +                    return false;
 +                type = glsl_get_array_element(type);
 +            }
@@ -1876,8 +1877,10 @@ index bacbc6a..578f322 100644
 +/* Same allocation equation as ac_shader_util.c:get_tcs_wg_output_mem_size.
 + * Check a single patch BEFORE RADV's patch-count calculation (which floors to
 + * one even if capacity cannot hold it). Counts come from actual linked NIR. */
-+static unsigned psbc_tess_output_bytes(const ac_nir_tess_io_info* io, unsigned patches) {
-+    return align(16 * 3 * patches, AMD_MEMCHANNEL_INTERLEAVE_BYTES) *
++static unsigned psbc_tess_output_bytes(const ac_nir_tess_io_info* io,
++                                       unsigned output_vertices,
++                                       unsigned patches) {
++    return align(16 * output_vertices * patches, AMD_MEMCHANNEL_INTERLEAVE_BYTES) *
 +               io->highest_remapped_vram_output +
 +           align(16 * patches, AMD_MEMCHANNEL_INTERLEAVE_BYTES) *
 +               io->highest_remapped_vram_patch_output;
@@ -2074,7 +2077,7 @@ index bacbc6a..578f322 100644
 +        return PSBC_RESULT_INVALID_ARGUMENT;
 +    memset(out, 0, sizeof(*out));
 +    if (!vs_nir || !tcs_nir || !tes_nir || !options ||
-+        options->input_patch_vertices != 3 ||
++        !options->input_patch_vertices || options->input_patch_vertices > 32 ||
 +        !options->offchip_workgroup_capacity_dwords ||
 +        options->offchip_workgroup_capacity_dwords > UINT32_MAX / 4)
 +        return PSBC_RESULT_INVALID_ARGUMENT;
@@ -2093,10 +2096,14 @@ index bacbc6a..578f322 100644
 +        return PSBC_RESULT_INVALID_ARGUMENT;
 +#undef PSBC_TESS_CONFLICT
 +    psbc_merge_tess_info(&tes_info, &tcs_info);
-+    if (tes_info.tess.tcs_vertices_out != 3 ||
-+        tes_info.tess._primitive_mode != TESS_PRIMITIVE_TRIANGLES ||
-+        tes_info.tess.spacing != TESS_SPACING_EQUAL ||
-+        !tes_info.tess.ccw || tes_info.tess.point_mode)
++    if (!tes_info.tess.tcs_vertices_out ||
++        tes_info.tess.tcs_vertices_out > 32 ||
++        (tes_info.tess._primitive_mode != TESS_PRIMITIVE_TRIANGLES &&
++         tes_info.tess._primitive_mode != TESS_PRIMITIVE_QUADS &&
++         tes_info.tess._primitive_mode != TESS_PRIMITIVE_ISOLINES) ||
++        (tes_info.tess.spacing != TESS_SPACING_EQUAL &&
++         tes_info.tess.spacing != TESS_SPACING_FRACTIONAL_ODD &&
++         tes_info.tess.spacing != TESS_SPACING_FRACTIONAL_EVEN))
 +        return PSBC_RESULT_INVALID_ARGUMENT;
 +    const nir_shader* inputs[] = {vs_nir, tcs_nir, tes_nir};
 +    for (unsigned i = 0; i < 3; ++i)
@@ -2156,7 +2163,8 @@ index bacbc6a..578f322 100644
 +    nir_gather_tcs_info(hs->nir, &gathered, hs->nir->info.tess._primitive_mode,
 +                       hs->nir->info.tess.spacing);
 +    ac_nir_get_tess_io_info(hs->nir, &gathered, ~0ull, ~0u, NULL, true, &io);
-+    if (psbc_tess_output_bytes(&io, 1) > ac.hs_offchip_workgroup_dw_size * 4) {
++    if (psbc_tess_output_bytes(&io, tes_info.tess.tcs_vertices_out, 1) >
++        ac.hs_offchip_workgroup_dw_size * 4) {
 +        result = PSBC_RESULT_INVALID_ARGUMENT;
 +        goto cleanup;
 +    }
@@ -2167,7 +2175,9 @@ index bacbc6a..578f322 100644
 +    }
 +    radv_nir_shader_info_link(&ci, &gfx, stages);
 +    if (!hs->info.num_tess_patches || hs->info.num_tess_patches != tes->info.num_tess_patches ||
-+        psbc_tess_output_bytes(&hs->info.tcs.io_info, hs->info.num_tess_patches) >
++        psbc_tess_output_bytes(&hs->info.tcs.io_info,
++                               hs->info.tcs.tcs_vertices_out,
++                               hs->info.num_tess_patches) >
 +            ac.hs_offchip_workgroup_dw_size * 4 ||
 +        !vs->info.vs.as_ls || vs->info.is_ngg || hs->info.is_ngg || !tes->info.is_ngg ||
 +        hs->info.tcs.lds_size > ac.lds_size_per_workgroup) {
@@ -2255,9 +2265,22 @@ index bacbc6a..578f322 100644
 +        .ls_hs_config = S_028B58_NUM_PATCHES(hs->info.num_tess_patches) |
 +            S_028B58_HS_NUM_INPUT_CP(options->input_patch_vertices) |
 +            S_028B58_HS_NUM_OUTPUT_CP(hs->info.tcs.tcs_vertices_out),
-+        .tf_param = S_028B6C_TYPE(V_028B6C_TESS_TRIANGLE) |
-+            S_028B6C_PARTITIONING(V_028B6C_PART_INTEGER) |
-+            S_028B6C_TOPOLOGY(V_028B6C_OUTPUT_TRIANGLE_CCW) |
++        .tf_param = S_028B6C_TYPE(
++            tes_info.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES
++                ? V_028B6C_TESS_ISOLINE
++                : tes_info.tess._primitive_mode == TESS_PRIMITIVE_QUADS
++                    ? V_028B6C_TESS_QUAD : V_028B6C_TESS_TRIANGLE) |
++            S_028B6C_PARTITIONING(
++                tes_info.tess.spacing == TESS_SPACING_FRACTIONAL_ODD
++                    ? V_028B6C_PART_FRAC_ODD
++                    : tes_info.tess.spacing == TESS_SPACING_FRACTIONAL_EVEN
++                        ? V_028B6C_PART_FRAC_EVEN : V_028B6C_PART_INTEGER) |
++            S_028B6C_TOPOLOGY(
++                tes_info.tess.point_mode ? V_028B6C_OUTPUT_POINT
++                : tes_info.tess._primitive_mode == TESS_PRIMITIVE_ISOLINES
++                    ? V_028B6C_OUTPUT_LINE
++                    : tes_info.tess.ccw ? V_028B6C_OUTPUT_TRIANGLE_CCW
++                                        : V_028B6C_OUTPUT_TRIANGLE_CW) |
 +            S_028B6C_DISTRIBUTION_MODE(V_028B6C_NO_DIST),
 +        .hs_ring_offsets_sgpr = 0,
 +        .tes_ring_offsets_sgpr = 0,
@@ -2475,7 +2498,7 @@ index bacbc6a..578f322 100644
  
      /* Ensure library is initialized */
      psbc_init();
-@@ -961,17 +2745,43 @@ PsbcResult psbc_compile_shader(
+@@ -961,17 +2768,43 @@ PsbcResult psbc_compile_shader(
      /* Construct ac_compiler_info for the target GPU */
      struct ac_compiler_info ac_info = {0};
      setup_ac_info(&ac_info, gfxlevel);
@@ -2520,7 +2543,7 @@ index bacbc6a..578f322 100644
      /* ACO uses debug.family for disassembly and init_program assertion */
      compiler_info.debug.family = chipfamily;
  
-@@ -981,6 +2791,7 @@ PsbcResult psbc_compile_shader(
+@@ -981,6 +2814,7 @@ PsbcResult psbc_compile_shader(
      /* Construct radv_shader_stage */
      struct radv_shader_stage stage = {0};
      stage.stage = mesa_stage;
@@ -2528,7 +2551,7 @@ index bacbc6a..578f322 100644
      /* Set next_stage based on the pipeline graph.
       * For standalone compilation we assume the simplest pipeline:
       *   VS → FS, VS → HS → DS → FS, VS → GS → FS
-@@ -992,46 +2803,406 @@ PsbcResult psbc_compile_shader(
+@@ -992,46 +2826,406 @@ PsbcResult psbc_compile_shader(
      case MESA_SHADER_GEOMETRY:  stage.next_stage = MESA_SHADER_FRAGMENT;     break;
      default:                    stage.next_stage = MESA_SHADER_NONE;         break;
      }
@@ -2959,7 +2982,7 @@ index bacbc6a..578f322 100644
  
      /* Determine previous stage for shader args declaration.
       * HS/GS need previous_stage=VERTEX so that the merged-pipeline args
-@@ -1049,10 +3220,22 @@ PsbcResult psbc_compile_shader(
+@@ -1049,10 +3243,22 @@ PsbcResult psbc_compile_shader(
      radv_declare_shader_args(
          &compiler_info, &gfx_state, &stage, previous_stage, NULL
      );
@@ -2983,7 +3006,7 @@ index bacbc6a..578f322 100644
  
      /* For geometry shaders, run the legacy GS lowering pass.
       * On GFX10.3 (PS5), NGG GS requires merging with the previous stage,
-@@ -1080,16 +3263,72 @@ PsbcResult psbc_compile_shader(
+@@ -1080,16 +3286,72 @@ PsbcResult psbc_compile_shader(
              ralloc_free(gs_copy);
      }
  
@@ -3060,7 +3083,7 @@ index bacbc6a..578f322 100644
          psbc_shutdown();
          return PSBC_RESULT_COMPILE_ACO;
      }
-@@ -1098,6 +3337,22 @@ PsbcResult psbc_compile_shader(
+@@ -1098,6 +3360,22 @@ PsbcResult psbc_compile_shader(
      struct radv_shader_binary_legacy* legacy =
          (struct radv_shader_binary_legacy*)binary;
  
@@ -3083,7 +3106,7 @@ index bacbc6a..578f322 100644
      /* The data layout in radv_shader_binary_legacy is:
       * [stats | code | ir | disasm | debug_info]
       * Code starts at offset stats_size. */
-@@ -1116,28 +3371,104 @@ PsbcResult psbc_compile_shader(
+@@ -1116,28 +3394,104 @@ PsbcResult psbc_compile_shader(
          .psbc_stage = opts->stage,
          .spirv_data = spirv,
          .spirv_size = spirv_size,
@@ -3192,7 +3215,7 @@ index bacbc6a..578f322 100644
  }
  
  const char* psbc_result_string(PsbcResult result) {
-@@ -1149,6 +3480,7 @@ const char* psbc_result_string(PsbcResult result) {
+@@ -1149,6 +3503,7 @@ const char* psbc_result_string(PsbcResult result) {
      case PSBC_RESULT_COMPILE_ACO:      return "ACO shader compilation failed";
      case PSBC_RESULT_OUT_OF_MEMORY:    return "out of memory";
      case PSBC_RESULT_INTERNAL_ERROR:   return "internal error";

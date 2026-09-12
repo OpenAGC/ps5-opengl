@@ -90,9 +90,9 @@ main(void)
    static const char *tess_vs =
       "#version 330 core\n"
       "void main(){"
-      "int id=gl_VertexID-3;"
-      "float x=id==1?0.8:-0.8;"
-      "float y=id==2?0.8:-0.8;"
+      "int id=gl_VertexID-4;"
+      "float x=(id&1)!=0?0.8:-0.8;"
+      "float y=(id&2)!=0?0.8:-0.8;"
       "gl_Position=vec4(x,y,0.5,1.0);}\n";
    static const char *tcs =
       "#version 330 core\n"
@@ -118,12 +118,51 @@ main(void)
    static const char *blue =
       "#version 330 core\n"
       "out vec4 c;void main(){c=vec4(0,0,1,1);}\n";
+   static const char *quad_tcs =
+      "#version 330 core\n"
+      "#extension GL_ARB_tessellation_shader : require\n"
+      "layout(vertices=4) out;"
+      "void main(){"
+      "gl_out[gl_InvocationID].gl_Position=gl_in[gl_InvocationID].gl_Position;"
+      "if(gl_InvocationID==0){"
+      "gl_TessLevelOuter[0]=2.0;gl_TessLevelOuter[1]=2.0;"
+      "gl_TessLevelOuter[2]=2.0;gl_TessLevelOuter[3]=2.0;"
+      "gl_TessLevelInner[0]=2.0;gl_TessLevelInner[1]=2.0;}}\n";
+   static const char *quad_tes =
+      "#version 330 core\n"
+      "#extension GL_ARB_tessellation_shader : require\n"
+      "layout(quads,fractional_even_spacing,cw) in;"
+      "void main(){vec2 p=gl_TessCoord.xy;gl_Position="
+      "mix(mix(gl_in[0].gl_Position,gl_in[1].gl_Position,p.x),"
+      "mix(gl_in[2].gl_Position,gl_in[3].gl_Position,p.x),p.y);}\n";
+   static const char *line_tcs =
+      "#version 330 core\n"
+      "#extension GL_ARB_tessellation_shader : require\n"
+      "layout(vertices=2) out;"
+      "void main(){"
+      "gl_out[gl_InvocationID].gl_Position=gl_in[gl_InvocationID].gl_Position;"
+      "if(gl_InvocationID==0){gl_TessLevelOuter[0]=4.0;"
+      "gl_TessLevelOuter[1]=4.0;}}\n";
+   static const char *line_tes =
+      "#version 330 core\n"
+      "#extension GL_ARB_tessellation_shader : require\n"
+      "layout(isolines,equal_spacing) in;"
+      "void main(){gl_Position=mix(gl_in[0].gl_Position,"
+      "gl_in[1].gl_Position,gl_TessCoord.x);}\n";
+   static const char *yellow =
+      "#version 330 core\n"
+      "out vec4 c;void main(){c=vec4(1,1,0,1);}\n";
+   static const char *magenta =
+      "#version 330 core\n"
+      "out vec4 c;void main(){c=vec4(1,0,1,1);}\n";
    const char *tess_sources[] = {tess_vs, tcs, tes, green};
    const GLenum tess_types[] = {GL_VERTEX_SHADER, GL_TESS_CONTROL_SHADER,
                                 GL_TESS_EVALUATION_SHADER,
                                 GL_FRAGMENT_SHADER};
    const char *plain_sources[] = {vs, blue};
    const GLenum plain_types[] = {GL_VERTEX_SHADER, GL_FRAGMENT_SHADER};
+   const char *quad_sources[] = {tess_vs, quad_tcs, quad_tes, yellow};
+   const char *line_sources[] = {tess_vs, line_tcs, line_tes, magenta};
    const EGLint config_attrs[] = {
       EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
       EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
@@ -139,9 +178,10 @@ main(void)
    EGLSurface surface = EGL_NO_SURFACE;
    EGLContext context = EGL_NO_CONTEXT;
    EGLint count = 0;
-   GLuint programs[2] = {0};
+   GLuint programs[4] = {0};
    GLuint vao = 0;
-   unsigned green_count = 0, blue_count = 0, draws = 0;
+   unsigned green_count = 0, yellow_count = 0, magenta_count = 0;
+   unsigned blue_count = 0, draws = 0;
    int status = -1, passed = 0;
 
    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -157,31 +197,46 @@ main(void)
       goto done;
    programs[0] = program(tess_sources, tess_types, 4);
    programs[1] = program(plain_sources, plain_types, 2);
-   if (!programs[0] || !programs[1])
+   programs[2] = program(quad_sources, tess_types, 4);
+   programs[3] = program(line_sources, tess_types, 4);
+   if (!programs[0] || !programs[1] || !programs[2] || !programs[3])
       goto done;
    glGenVertexArrays(1, &vao);
    glBindVertexArray(vao);
    glViewport(0, 0, SIZE, SIZE);
-   glPatchParameteri(GL_PATCH_VERTICES, 3);
+   glPatchParameteri(GL_PATCH_VERTICES, 4);
    glUseProgram(programs[0]);
    glClearColor(0, 0, 0, 1);
    glClear(GL_COLOR_BUFFER_BIT);
-   glDrawArrays(GL_PATCHES, 3, 3);
+   glDrawArrays(GL_PATCHES, 4, 4);
    green_count = matching(UINT32_C(0xff00ff00));
+   glUseProgram(programs[2]);
+   glClear(GL_COLOR_BUFFER_BIT);
+   glDrawArrays(GL_PATCHES, 4, 4);
+   yellow_count = matching(UINT32_C(0xff00ffff));
+   glUseProgram(programs[3]);
+   glClear(GL_COLOR_BUFFER_BIT);
+   glDrawArrays(GL_PATCHES, 4, 4);
+   magenta_count = matching(UINT32_C(0xffff00ff));
    glUseProgram(programs[1]);
    glClear(GL_COLOR_BUFFER_BIT);
    glDrawArrays(GL_TRIANGLES, 0, 3);
    blue_count = matching(UINT32_C(0xffff0000));
    status = ps5_egl_current_draw_status(&draws);
-   passed = glGetError() == GL_NO_ERROR && status == 0 && draws == 4 &&
-            green_count > 500 && blue_count > 500;
+   passed = glGetError() == GL_NO_ERROR && status == 0 && draws == 8 &&
+            green_count > 500 && yellow_count > 1000 &&
+            magenta_count > 20 && blue_count > 500;
 
 done:
-   printf("[ps5-egl-tessellation] green=%u blue=%u draws=%u status=%d result=%s\n",
-          green_count, blue_count, draws, status, passed ? "pass" : "fail");
+   printf("[ps5-egl-tessellation] green=%u yellow=%u magenta=%u blue=%u "
+          "draws=%u status=%d result=%s\n", green_count, yellow_count,
+          magenta_count, blue_count, draws, status,
+          passed ? "pass" : "fail");
    glDeleteVertexArrays(1, &vao);
    glDeleteProgram(programs[0]);
    glDeleteProgram(programs[1]);
+   glDeleteProgram(programs[2]);
+   glDeleteProgram(programs[3]);
    if (display != EGL_NO_DISPLAY)
       eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
    if (context != EGL_NO_CONTEXT)

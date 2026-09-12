@@ -17,8 +17,8 @@
   },
   "psbc_patch": {
     "path": "toolchain/opengnm-psbc-ps5.patch",
-      "sha256": "3f48fb85f692c09115e593257b9842ea546c353664c86d4cd75afd0208f25744",
-      "patched_tree": "d4c42c8e9f95f3faf009b4ba6e11bf422713f092",
+      "sha256": "aeb64cd0b080d1c29d2ab4e565e8674e694bca990c66a33724d4728227276979",
+      "patched_tree": "f63b15b8502312157ee471c42b34fb6351187054",
     "research_commit": "a11c1925e53c555ff882930fcfdb2d8936f52b88"
   },
   "native_boilerplate": {

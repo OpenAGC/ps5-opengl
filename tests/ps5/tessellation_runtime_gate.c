@@ -24,7 +24,7 @@ extern int32_t sceKernelReleaseDirectMemory(int64_t, size_t);
 
 extern int ps5_agc_gate2_set_packages(const void *, size_t, const void *, size_t);
 extern int ps5_agc_gate2_set_tessellation(const void *, size_t, uint32_t,
-                                          uint32_t, uint32_t);
+                                          uint32_t, uint32_t, unsigned int);
 extern int ps5_agc_gate2_set_ngg_control(uint32_t, uint32_t);
 extern int ps5_agc_gate2_set_framebuffer(void *, size_t);
 extern int ps5_agc_gate2_set_draw_state(uint32_t, unsigned int);
@@ -166,7 +166,7 @@ main(void)
        ps5_agc_gate2_set_tessellation(hs_package, hs_size,
                                       tess.runtime.hs_rsrc2,
                                       tess.runtime.ls_hs_config,
-                                      tess.runtime.tf_param) ||
+                                      tess.runtime.tf_param, 3) ||
        ps5_agc_gate2_set_ngg_control(1, UINT32_C(0x7fe)) ||
        ps5_agc_gate2_set_framebuffer(framebuffer, PS5_SCANOUT_BYTES) ||
        ps5_agc_gate2_set_draw_state(9, 3))

@@ -115,6 +115,7 @@ static unsigned int runtime_hs_package_len;
 static uint32_t runtime_hs_rsrc2;
 static uint32_t runtime_ls_hs_config;
 static uint32_t runtime_tf_param;
+static unsigned int runtime_patch_vertices;
 
 int ps5_agc_gate2_set_packages(const void *vs, size_t vs_size,
                                const void *ps, size_t ps_size)
@@ -132,15 +133,19 @@ int ps5_agc_gate2_set_packages(const void *vs, size_t vs_size,
 int ps5_agc_gate2_set_tessellation(const void *hs, size_t hs_size,
                                    uint32_t hs_rsrc2,
                                    uint32_t ls_hs_config,
-                                   uint32_t tf_param)
+                                   uint32_t tf_param,
+                                   unsigned int patch_vertices)
 {
-    if ((!hs != !hs_size) || hs_size > UINT32_MAX)
+    if ((!hs != !hs_size) || hs_size > UINT32_MAX ||
+        (hs && (!patch_vertices || patch_vertices > 32)) ||
+        (!hs && patch_vertices))
         return -1;
     runtime_hs_package = hs;
     runtime_hs_package_len = (unsigned int)hs_size;
     runtime_hs_rsrc2 = hs_rsrc2;
     runtime_ls_hs_config = ls_hs_config;
     runtime_tf_param = tf_param;
+    runtime_patch_vertices = patch_vertices;
     return 0;
 }
 
@@ -229,7 +234,8 @@ int ps5_agc_gate2_set_draw_state(uint32_t primitive_type,
             return -1;
         break;
     case 9: /* PATCH */
-        if (draw_count < 3 || draw_count % 3)
+        if (!runtime_patch_vertices || draw_count < runtime_patch_vertices ||
+            draw_count % runtime_patch_vertices)
             return -1;
         break;
     case 10: /* LINELIST_ADJ */

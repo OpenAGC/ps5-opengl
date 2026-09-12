@@ -2903,7 +2903,8 @@ int ps5_agc_gate2_set_packages(const void *vs, size_t vs_size,
 int ps5_agc_gate2_set_tessellation(const void *hs, size_t hs_size,
                                    uint32_t hs_rsrc2,
                                    uint32_t ls_hs_config,
-                                   uint32_t tf_param)
+                                   uint32_t tf_param,
+                                   unsigned patch_vertices)
    __attribute__((weak));
 int ps5_agc_gate2_set_ngg_control(uint32_t valid, uint32_t ge_pc_alloc)
    __attribute__((weak));
@@ -7806,7 +7807,8 @@ ps5_draw_vbo_locked(struct pipe_context *base,
           tessellation_active
              ? context->tessellation_output.runtime.ls_hs_config : 0,
           tessellation_active
-             ? context->tessellation_output.runtime.tf_param : 0) != 0) {
+             ? context->tessellation_output.runtime.tf_param : 0,
+          tessellation_active ? context->patch_vertices : 0) != 0) {
       context->last_draw_status = -19;
       return;
    }
@@ -10325,7 +10327,8 @@ ps5_select_tessellation_pipeline(struct ps5_context *context,
    if (!context->tcs && !context->tes)
       return true;
    if (!PS5_ENABLE_TESSELLATION_CANDIDATE || !context->tcs ||
-       !context->tes || context->gs || context->patch_vertices != 3 ||
+       !context->tes || context->gs || !context->patch_vertices ||
+       context->patch_vertices > 32 ||
        layout->count || context->vs->stream_output.num_outputs ||
        context->tcs->stream_output.num_outputs ||
        context->tes->stream_output.num_outputs)

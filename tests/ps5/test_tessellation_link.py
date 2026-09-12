@@ -218,7 +218,7 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
     assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
     expect_empty(&out); exec_node_remove(&unused->node);
     for (unsigned n=0;n<2;++n) {
-        options.input_patch_vertices=n ? 4 : 0;
+        options.input_patch_vertices=n ? 33 : 0;
         assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
         expect_empty(&out);
     }
@@ -234,18 +234,22 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
     inputs[2]->info.tess.tcs_vertices_out=4; /* Contradictory modes: no RADV assertion. */
     assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
     expect_empty(&out); inputs[2]->info=tes_info;
-    inputs[2]->info.tess.spacing=TESS_SPACING_FRACTIONAL_EVEN;
-    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
-    expect_empty(&out); inputs[2]->info=tes_info;
+    inputs[1]->info.tess.spacing=inputs[2]->info.tess.spacing=TESS_SPACING_FRACTIONAL_EVEN;
+    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_OK);
+    assert(G_028B6C_PARTITIONING(out.runtime.tf_param)==V_028B6C_PART_FRAC_EVEN);
+    psbc_free_tessellation_output(&out); inputs[1]->info=tcs_info; inputs[2]->info=tes_info;
     inputs[2]->info.tess.point_mode=true;
-    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
-    expect_empty(&out); inputs[2]->info=tes_info;
+    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_OK);
+    assert(G_028B6C_TOPOLOGY(out.runtime.tf_param)==V_028B6C_OUTPUT_POINT);
+    psbc_free_tessellation_output(&out); inputs[2]->info=tes_info;
     inputs[1]->info.tess._primitive_mode=inputs[2]->info.tess._primitive_mode=TESS_PRIMITIVE_QUADS;
-    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
-    expect_empty(&out); inputs[1]->info=tcs_info; inputs[2]->info=tes_info;
+    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_OK);
+    assert(G_028B6C_TYPE(out.runtime.tf_param)==V_028B6C_TESS_QUAD);
+    psbc_free_tessellation_output(&out); inputs[1]->info=tcs_info; inputs[2]->info=tes_info;
     inputs[1]->info.tess.ccw=inputs[2]->info.tess.ccw=false;
-    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
-    expect_empty(&out); inputs[1]->info=tcs_info; inputs[2]->info=tes_info;
+    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_OK);
+    assert(G_028B6C_TOPOLOGY(out.runtime.tf_param)==V_028B6C_OUTPUT_TRIANGLE_CW);
+    psbc_free_tessellation_output(&out); inputs[1]->info=tcs_info; inputs[2]->info=tes_info;
     inputs[0]->info.num_ubos=1;
     assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
     expect_empty(&out); inputs[0]->info.num_ubos=0;
