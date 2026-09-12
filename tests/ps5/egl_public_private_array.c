@@ -173,7 +173,7 @@ int main(void) {
         if (rc || compiled.metadata.scratch_valid || compiled.metadata.scratch_bytes_per_wave ||
             compiled.metadata.scratch_size_per_thread) goto done;
 #if PS5_PRIVATE_INTERNAL_TEST
-        const unsigned expected_stride=PS5_PRIVATE_WIDTH_TEST ? 1024 :
+        const unsigned expected_stride=PS5_PRIVATE_WIDTH_TEST && words ? 1024 :
             PS5_PRIVATE_GLSL_TEST && words<=64 ? 0 : words*4;
         printf("[ps5-private-internal] stride=%u expected=%u grid=4x4x4 local=2x2x4\n",
             compiled.metadata.compute_private_stride,expected_stride);
