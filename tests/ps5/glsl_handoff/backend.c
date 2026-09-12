@@ -9,6 +9,9 @@
 #include "psbc_compile.h"
 #include "compiler/nir/nir_serialize.h"
 #include "util/blob.h"
+#ifndef PS5_GLSL_PRIVATE_TEST
+#define PS5_GLSL_PRIVATE_TEST 0
+#endif
 #define PS5_AGC_COMPUTE_MAX_TEXTURES 16
 bool handoff_prepare(nir_shader *nir);
 void handoff_compile(nir_shader *nir, unsigned fixture);
@@ -42,17 +45,36 @@ void handoff_compile(nir_shader *nir, unsigned fixture) {
          ++tex_count;
       }
    }
-   assert(ubo_mask==(fixture==0 ? 3u : fixture==1 ? 2u : 0u));
-   assert(tex_count==(fixture==2));
+   assert(ubo_mask==(PS5_GLSL_PRIVATE_TEST ? 0u : fixture==0 ? 3u : fixture==1 ? 2u : 0u));
+   assert(tex_count==(!PS5_GLSL_PRIVATE_TEST && fixture==2));
    PsbcCompileOptions opts = {.target=PSBC_TARGET_PS5,.stage=PSBC_STAGE_COMPUTE,
+      .compute_private_buffer=PS5_GLSL_PRIVATE_TEST,
       .optimise=true,.address32_hi=2,.gallium_buffer_arrays=true,.descriptor_binding_count=2,
       .descriptor_bindings={
          {.binding=PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_COMPUTE),.type=PSBC_DESCRIPTOR_STORAGE_BUFFER,.array_size=16,.stride=16},
          {.binding=PSBC_GALLIUM_UBO_ARRAY_BINDING(PSBC_STAGE_COMPUTE),.type=PSBC_DESCRIPTOR_UNIFORM_BUFFER,.array_size=15,.stride=16,.offset=256}}};
-   if(fixture==2) opts.descriptor_bindings[opts.descriptor_binding_count++]=(PsbcDescriptorBinding){
+   if(fixture==2 && !PS5_GLSL_PRIVATE_TEST) opts.descriptor_bindings[opts.descriptor_binding_count++]=(PsbcDescriptorBinding){
       .binding=0,.type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,.array_size=1,.stride=48,.offset=752};
    PsbcShaderOutput out={0};
-   assert(psbc_compile_nir(nir,&opts,&out)==PSBC_RESULT_OK);
+   PsbcResult status=psbc_compile_nir(nir,&opts,&out);
+   printf("compile[%u]: rc=%d source-private=%u internal-stride=%u hardware-scratch=%u\n",
+       fixture,status,nir->scratch_size,out.metadata.compute_private_stride,out.metadata.scratch_bytes_per_wave);
+   fflush(stdout);
+   assert(status==PSBC_RESULT_OK);
+   if(PS5_GLSL_PRIVATE_TEST) {
+      /* Existing AMD lowering retains arrays <=256 bytes in registers. */
+      const unsigned bytes[]={0,1024,4096};
+      assert(out.metadata.compute_private_stride==bytes[fixture]);
+      assert(out.metadata.compute_grid_size_valid && !out.metadata.scratch_size_per_thread);
+      PsbcShaderOutput baseline={0};
+      opts.compute_private_buffer=false;
+      assert(psbc_compile_nir(nir,&opts,&baseline)==PSBC_RESULT_OK);
+      assert(baseline.metadata.scratch_valid==(fixture!=0));
+      assert(!baseline.metadata.compute_private_stride);
+      printf("private-baseline[%u]: hardware-scratch=%u opt-in-stride=%u\n",
+          fixture,baseline.metadata.scratch_bytes_per_wave,out.metadata.compute_private_stride);
+      psbc_free_output(&baseline);
+   }
    assert(out.machine_code_size && !out.metadata.scratch_valid && out.metadata.descriptor_set0_valid);
    printf("prepared/compiled[%u]: ubo-mask=%u textures=%u bytes=%zu\n",fixture,ubo_mask,tex_count,out.machine_code_size);
    psbc_free_output(&out);

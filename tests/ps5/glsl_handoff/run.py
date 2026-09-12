@@ -25,11 +25,16 @@ assert (ROOT / "tests/ps5/glsl_handoff").resolve() == HERE
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--export-header', action='store_true',
                     help='After all host checks pass, regenerate tests/ps5/compute_glsl_fixtures.h')
+parser.add_argument('--private-arrays', action='store_true',
+                    help='Host-only parsed private-array checks in an isolated output directory')
 cli_args = parser.parse_args()
+if cli_args.private_arrays and cli_args.export_header:
+    parser.error('Private-array fixtures are not qualified for native header export yet')
+private_defines = ['-DPS5_GLSL_PRIVATE_TEST=1'] if cli_args.private_arrays else []
 BUILD = ROOT / 'build/mesa-host-frontend'
 MESA = ROOT / 'third_party/mesa-26.2.0'
 PSBC = ROOT / 'third_party/opengnm-psbc'
-OUT = BUILD / 'handoff'
+OUT = BUILD / ('handoff-private' if cli_args.private_arrays else 'handoff')
 OUT.mkdir(exist_ok=True)
 os.environ.update(TMPDIR=str(BUILD/'tmp'), XDG_CACHE_HOME=str(BUILD/'cache'), PYTHONDONTWRITEBYTECODE='1')
 if (OUT/'result.log').exists():
@@ -137,7 +142,7 @@ def compile_like(suffix, source, dest, extra=()):
               '-I'+str(OUT), *extra, '-c', str(source), '-o', str(dest)]
     run(clean)
 
-compile_like('standalone.cpp', HERE/'handoff.cpp', OUT/'handoff.o')
+compile_like('standalone.cpp', HERE/'handoff.cpp', OUT/'handoff.o', private_defines)
 compile_like('standalone.cpp', OUT/'finalize.cpp', OUT/'finalize.o')
 compile_like('gl_nir_linker.c', OUT/'statevars.c', OUT/'statevars.o')
 compile_like('gl_nir_linker.c', HERE/'abi.c', OUT/'mesa-abi.o', ['-DABI_FUNCTION=mesa_abi'])
@@ -148,7 +153,7 @@ run(['clang-18','-std=gnu11','-DHAVE_FUNC_ATTRIBUTE_PACKED=1','-DHAVE_ENDIAN_H=1
 run(['clang-18','-std=gnu11','-DHAVE_FUNC_ATTRIBUTE_PACKED=1','-DHAVE_ENDIAN_H=1',
      '-DHAVE_PTHREAD=1','-DHAVE_STRUCT_TIMESPEC=1','-D_GNU_SOURCE',
      '-I'+str(PSBC/'include/mesa'),'-I'+str(PSBC/'include'),'-I'+str(PSBC/'src'),
-     '-I'+str(PSBC/'libpsbc'),'-I'+str(OUT),
+     '-I'+str(PSBC/'libpsbc'),'-I'+str(OUT), *private_defines,
      '-c',str(HERE/'backend.c'),'-o',str(OUT/'backend.o')])
 
 link = shlex.split(run(['ninja','-t','commands','src/compiler/glsl/glsl_compiler'],capture_output=True).stdout.splitlines()[-1])

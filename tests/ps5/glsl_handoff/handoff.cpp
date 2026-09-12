@@ -15,8 +15,25 @@
 #include "varying.inc"
 
 extern "C" const size_t *mesa_abi(void);
+#ifndef PS5_GLSL_PRIVATE_TEST
+#define PS5_GLSL_PRIVATE_TEST 0
+#endif
 
 static const char *fixtures[] = {
+#if PS5_GLSL_PRIVATE_TEST
+#define PRIVATE_SOURCE(N) \
+   "#version 430\nlayout(local_size_x=2,local_size_y=2,local_size_z=4) in;\n" \
+   "layout(std430,binding=0) buffer Output { uint result[]; };\n" \
+   "layout(std430,binding=1) readonly buffer Input { uint data[]; };\n" \
+   "void main() { uint id=gl_LocalInvocationIndex+16u*(gl_WorkGroupID.x+" \
+   "gl_NumWorkGroups.x*(gl_WorkGroupID.y+gl_NumWorkGroups.y*gl_WorkGroupID.z));" \
+   "uint values[" #N "]; uint seed=data[3u*id+2u];" \
+   "uint w=data[3u*id]%" #N "u, r=data[3u*id+1u]%" #N "u;" \
+   "for(uint i=0u;i<" #N "u;++i) values[i]=seed^(17u+37u*i);" \
+   "values[w]=seed+991u; result[id]=values[r]; }\n"
+   PRIVATE_SOURCE(64), PRIVATE_SOURCE(256), PRIVATE_SOURCE(1024),
+#undef PRIVATE_SOURCE
+#else
    "#version 430\nlayout(local_size_x=1) in; uniform uint addend;\n"
    "layout(std140,binding=0) uniform Input { uint value; };\n"
    "layout(std430,binding=0) buffer Output { uint result; };\n"
@@ -29,6 +46,7 @@ static const char *fixtures[] = {
    "layout(binding=0) uniform sampler2D src;\n"
    "layout(std430,binding=0) buffer Output { float result; };\n"
    "void main() { result = texture(src, vec2(0.5)).x; }\n",
+#endif
 };
 
 int main() {
@@ -92,7 +110,7 @@ int main() {
       nir_validate_shader(nir,"finalized parsed GLSL");
       assert(!nir->info.spec); // The two serializers differ only for this optional string.
       unsigned offset=0, default_bytes=prog->Parameters->NumParameterValues*4;
-      if(fixture==0) {
+      if(fixture==0 && !PS5_GLSL_PRIVATE_TEST) {
          unsigned found=0;
          for(unsigned i=0;i<prog->Parameters->NumParameters;++i) {
             const gl_program_parameter *p=&prog->Parameters->Parameters[i];
