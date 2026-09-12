@@ -600,6 +600,40 @@ static void atomic_alignment_lowering(void) {
         psbc_free_output(&out); ralloc_free(b.shader);
     }
 }
+#include "private_array_fixture.h"
+/* Host-only feasibility check, not a runtime fallback or GPU correctness test. */
+static void private_array_lowering(void) {
+    for (unsigned words=4; words<=32; words*=2) for (unsigned optimize=0; optimize<2; ++optimize) {
+        nir_builder b=private_array_fixture(words);
+        PsbcCompileOptions options=opts;
+        options.optimise=optimize;
+        PsbcShaderOutput original={0}, lowered={0};
+        assert(psbc_compile_nir(b.shader,&options,&original)==PSBC_RESULT_OK);
+        assert(original.metadata.scratch_valid);
+        reject_package(&original);
+        private_array_lower(b.shader);
+        assert(!b.shader->scratch_size);
+        unsigned loads=0, stores=0;
+        nir_foreach_function_impl(impl,b.shader) nir_foreach_block(block,impl)
+            nir_foreach_instr(instr,block) {
+                if (instr->type!=nir_instr_type_intrinsic) continue;
+                nir_intrinsic_op op=nir_instr_as_intrinsic(instr)->intrinsic;
+                assert(op!=nir_intrinsic_load_scratch && op!=nir_intrinsic_store_scratch);
+                loads+=op==nir_intrinsic_load_ssbo;
+                stores+=op==nir_intrinsic_store_ssbo;
+            }
+        assert(loads==1 && stores==1); /* Runtime input and observable output remain. */
+        assert(psbc_compile_nir(b.shader,&options,&lowered)==PSBC_RESULT_OK);
+        assert(lowered.machine_code_size && !lowered.metadata.scratch_valid &&
+            !lowered.metadata.scratch_bytes_per_wave && !lowered.metadata.scratch_size_per_thread);
+        assert(!(lowered.metadata.shader_registers[3].value&1));
+        uint8_t *package=NULL; size_t size=0;
+        assert(!ps5_agc_package_build(&lowered,0,&package,&size) && package && size);
+        printf("Private array host-only: words=%u optimize=%u original=%zu lowered=%zu scratch=0 package=PASS\n",
+            words,optimize,original.machine_code_size,lowered.machine_code_size);
+        free(package); psbc_free_output(&original); psbc_free_output(&lowered); ralloc_free(b.shader);
+    }
+}
 static void scratch_contract(void) {
     nir_shader *nir=create_probe_shader(SCRATCH);
     PsbcShaderOutput out={0};
@@ -633,7 +667,7 @@ static void scratch_contract(void) {
 int main(void) {
     psbc_init();
     for (unsigned i=0; i<4; ++i) compiled(i&1, i&2);
-    shapes(); native_cases(); atomic_counter_lowering(); atomic_alignment_lowering(); scratch_contract(); compiled(false, false); psbc_shutdown();
+    shapes(); native_cases(); atomic_counter_lowering(); atomic_alignment_lowering(); scratch_contract(); private_array_lowering(); compiled(false, false); psbc_shutdown();
 }
 '''
 with tempfile.TemporaryDirectory() as directory:
@@ -645,7 +679,7 @@ with tempfile.TemporaryDirectory() as directory:
         "-DHAVE_STRUCT_TIMESPEC=1", "-D_GNU_SOURCE",
         "-I", str(PSBC / "include/mesa"), "-I", str(PSBC / "include"),
         "-I", str(PSBC / "src"), "-I", str(PSBC / "libpsbc"),
-        "-I", str(ROOT / "src/platform"),
+        "-I", str(ROOT / "src/platform"), "-I", str(ROOT / "tests/ps5"),
         "-include", str(ROOT / "third_party/mesa-26.2.0/src/mesa/program/prog_statevars.h"),
         "-x", "c", "-c", "-o", obj, "-"]
     subprocess.run(["clang-18", "-std=c11", "-Wall", "-Werror",

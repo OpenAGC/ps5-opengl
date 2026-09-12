@@ -681,6 +681,10 @@ psbc_nir_runtime.o: psbc_nir_runtime.c
 		-iquote$(PSBC)/src -I$(PSBC)/libpsbc -I$(PSBC)/src \
 		-c -o $@ $<
 
+egl_public_private_array.o: egl_public_private_array.c private_array_fixture.h $(PROJECT)/src/platform/ps5_agc_package.h
+	$(CC) $(CFLAGS) $(PSBC_CFLAGS) -I$(PROJECT)/src/platform \
+		-Wno-unreachable-code-generic-assoc -c -o $@ $<
+
 egl_public_compute_probe.o: egl_public_compute_probe.c $(PROJECT)/src/platform/ps5_agc_package.h \
 	$(PSBC)/libpsbc/psbc_compile.h
 	$(CC) $(CFLAGS) $(PSBC_CFLAGS) -I$(PROJECT)/src/platform \
