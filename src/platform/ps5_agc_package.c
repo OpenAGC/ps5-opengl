@@ -279,6 +279,8 @@ ps5_agc_package_build(const PsbcShaderOutput *shader,
    metadata = &shader->metadata;
    if (metadata->compute_private_stride && metadata->hardware_stage != PSBC_HW_STAGE_COMPUTE)
       return -1;
+   if (metadata->compute_private_stride && metadata->scratch_buffer_backed)
+      return -1;
    /* The initial flat-scratch CS probe hit MEMVIOL. Only the separately
     * identified MUBUF spill contract may reach native submission. */
    if ((metadata->scratch_valid || metadata->scratch_bytes_per_wave ||

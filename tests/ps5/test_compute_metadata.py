@@ -736,11 +736,12 @@ static void private_compiler_runtime_contract(void) {
     assert(b.shader->scratch_size==128); /* Compiler must not mutate caller NIR. */
     submission_contract(&out);
     uint8_t *package=NULL; size_t size=0;
-    for(unsigned bad=0;bad<3;++bad) {
+    for(unsigned bad=0;bad<4;++bad) {
         PsbcShaderMetadata saved=out.metadata;
         if(bad==0) out.metadata.compute_private_stride=4097;
         if(bad==1) out.metadata.compute_private_stride=2;
         if(bad==2) out.metadata.compute_grid_size_valid=false;
+        if(bad==3) out.metadata.scratch_buffer_backed=true;
         assert(ps5_agc_package_build(&out,0,&package,&size)<0 && !package && !size);
         out.metadata=saved;
     }
@@ -869,8 +870,18 @@ static void spill_contract(void) {
     printf("Private plus register spill host-only: LDS=%u wave-bytes=%u code=%zu\n",
         out.metadata.compute_lds_bytes,out.metadata.scratch_bytes_per_wave,
         out.machine_code_size);
+    fflush(stdout);
     submission_contract(&out);
-    psbc_free_output(&out); ralloc_free(b.shader);
+    psbc_free_output(&out);
+
+    ralloc_free(b.shader);
+    const uint16_t oversized_shape[3]={64,1,1};
+    nir_builder oversized=private_array_fixture_shape(512,oversized_shape);
+    PsbcResult oversized_rc=psbc_compile_nir(oversized.shader,&spill_options,&out);
+    assert(oversized_rc==PSBC_RESULT_COMPILE_NIR);
+    assert(!out.data && !out.machine_code);
+    puts("Private plus register spill boundary: global address conflict rejected PASS");
+    ralloc_free(oversized.shader);
 
     nir_builder rejected=nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
         psbc_get_nir_options(PSBC_STAGE_COMPUTE),"buffer-spill-rejection");
