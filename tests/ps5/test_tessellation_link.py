@@ -334,8 +334,10 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
                (S_028B6C_TYPE(V_028B6C_TESS_TRIANGLE)|
                 S_028B6C_PARTITIONING(V_028B6C_PART_INTEGER)|
                 S_028B6C_TOPOLOGY(V_028B6C_OUTPUT_TRIANGLE_CCW)));
-        assert(out.runtime.hs_ring_offsets_user_data_dword==0 &&
-               out.runtime.tes_ring_offsets_user_data_dword==0);
+        assert(out.runtime.hs_ring_offsets_sgpr==0 &&
+               out.runtime.tes_ring_offsets_sgpr==0);
+        assert(out.runtime.hs_ring_offsets_register==0x102 &&
+               out.runtime.tes_ring_offsets_register==0x082);
         assert(out.runtime.offchip_ring_bytes_per_workgroup==32768);
         assert(out.runtime.tess_factor_ring_bytes_per_workgroup==1024);
         PsbcTessellationOutput owned=out;
@@ -422,6 +424,20 @@ int main(int argc,char **argv) {
     assert(!memcmp(&vs->args,&hs->args,sizeof(vs->args)));
     assert(!hs->args.ac.tcs_offchip_layout.used && !tes->args.ac.tcs_offchip_layout.used);
     assert(hs->args.ac.ring_offsets.used && tes->args.ac.ring_offsets.used);
+    assert(hs->args.ac.args[hs->args.ac.ring_offsets.arg_index].offset==0 &&
+           tes->args.ac.args[tes->args.ac.ring_offsets.arg_index].offset==0);
+    assert(hs->args.num_user_sgprs==1 && tes->args.num_user_sgprs==1);
+    assert(tes->args.ac.args[tes->args.ngg_lds_layout.arg_index].offset==8);
+    printf("ring ABI hs arg=%u off=%u users=%u tes arg=%u off=%u users=%u ngg-layout arg=%u off=%u ud=%d\n",
+           hs->args.ac.ring_offsets.arg_index,
+           hs->args.ac.args[hs->args.ac.ring_offsets.arg_index].offset,
+           hs->args.num_user_sgprs,
+           tes->args.ac.ring_offsets.arg_index,
+           tes->args.ac.args[tes->args.ac.ring_offsets.arg_index].offset,
+           tes->args.num_user_sgprs,
+           tes->args.ngg_lds_layout.arg_index,
+           tes->args.ac.args[tes->args.ngg_lds_layout.arg_index].offset,
+           tes->args.user_sgprs_locs.shader_data[AC_UD_NGG_LDS_LAYOUT].sgpr_idx);
     assert(hs->args.ac.merged_wave_info.used && hs->args.ac.tcs_factor_offset.used);
     unsigned abi[3][3]={{0}};
     for(unsigned i=0;i<3;++i) abi_constants(&ci,&gfx,&stages[ids[i]],abi[i]);
