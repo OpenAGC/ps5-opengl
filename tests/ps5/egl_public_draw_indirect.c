@@ -78,9 +78,10 @@ program(const char *fragment)
    static const char *vertex =
 #ifdef PS5_FP64_VERTEX_TEST
       GLSL_VERSION
-      "layout(location=0) in dvec2 p;void main(){"
+      "layout(location=0) in dvec2 p;layout(location=1) in vec2 instance_offset;"
+      "void main(){"
       "dvec2 q=p+dvec2(0.125lf)-dvec2(0.125lf);"
-      "gl_Position=vec4(vec2(q),0.5,1.0);}\n";
+      "gl_Position=vec4(vec2(q)+instance_offset,0.5,1.0);}\n";
 #else
       GLSL_VERSION
       "void main(){" VERTEX_PROBE "int id=" VERTEX_ID ";"
@@ -167,6 +168,7 @@ main(void)
       -0.8, -0.8, 0.8, -0.8, -0.8, 0.8,
       -0.8, -0.8, 0.8, -0.8, -0.8, 0.8,
    };
+   static const GLfloat instance_offsets[4] = {2.0f, 2.0f, 0.0f, 0.0f};
 #endif
    const EGLint config_attrs[] = {
       EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
@@ -192,8 +194,11 @@ main(void)
    EGLSurface surface = EGL_NO_SURFACE;
    EGLContext context = EGL_NO_CONTEXT;
    EGLint count = 0;
-   GLuint programs[2] = {0}, vao = 0, buffers[3] = {0};
+   GLuint programs[2] = {0}, vao = 0, buffers[4] = {0};
    unsigned green_count = 0, cyan_count = 0, draws = 0;
+#ifdef PS5_FP64_VERTEX_TEST
+   unsigned base_instance_count = 0;
+#endif
 #ifdef PS5_VIEWPORT_ARRAY_TEST
    unsigned green_left = 0, cyan_left = 0;
 #endif
@@ -270,7 +275,7 @@ main(void)
       goto done;
    glGenVertexArrays(1, &vao);
    glBindVertexArray(vao);
-   glGenBuffers(3, buffers);
+   glGenBuffers(4, buffers);
    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, buffers[0]);
    glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(commands), commands,
                 GL_STATIC_DRAW);
@@ -282,6 +287,11 @@ main(void)
    glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
    glVertexAttribLPointer(0, 2, GL_DOUBLE, 0, NULL);
    glEnableVertexAttribArray(0);
+   glBindBuffer(GL_ARRAY_BUFFER, buffers[3]);
+   glBufferData(GL_ARRAY_BUFFER, sizeof(instance_offsets), instance_offsets,
+                GL_STATIC_DRAW);
+   glVertexAttribPointer(1, 2, GL_FLOAT, GL_FALSE, 0, NULL);
+   glVertexAttribDivisor(1, 1);
 #endif
 #ifdef PS5_VIEWPORT_ARRAY_TEST
    {
@@ -318,10 +328,19 @@ main(void)
 #else
    cyan_count = matching(0, UINT32_C(0xffffff00));
 #endif
+#ifdef PS5_FP64_VERTEX_TEST
+   glUseProgram(programs[0]);
+   glClear(GL_COLOR_BUFFER_BIT);
+   glEnableVertexAttribArray(1);
+   glDrawArraysInstancedBaseInstance(GL_TRIANGLES, 3, 3, 1, 1);
+   base_instance_count = matching(0, UINT32_C(0xff00ff00));
+#endif
    status = ps5_egl_current_draw_status(&draws);
    passed = glGetError() == GL_NO_ERROR && status == 0 && draws ==
 #ifdef PS5_VIEWPORT_ARRAY_TEST
             2 && !green_left && !cyan_left &&
+#elif defined(PS5_FP64_VERTEX_TEST)
+            6 && base_instance_count > 500 &&
 #else
             4 &&
 #endif
@@ -337,10 +356,13 @@ done:
    printf("[%s] left=%u/%u right=%u/%u\n", TEST_NAME, green_left,
           cyan_left, green_count, cyan_count);
 #endif
+#ifdef PS5_FP64_VERTEX_TEST
+   printf("[%s] base-instance=%u\n", TEST_NAME, base_instance_count);
+#endif
    printf("[%s] arrays=%u indexed=%u draws=%u status=%d result=%s\n",
           TEST_NAME, green_count, cyan_count, draws, status,
           passed ? "pass" : "fail");
-   glDeleteBuffers(3, buffers);
+   glDeleteBuffers(4, buffers);
    glDeleteVertexArrays(1, &vao);
    glDeleteProgram(programs[0]);
    glDeleteProgram(programs[1]);
