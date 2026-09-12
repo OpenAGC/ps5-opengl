@@ -10517,6 +10517,7 @@ ps5_create_compute_state(struct pipe_context *base,
    const struct ps5_resource *descriptors = (struct ps5_resource *)context->compute_descriptors;
    PsbcCompileOptions options = {
       .target = PSBC_TARGET_PS5, .stage = PSBC_STAGE_COMPUTE, .optimise = true,
+      .compute_private_buffer = true, .compute_buffer_spills = true,
       .address32_hi = (uintptr_t)descriptors->data >> 32,
       .gallium_buffer_arrays = true, .descriptor_binding_count = 3,
       .descriptor_bindings = {{

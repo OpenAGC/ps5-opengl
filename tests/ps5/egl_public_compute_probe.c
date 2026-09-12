@@ -529,7 +529,8 @@ int main(void)
       printf("[ps5-compute] case=%s pipe-created=1 wave=%u private=%u\n",
          cases[test].name, info.preferred_simd_size, info.private_memory);
       fflush(stdout);
-      if (info.preferred_simd_size != 32 || info.private_memory)
+      if (info.preferred_simd_size != 32 ||
+          (!!info.private_memory != (test == BUFFER_SPILL)))
          goto cleanup;
       pipe->bind_compute_state(pipe, state);
       if (test == IMAGE_STORE) {
@@ -596,7 +597,7 @@ int main(void)
       }
       pipe->launch_grid(pipe, &grid);
       int rc = ps5_context_last_compute_status(pipe, &dispatches);
-      if (dispatches != test + 1)
+      if (dispatches != test - FIRST_NATIVE_TEST + 1)
          rc = -1;
 #else
       memcpy(input + INPUT_WORDS, user_constants, sizeof(user_constants));
@@ -709,7 +710,7 @@ cleanup:
       pipe_resource_reference(&buffers[i], NULL);
    screen->destroy(screen);
 #ifdef PS5_COMPUTE_BUFFER_SPILL_PROBE
-   printf("[ps5-compute] completed status=%d (internal buffer-spill probe; GL caps unchanged)\n", status);
+   printf("[ps5-compute] completed status=%d (public Gallium buffer-spill probe)\n", status);
 #else
    printf("[ps5-compute] completed status=%d (internal probe; GL caps unchanged; scratch excluded)\n", status);
 #endif

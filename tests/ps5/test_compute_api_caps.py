@@ -25,6 +25,7 @@ def require_success(result):
 
 def caps_source():
     source = SOURCE.read_text()
+    assert ".compute_private_buffer = true, .compute_buffer_spills = true" in source
     default = re.search(r"#ifndef PS5_ENABLE_COMPUTE_API_TEST\s*\n"
                         r"#define PS5_ENABLE_COMPUTE_API_TEST 0\s*\n#endif", source)
     assert default, "private compute macro must default to zero"
