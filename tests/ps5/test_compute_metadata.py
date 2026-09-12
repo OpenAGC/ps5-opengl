@@ -839,6 +839,46 @@ static void spill_contract(void) {
     submission_contract(&out); /* Must reject before native allocation/submission. */
     psbc_free_output(&out); ralloc_free(b.shader);
 }
+static void private_width_contract(void) {
+    const struct { unsigned components, bits; } cases[]={{4,8},{4,16},{4,32},{2,64}};
+    PsbcCompileOptions options=opts;
+    options.compute_private_buffer=true;
+    for(unsigned i=0;i<4;++i) {
+        nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
+            psbc_get_nir_options(PSBC_STAGE_COMPUTE),"private-width-contract");
+        b.shader->info.workgroup_size[0]=2;
+        b.shader->info.workgroup_size[1]=2;
+        b.shader->info.workgroup_size[2]=4;
+        b.shader->info.num_ssbos=1;
+        b.shader->scratch_size=1024;
+        nir_def *id=private_invocation_index(&b);
+        nir_def *offset=nir_imul_imm(&b,nir_iand_imm(&b,id,15),16);
+        nir_def *value;
+        if(cases[i].bits==64)
+            value=nir_replicate(&b,nir_imm_int64(&b,INT64_C(0x1122334455667788)),
+                cases[i].components);
+        else if(cases[i].components==4)
+            value=nir_imm_ivec4_intN(&b,0x11,0x22,0x33,0x44,cases[i].bits);
+        else abort();
+        nir_store_scratch(&b,value,offset,.align_mul=cases[i].bits/8,
+            .write_mask=BITFIELD_MASK(cases[i].components));
+        nir_def *loaded=nir_load_scratch(&b,cases[i].components,cases[i].bits,offset,
+            .align_mul=cases[i].bits/8);
+        nir_def *output=nir_bcsel(&b,nir_ball_iequal(&b,loaded,value),
+            nir_imm_int(&b,1),nir_imm_int(&b,0));
+        nir_store_ssbo(&b,output,nir_imm_int(&b,0),nir_imul_imm(&b,id,16),
+            .align_mul=4,.write_mask=BITFIELD_MASK(output->num_components));
+        nir_validate_shader(b.shader,"private width input");
+        PsbcShaderOutput out={0};
+        PsbcResult rc=psbc_compile_nir(b.shader,&options,&out);
+        assert(rc==PSBC_RESULT_OK);
+        assert(out.metadata.compute_private_stride==1024 && !out.metadata.scratch_valid &&
+            !out.metadata.scratch_bytes_per_wave);
+        printf("Opt-in private width: components=%u bits=%u code=%zu PASS\n",
+            cases[i].components,cases[i].bits,out.machine_code_size);
+        psbc_free_output(&out); ralloc_free(b.shader);
+    }
+}
 static void scratch_contract(void) {
     nir_shader *nir=create_probe_shader(SCRATCH);
     PsbcShaderOutput out={0};
@@ -874,7 +914,7 @@ int main(void) {
     psbc_init();
     private_memory_plan_contract();
     for (unsigned i=0; i<4; ++i) compiled(i&1, i&2);
-    shapes(); native_cases(); atomic_counter_lowering(); atomic_alignment_lowering(); scratch_contract(); private_array_lowering(); private_buffer_contract(); private_internal_contract(); private_compiler_runtime_contract(); spill_contract(); compiled(false, false); psbc_shutdown();
+    shapes(); native_cases(); atomic_counter_lowering(); atomic_alignment_lowering(); scratch_contract(); private_array_lowering(); private_buffer_contract(); private_internal_contract(); private_compiler_runtime_contract(); private_width_contract(); spill_contract(); compiled(false, false); psbc_shutdown();
 }
 '''
 with tempfile.TemporaryDirectory() as directory:

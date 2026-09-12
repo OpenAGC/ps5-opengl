@@ -17,6 +17,12 @@
 #ifndef PS5_PRIVATE_GLSL_TEST
 #define PS5_PRIVATE_GLSL_TEST 0
 #endif
+#ifndef PS5_PRIVATE_WIDTH_TEST
+#define PS5_PRIVATE_WIDTH_TEST 0
+#endif
+#if PS5_PRIVATE_WIDTH_TEST
+#include "private_width_fixture.h"
+#endif
 #if PS5_PRIVATE_GLSL_TEST
 #include "private_glsl_fixtures.h"
 #include "compiler/nir/nir_serialize.h"
@@ -84,6 +90,8 @@ int main(void) {
     const unsigned cases[]={
 #if PS5_PRIVATE_GLSL_TEST
         64,256,1024,
+#elif PS5_PRIVATE_WIDTH_TEST
+        8,16,32,64,
 #else
         4,
 #if PS5_PRIVATE_INTERNAL_TEST
@@ -129,6 +137,8 @@ int main(void) {
             memset(&b,0,sizeof(b));
             b.shader=load_private_glsl(test,screen->nir_options[MESA_SHADER_COMPUTE]);
             if (!b.shader) goto done;
+#elif PS5_PRIVATE_WIDTH_TEST
+            b=private_width_fixture(words);
 #elif PS5_PRIVATE_INTERNAL_TEST
             const uint16_t shape[3]={2,2,4};
             b=private_array_fixture_shape(words,shape);
@@ -163,7 +173,8 @@ int main(void) {
         if (rc || compiled.metadata.scratch_valid || compiled.metadata.scratch_bytes_per_wave ||
             compiled.metadata.scratch_size_per_thread) goto done;
 #if PS5_PRIVATE_INTERNAL_TEST
-        const unsigned expected_stride=PS5_PRIVATE_GLSL_TEST && words<=64 ? 0 : words*4;
+        const unsigned expected_stride=PS5_PRIVATE_WIDTH_TEST ? 1024 :
+            PS5_PRIVATE_GLSL_TEST && words<=64 ? 0 : words*4;
         printf("[ps5-private-internal] stride=%u expected=%u grid=4x4x4 local=2x2x4\n",
             compiled.metadata.compute_private_stride,expected_stride);
         fflush(stdout);
@@ -178,7 +189,8 @@ int main(void) {
         for (unsigned i=0;i<COUNT;++i) {
             const uint32_t seed=UINT32_C(0xfffff000)+i*UINT32_C(2654435761);
             const unsigned w=words?i%words:0, r=words?(i/words+17*i)%words:0;
-            const uint32_t expected=words?(r==w?seed+991:seed^(17+37*r)):i*3+17;
+            const uint32_t expected=PS5_PRIVATE_WIDTH_TEST&&words?seed:
+                words?(r==w?seed+991:seed^(17+37*r)):i*3+17;
             correct+=output[i]==expected;
             unchanged+=input[i*3]==w && input[i*3+1]==r && input[i*3+2]==seed;
         }

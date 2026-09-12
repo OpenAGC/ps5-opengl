@@ -693,6 +693,10 @@ egl_public_private_glsl.o: egl_public_private_glsl.c egl_public_private_array.c 
 	$(CC) $(CFLAGS) $(PSBC_CFLAGS) -I$(PROJECT)/src/platform \
 		-Wno-unused-function -Wno-unreachable-code-generic-assoc -c -o $@ $<
 
+egl_public_private_width.o: egl_public_private_width.c egl_public_private_array.c private_array_fixture.h private_width_fixture.h $(PROJECT)/src/platform/ps5_agc_package.h $(PSBC)/libpsbc/psbc_compile.h
+	$(CC) $(CFLAGS) $(PSBC_CFLAGS) -I$(PROJECT)/src/platform \
+		-Wno-unused-function -Wno-unreachable-code-generic-assoc -c -o $@ $<
+
 egl_public_private_internal.o: egl_public_private_internal.c egl_public_private_array.c private_array_fixture.h $(PROJECT)/src/platform/ps5_agc_package.h $(PSBC)/libpsbc/psbc_compile.h
 	$(CC) $(CFLAGS) $(PSBC_CFLAGS) -I$(PROJECT)/src/platform \
 		-Wno-unused-function -Wno-unreachable-code-generic-assoc -c -o $@ $<
