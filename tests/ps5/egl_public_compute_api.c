@@ -339,7 +339,7 @@ main(void)
    int initialized = 0, current = 0, passed = 0;
 
    setvbuf(stdout, NULL, _IONBF, 0);
-   puts(TAG "TEST-ONLY candidate; not release/conformance; no swaps");
+   puts(TAG "compute capability gate; no swaps");
    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
    if (display == EGL_NO_DISPLAY ||
        !check_egl("initialize", eglInitialize(display, NULL, NULL)))
@@ -361,7 +361,8 @@ main(void)
    glGetIntegerv(GL_MINOR_VERSION, &minor);
    glGetIntegerv(GL_CONTEXT_PROFILE_MASK, &profile);
    printf(TAG "GL version=%d.%d profile=%x\n", major, minor, profile);
-   if (major != 3 || minor != 3 || !(profile & GL_CONTEXT_CORE_PROFILE_BIT) ||
+   if (major < 3 || (major == 3 && minor < 3) ||
+       !(profile & GL_CONTEXT_CORE_PROFILE_BIT) ||
        !has_extension("GL_ARB_compute_shader") ||
        !has_extension("GL_ARB_shader_storage_buffer_object") ||
        !check_gl("context contract"))
