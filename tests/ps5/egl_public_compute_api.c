@@ -734,10 +734,13 @@ main(void)
    }
    puts(TAG "dispatch delta=26 (prior 14 + RGBA16 4 + RGBA8 mipmapped-linear 4 + RGBA8 base-only tiled 4); negatives=3 PASS");
 
+   const GLsizeiptr capacity_bytes = 134217728;
+   const GLsizeiptr allocation_bytes = 134217792;
    GLint advertised_ssbo_size = 0;
    glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &advertised_ssbo_size);
-   printf(TAG "private capacity proof: advertised SSBO maximum=%d expected=16384\n", advertised_ssbo_size);
-   if (!check_gl("unchanged SSBO cap") || advertised_ssbo_size != 16384 ||
+   printf(TAG "capacity proof: advertised SSBO maximum=%d expected=%lld\n",
+          advertised_ssbo_size, (long long)capacity_bytes);
+   if (!check_gl("advertised SSBO cap") || advertised_ssbo_size != capacity_bytes ||
        !has_extension("GL_ARB_program_interface_query") ||
        !compile_program("128MiB unsized capacity", capacity_source, &capacity_shader, &capacity_program))
       goto cleanup;
@@ -755,8 +758,6 @@ main(void)
    bind_storage_block(capacity_program, report_block, 1);
    if (!check_gl("capacity block bindings"))
       goto cleanup;
-   const GLsizeiptr capacity_bytes = 134217728;
-   const GLsizeiptr allocation_bytes = 134217792;
    GLint64 actual_bytes = 0;
    uint32_t edge_guards[16];
    for (unsigned i = 0; i < 16; ++i)
