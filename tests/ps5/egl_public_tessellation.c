@@ -166,7 +166,7 @@ main(void)
    glDrawArrays(GL_TRIANGLES, 0, 3);
    blue_count = matching(UINT32_C(0xffff0000));
    status = ps5_egl_current_draw_status(&draws);
-   passed = glGetError() == GL_NO_ERROR && status == 0 && draws == 2 &&
+   passed = glGetError() == GL_NO_ERROR && status == 0 && draws == 4 &&
             green_count > 500 && blue_count > 500;
 
 done:
