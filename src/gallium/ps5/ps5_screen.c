@@ -196,6 +196,7 @@ struct ps5_constant_state {
 #define PS5_COMPUTE_TEXTURE_SLOTS PS5_AGC_COMPUTE_MAX_TEXTURES
 #define PS5_COMPUTE_TEXTURE_OFFSET (PS5_COMPUTE_BUFFER_SLOTS * 16 + PS5_COMPUTE_IMAGE_SLOTS * 32)
 #define PS5_COMPUTE_DESCRIPTOR_BYTES (PS5_COMPUTE_TEXTURE_OFFSET + PS5_COMPUTE_TEXTURE_SLOTS * 48)
+#define PS5_MAX_VIEWPORTS 16
 struct ps5_compute_shader {
    PsbcShaderOutput output;
    unsigned textures;
@@ -257,10 +258,10 @@ struct ps5_context {
    bool logicop_used;
    struct pipe_rasterizer_state *rasterizer;
    struct pipe_blend_color blend_color;
-   struct pipe_viewport_state viewport;
-   struct pipe_scissor_state scissor;
-   bool viewport_valid;
-   bool scissor_valid;
+   struct pipe_viewport_state viewport[PS5_MAX_VIEWPORTS];
+   struct pipe_scissor_state scissor[PS5_MAX_VIEWPORTS];
+   uint16_t viewport_valid;
+   uint16_t scissor_valid;
    struct pipe_depth_stencil_alpha_state *depth_stencil_alpha;
    struct pipe_stencil_ref stencil_ref;
    struct ps5_query *active_occlusion_query;
@@ -541,6 +542,9 @@ ps5_render_condition_passes(const struct ps5_context *context);
 #ifndef PS5_ENABLE_FP64_CANDIDATE
 #define PS5_ENABLE_FP64_CANDIDATE 0
 #endif
+#ifndef PS5_ENABLE_VIEWPORT_ARRAY_CANDIDATE
+#define PS5_ENABLE_VIEWPORT_ARRAY_CANDIDATE 0
+#endif
 #ifndef PS5_ENABLE_PACKED_VERTEX_CANDIDATE
 #define PS5_ENABLE_PACKED_VERTEX_CANDIDATE 0
 #endif
@@ -676,8 +680,8 @@ struct ps5_native_graphics_state {
    uint32_t alpha_to_coverage;
    uint32_t alpha_to_one;
    uint32_t blend_color[4];
-   uint32_t viewport[8];
-   uint32_t scissor[2];
+   uint32_t viewport[PS5_MAX_VIEWPORTS][8];
+   uint32_t scissor[PS5_MAX_VIEWPORTS][2];
    uint32_t clip_control;
    uint32_t clip_control_valid;
    uint32_t rasterizer_control;
@@ -1772,6 +1776,7 @@ ps5_encode_graphics_state(const struct ps5_context *context,
    unsigned miny;
    unsigned maxx;
    unsigned maxy;
+   unsigned viewport_index;
    float polygon_scale;
    float point_min;
    float point_max;
@@ -1881,47 +1886,58 @@ ps5_encode_graphics_state(const struct ps5_context *context,
          context->framebuffer.zsbuf.texture != NULL;
    }
 
-   if (context->viewport_valid) {
-      viewport = &context->viewport;
-      for (i = 0; i < 3; ++i) {
-         if (!ps5_float_is_finite(viewport->scale[i]) ||
-             !ps5_float_is_finite(viewport->translate[i]))
-            return false;
-         native->viewport[2 * i] = ps5_float_bits(viewport->scale[i]);
-         native->viewport[2 * i + 1] =
-            ps5_float_bits(viewport->translate[i]);
-      }
-      z_extent = viewport->scale[2] < 0.0f ? -viewport->scale[2] :
-                                                   viewport->scale[2];
-      zmin = viewport->translate[2] - z_extent;
-      zmax = viewport->translate[2] + z_extent;
-      native->viewport[6] = ps5_float_bits(zmin);
-      native->viewport[7] = ps5_float_bits(zmax);
-   } else {
-      native->viewport[0] = UINT32_C(0x44700000); /* 960.0 */
-      native->viewport[1] = UINT32_C(0x44700000);
-      native->viewport[2] = UINT32_C(0xc4070000); /* -540.0 */
-      native->viewport[3] = UINT32_C(0x44070000); /* 540.0 */
-      native->viewport[4] = UINT32_C(0x3f800000);
-      native->viewport[5] = 0;
-      native->viewport[6] = 0;
-      native->viewport[7] = UINT32_C(0x3f800000);
-   }
+   for (viewport_index = 0; viewport_index < PS5_MAX_VIEWPORTS;
+        ++viewport_index) {
+      const unsigned source =
+         context->viewport_valid & (UINT16_C(1) << viewport_index)
+            ? viewport_index : 0;
 
-   scissor = context->rasterizer && context->rasterizer->scissor &&
-             context->scissor_valid ? &context->scissor : NULL;
-   minx = scissor ? MIN2(scissor->minx, context->framebuffer.width) : 0;
-   miny = scissor ? MIN2(scissor->miny, context->framebuffer.height) : 0;
-   maxx = scissor ? MIN2(scissor->maxx, context->framebuffer.width)
-                 : context->framebuffer.width;
-   maxy = scissor ? MIN2(scissor->maxy, context->framebuffer.height)
-                 : context->framebuffer.height;
-   if (maxx < minx)
-      maxx = minx;
-   if (maxy < miny)
-      maxy = miny;
-   native->scissor[0] = UINT32_C(0x80000000) | minx | (miny << 16);
-   native->scissor[1] = maxx | (maxy << 16);
+      if (context->viewport_valid & (UINT16_C(1) << source)) {
+         viewport = &context->viewport[source];
+         for (i = 0; i < 3; ++i) {
+            if (!ps5_float_is_finite(viewport->scale[i]) ||
+                !ps5_float_is_finite(viewport->translate[i]))
+               return false;
+            native->viewport[viewport_index][2 * i] =
+               ps5_float_bits(viewport->scale[i]);
+            native->viewport[viewport_index][2 * i + 1] =
+               ps5_float_bits(viewport->translate[i]);
+         }
+         z_extent = viewport->scale[2] < 0.0f ? -viewport->scale[2] :
+                                                      viewport->scale[2];
+         zmin = viewport->translate[2] - z_extent;
+         zmax = viewport->translate[2] + z_extent;
+         native->viewport[viewport_index][6] = ps5_float_bits(zmin);
+         native->viewport[viewport_index][7] = ps5_float_bits(zmax);
+      } else {
+         native->viewport[viewport_index][0] = UINT32_C(0x44700000);
+         native->viewport[viewport_index][1] = UINT32_C(0x44700000);
+         native->viewport[viewport_index][2] = UINT32_C(0xc4070000);
+         native->viewport[viewport_index][3] = UINT32_C(0x44070000);
+         native->viewport[viewport_index][4] = UINT32_C(0x3f800000);
+         native->viewport[viewport_index][5] = 0;
+         native->viewport[viewport_index][6] = 0;
+         native->viewport[viewport_index][7] = UINT32_C(0x3f800000);
+      }
+
+      scissor = context->rasterizer && context->rasterizer->scissor &&
+                (context->scissor_valid &
+                 (UINT16_C(1) << viewport_index))
+                   ? &context->scissor[viewport_index] : NULL;
+      minx = scissor ? MIN2(scissor->minx, context->framebuffer.width) : 0;
+      miny = scissor ? MIN2(scissor->miny, context->framebuffer.height) : 0;
+      maxx = scissor ? MIN2(scissor->maxx, context->framebuffer.width)
+                    : context->framebuffer.width;
+      maxy = scissor ? MIN2(scissor->maxy, context->framebuffer.height)
+                    : context->framebuffer.height;
+      if (maxx < minx)
+         maxx = minx;
+      if (maxy < miny)
+         maxy = miny;
+      native->scissor[viewport_index][0] =
+         UINT32_C(0x80000000) | minx | (miny << 16);
+      native->scissor[viewport_index][1] = maxx | (maxy << 16);
+   }
    return true;
 }
 
@@ -2979,6 +2995,10 @@ int ps5_agc_gate2_set_graphics_state_mrt(
    const uint32_t scissor[2], uint32_t rasterizer_control,
    uint32_t rasterizer_valid, const uint32_t polygon_offset[6],
    uint32_t polygon_offset_valid) __attribute__((weak));
+int ps5_agc_gate2_set_viewport_states(
+   const uint32_t viewport[PS5_MAX_VIEWPORTS][8],
+   const uint32_t scissor[PS5_MAX_VIEWPORTS][2], unsigned count)
+   __attribute__((weak));
 int ps5_agc_gate2_set_point_line_state(const uint32_t values[3],
                                        uint32_t valid)
    __attribute__((weak));
@@ -5859,7 +5879,8 @@ ps5_blit_gpu_color(struct ps5_context *context, const struct pipe_blit_info *inf
    if (!view)
       return false;
 
-   bool viewport_valid = context->viewport_valid, scissor_valid = context->scissor_valid;
+   uint16_t viewport_valid = context->viewport_valid;
+   uint16_t scissor_valid = context->scissor_valid;
    bool framebuffer_valid = context->framebuffer_valid, queries_enabled = context->queries_enabled;
    unsigned draws_before = context->draw_calls;
    util_blitter_save_vertex_buffers(blitter, context->vertex_buffers, context->vertex_buffer_count);
@@ -5874,8 +5895,8 @@ ps5_blit_gpu_color(struct ps5_context *context, const struct pipe_blit_info *inf
    util_blitter_save_depth_stencil_alpha(blitter, context->depth_stencil_alpha);
    util_blitter_save_blend(blitter, context->blend);
    util_blitter_save_stencil_ref(blitter, &context->stencil_ref);
-   util_blitter_save_viewport(blitter, &context->viewport);
-   util_blitter_save_scissor(blitter, &context->scissor);
+   util_blitter_save_viewport(blitter, &context->viewport[0]);
+   util_blitter_save_scissor(blitter, &context->scissor[0]);
    util_blitter_save_sample_mask(blitter, context->sample_mask, 1);
    util_blitter_save_framebuffer(blitter, &context->framebuffer);
    util_blitter_save_fragment_sampler_states(blitter, PS5_MAX_TEXTURE_UNITS, context->samplers[1]);
@@ -7761,6 +7782,8 @@ ps5_draw_vbo_locked(struct pipe_context *base,
        (PS5_ENABLE_POINT_COORD_CANDIDATE &&
         (!ps5_agc_gate2_set_interp_control ||
          !ps5_agc_gate2_set_point_coord_input)) ||
+       (PS5_ENABLE_VIEWPORT_ARRAY_CANDIDATE &&
+        !ps5_agc_gate2_set_viewport_states) ||
        (PS5_ENABLE_BORDER_COLOR_CANDIDATE &&
         !ps5_agc_gate2_set_border_color_table) ||
        (tessellation_active && !ps5_agc_gate2_set_tessellation) ||
@@ -7810,18 +7833,21 @@ ps5_draw_vbo_locked(struct pipe_context *base,
                                        graphics.clip_control_valid) != 0 ||
         ps5_agc_gate2_set_vs_out_control(vs_out_control,
                                          vs_out_control_valid) != 0 ||
+       (PS5_ENABLE_VIEWPORT_ARRAY_CANDIDATE &&
+        ps5_agc_gate2_set_viewport_states(
+           graphics.viewport, graphics.scissor, PS5_MAX_VIEWPORTS) != 0) ||
        (PS5_ENABLE_MRT_CANDIDATE
           ? ps5_agc_gate2_set_graphics_state_mrt(
                graphics.blend_control, color_target_count,
                graphics.target_mask, graphics.color_control,
                graphics.color_control_valid, graphics.blend_color,
-               graphics.viewport, graphics.scissor,
+               graphics.viewport[0], graphics.scissor[0],
                graphics.rasterizer_control, graphics.rasterizer_valid,
                graphics.polygon_offset, graphics.polygon_offset_valid)
           : ps5_agc_gate2_set_graphics_state(
                graphics.blend_control[0], graphics.target_mask,
                graphics.color_control, graphics.color_control_valid,
-               graphics.blend_color, graphics.viewport, graphics.scissor,
+               graphics.blend_color, graphics.viewport[0], graphics.scissor[0],
                graphics.rasterizer_control, graphics.rasterizer_valid,
                graphics.polygon_offset, graphics.polygon_offset_valid)) != 0) {
       context->last_draw_status = -18;
@@ -9128,7 +9154,7 @@ ps5_clear_gpu_color(struct ps5_context *context, unsigned buffers,
    if (!blitter || blitter->running)
       return false;
 
-   bool viewport_valid = context->viewport_valid;
+   uint16_t viewport_valid = context->viewport_valid;
    bool framebuffer_valid = context->framebuffer_valid;
    bool queries_enabled = context->queries_enabled;
    unsigned draws_before = context->draw_calls;
@@ -9144,7 +9170,7 @@ ps5_clear_gpu_color(struct ps5_context *context, unsigned buffers,
    util_blitter_save_depth_stencil_alpha(blitter, context->depth_stencil_alpha);
    util_blitter_save_blend(blitter, context->blend);
    util_blitter_save_stencil_ref(blitter, &context->stencil_ref);
-   util_blitter_save_viewport(blitter, &context->viewport);
+   util_blitter_save_viewport(blitter, &context->viewport[0]);
    util_blitter_save_sample_mask(blitter, context->sample_mask, 1);
    util_blitter_save_fragment_constant_buffer_slot(blitter, &cb);
    if (scissor_state)
@@ -9230,7 +9256,8 @@ ps5_clear_gpu_depth_stencil(struct ps5_context *context, unsigned buffers,
    struct blitter_context *blitter = context->blitter;
    if (!blitter || blitter->running)
       return false;
-   bool viewport_valid = context->viewport_valid, framebuffer_valid = context->framebuffer_valid;
+   uint16_t viewport_valid = context->viewport_valid;
+   bool framebuffer_valid = context->framebuffer_valid;
    bool queries_enabled = context->queries_enabled;
    unsigned draws_before = context->draw_calls;
    util_blitter_save_vertex_buffers(blitter, context->vertex_buffers, context->vertex_buffer_count);
@@ -9245,7 +9272,7 @@ ps5_clear_gpu_depth_stencil(struct ps5_context *context, unsigned buffers,
    util_blitter_save_depth_stencil_alpha(blitter, context->depth_stencil_alpha);
    util_blitter_save_blend(blitter, context->blend);
    util_blitter_save_stencil_ref(blitter, &context->stencil_ref);
-   util_blitter_save_viewport(blitter, &context->viewport);
+   util_blitter_save_viewport(blitter, &context->viewport[0]);
    util_blitter_save_sample_mask(blitter, context->sample_mask, 1);
    util_blitter_save_framebuffer(blitter, &context->framebuffer);
    util_blitter_clear_depth_stencil(blitter, &surface, buffers, depth, stencil,
@@ -11455,11 +11482,15 @@ ps5_set_scissor_states(struct pipe_context *base, unsigned start,
                        const struct pipe_scissor_state *states)
 {
    struct ps5_context *context = (struct ps5_context *)base;
+   unsigned i;
 
-   if (start || count != 1 || !states)
+   if (!states || start >= PS5_MAX_VIEWPORTS ||
+       count > PS5_MAX_VIEWPORTS - start)
       return;
-   context->scissor = states[0];
-   context->scissor_valid = true;
+   for (i = 0; i < count; ++i) {
+      context->scissor[start + i] = states[i];
+      context->scissor_valid |= UINT16_C(1) << (start + i);
+   }
 }
 
 static void
@@ -11468,11 +11499,15 @@ ps5_set_viewport_states(struct pipe_context *base, unsigned start,
                         const struct pipe_viewport_state *states)
 {
    struct ps5_context *context = (struct ps5_context *)base;
+   unsigned i;
 
-   if (start || count != 1 || !states)
+   if (!states || start >= PS5_MAX_VIEWPORTS ||
+       count > PS5_MAX_VIEWPORTS - start)
       return;
-   context->viewport = states[0];
-   context->viewport_valid = true;
+   for (i = 0; i < count; ++i) {
+      context->viewport[start + i] = states[i];
+      context->viewport_valid |= UINT16_C(1) << (start + i);
+   }
 }
 
 static void
@@ -12387,7 +12422,8 @@ ps5_screen_create(void)
    caps->max_line_width_aa = caps->max_line_width;
    caps->line_width_granularity = PS5_ENABLE_POINT_LINE_SIZE_CANDIDATE
                                      ? 0.125f : 1.0f;
-   caps->max_viewports = 1;
+   caps->max_viewports =
+      PS5_ENABLE_VIEWPORT_ARRAY_CANDIDATE ? PS5_MAX_VIEWPORTS : 1;
    caps->max_varyings = 16;
    caps->max_shader_patch_varyings =
       PS5_ENABLE_TESSELLATION_CANDIDATE ? 1 : 0;

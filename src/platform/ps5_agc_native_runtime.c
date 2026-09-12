@@ -91,14 +91,16 @@ static uint32_t runtime_target_mask = UINT32_C(0x0000000f);
 static uint32_t runtime_color_control = UINT32_C(0x00cc0010);
 static uint32_t runtime_color_control_valid;
 static uint32_t runtime_blend_color[4];
-static uint32_t runtime_viewport[8] = {
+#define RUNTIME_MAX_VIEWPORTS 16
+static uint32_t runtime_viewport[RUNTIME_MAX_VIEWPORTS][8] = {{
     UINT32_C(0x44700000), UINT32_C(0x44700000),
     UINT32_C(0xc4070000), UINT32_C(0x44070000),
     UINT32_C(0x3f800000), 0, 0, UINT32_C(0x3f800000),
-};
-static uint32_t runtime_scissor[2] = {
+}};
+static uint32_t runtime_scissor[RUNTIME_MAX_VIEWPORTS][2] = {{
     UINT32_C(0x80000000), UINT32_C(0x04380780),
-};
+}};
+static unsigned runtime_viewport_count = 1;
 static uint32_t runtime_rasterizer_control;
 static uint32_t runtime_rasterizer_valid;
 static uint32_t runtime_point_line[3] = {
@@ -358,13 +360,25 @@ int ps5_agc_gate2_set_graphics_state(
     runtime_color_control = color_control;
     runtime_color_control_valid = color_control_valid;
     memcpy(runtime_blend_color, blend_color, sizeof(runtime_blend_color));
-    memcpy(runtime_viewport, viewport, sizeof(runtime_viewport));
-    memcpy(runtime_scissor, scissor, sizeof(runtime_scissor));
+    memcpy(runtime_viewport[0], viewport, sizeof(runtime_viewport[0]));
+    memcpy(runtime_scissor[0], scissor, sizeof(runtime_scissor[0]));
     runtime_rasterizer_control = rasterizer_control;
     runtime_rasterizer_valid = rasterizer_valid;
     memcpy(runtime_polygon_offset, polygon_offset,
            sizeof(runtime_polygon_offset));
     runtime_polygon_offset_valid = polygon_offset_valid;
+    return 0;
+}
+
+int ps5_agc_gate2_set_viewport_states(
+    const uint32_t viewport[RUNTIME_MAX_VIEWPORTS][8],
+    const uint32_t scissor[RUNTIME_MAX_VIEWPORTS][2], unsigned count)
+{
+    if (!viewport || !scissor || !count || count > RUNTIME_MAX_VIEWPORTS)
+        return -1;
+    memcpy(runtime_viewport, viewport, count * sizeof(runtime_viewport[0]));
+    memcpy(runtime_scissor, scissor, count * sizeof(runtime_scissor[0]));
+    runtime_viewport_count = count;
     return 0;
 }
 
@@ -3262,23 +3276,30 @@ int main(void)
                 (uint16_t)(0x0105u + index), 0,
                 runtime_blend_color[index]
             };
-        for (index = 0; index < 6; ++index)
+        for (unsigned viewport = 0; viewport < runtime_viewport_count;
+             ++viewport) {
+            for (index = 0; index < 6; ++index)
+                graphics_state[graphics_count++] = (agc_register_t){
+                    (uint16_t)(0x010fu + viewport * 6u + index), 0,
+                    runtime_viewport[viewport][index]
+                };
             graphics_state[graphics_count++] = (agc_register_t){
-                (uint16_t)(0x010fu + index), 0,
-                runtime_viewport[index]
+                (uint16_t)(0x00b4u + viewport * 2u), 0,
+                runtime_viewport[viewport][6]
             };
-        graphics_state[graphics_count++] = (agc_register_t){
-            0x00b4, 0, runtime_viewport[6]
-        };
-        graphics_state[graphics_count++] = (agc_register_t){
-            0x00b5, 0, runtime_viewport[7]
-        };
-        graphics_state[graphics_count++] = (agc_register_t){
-            0x0090, 0, runtime_scissor[0]
-        };
-        graphics_state[graphics_count++] = (agc_register_t){
-            0x0091, 0, runtime_scissor[1]
-        };
+            graphics_state[graphics_count++] = (agc_register_t){
+                (uint16_t)(0x00b5u + viewport * 2u), 0,
+                runtime_viewport[viewport][7]
+            };
+            graphics_state[graphics_count++] = (agc_register_t){
+                (uint16_t)(0x0090u + viewport * 2u), 0,
+                runtime_scissor[viewport][0]
+            };
+            graphics_state[graphics_count++] = (agc_register_t){
+                (uint16_t)(0x0091u + viewport * 2u), 0,
+                runtime_scissor[viewport][1]
+            };
+        }
         if (runtime_rasterizer_valid)
             graphics_state[graphics_count++] = (agc_register_t){
                 0x0205, 0, runtime_rasterizer_control
@@ -3617,11 +3638,11 @@ int main(void)
                runtime_color_control_valid, runtime_color_control,
                runtime_blend_color[0], runtime_blend_color[1],
                runtime_blend_color[2], runtime_blend_color[3],
-               runtime_viewport[0], runtime_viewport[1],
-               runtime_viewport[2], runtime_viewport[3],
-               runtime_viewport[4], runtime_viewport[5],
-               runtime_viewport[6], runtime_viewport[7],
-               runtime_scissor[0], runtime_scissor[1],
+               runtime_viewport[0][0], runtime_viewport[0][1],
+               runtime_viewport[0][2], runtime_viewport[0][3],
+               runtime_viewport[0][4], runtime_viewport[0][5],
+               runtime_viewport[0][6], runtime_viewport[0][7],
+               runtime_scissor[0][0], runtime_scissor[0][1],
                runtime_rasterizer_valid, runtime_rasterizer_control,
                runtime_point_line_valid, runtime_point_line[0],
                runtime_point_line[1], runtime_point_line[2],

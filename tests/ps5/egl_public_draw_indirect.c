@@ -20,6 +20,13 @@
 #define VERTEX_ID "int(bias64)"
 #define GREEN_BODY "double x=double(gl_FragCoord.x)+1.0lf;c=abs((x/2.0lf)*2.0lf-x)<0.0001lf?vec4(0,1,0,1):vec4(1,0,0,1);"
 #define CYAN_BODY "double y=double(gl_FragCoord.y)+1.0lf;c=abs(sqrt(y*y)-y)<0.0001lf?vec4(0,1,1,1):vec4(1,0,0,1);"
+#elif defined(PS5_VIEWPORT_ARRAY_TEST)
+#define TEST_NAME "ps5-egl-viewport-array"
+#define GLSL_VERSION "#version 400 core\n"
+#define VERTEX_PROBE ""
+#define VERTEX_ID "gl_VertexID-3"
+#define GREEN_BODY "c=vec4(0,1,0,1);"
+#define CYAN_BODY "c=vec4(0,1,1,1);"
 #elif defined(PS5_GLSL_400_TEST)
 #define TEST_NAME "ps5-egl-glsl400"
 #define GLSL_VERSION "#version 400 core\n"
@@ -66,20 +73,38 @@ program(const char *fragment)
       "void main(){" VERTEX_PROBE "int id=" VERTEX_ID ";"
       "float x=id==1?0.8:-0.8;float y=id==2?0.8:-0.8;"
       "gl_Position=vec4(x,y,0.5,1.0);}\n";
-   GLuint shaders[2] = {shader(GL_VERTEX_SHADER, vertex),
-                        shader(GL_FRAGMENT_SHADER, fragment)};
+   GLuint shaders[3] = {shader(GL_VERTEX_SHADER, vertex),
+                        shader(GL_FRAGMENT_SHADER, fragment), 0};
+#ifdef PS5_VIEWPORT_ARRAY_TEST
+   static const char *geometry =
+      GLSL_VERSION
+      "#extension GL_ARB_viewport_array : require\n"
+      "layout(triangles) in;layout(triangle_strip,max_vertices=6) out;"
+      "void main(){for(int vp=0;vp<2;++vp){gl_ViewportIndex=vp;"
+      "for(int i=0;i<3;++i){gl_Position=gl_in[i].gl_Position;EmitVertex();}"
+      "EndPrimitive();}}\n";
+   shaders[2] = shader(GL_GEOMETRY_SHADER, geometry);
+#endif
    GLuint result = glCreateProgram();
    GLint ok = GL_FALSE;
 
-   if (!shaders[0] || !shaders[1])
+   if (!shaders[0] || !shaders[1]
+#ifdef PS5_VIEWPORT_ARRAY_TEST
+       || !shaders[2]
+#endif
+       )
       goto done;
    glAttachShader(result, shaders[0]);
    glAttachShader(result, shaders[1]);
+#ifdef PS5_VIEWPORT_ARRAY_TEST
+   glAttachShader(result, shaders[2]);
+#endif
    glLinkProgram(result);
    glGetProgramiv(result, GL_LINK_STATUS, &ok);
 done:
    glDeleteShader(shaders[0]);
    glDeleteShader(shaders[1]);
+   glDeleteShader(shaders[2]);
    if (!ok) {
       glDeleteProgram(result);
       result = 0;
@@ -88,12 +113,12 @@ done:
 }
 
 static unsigned
-matching(uint32_t color)
+matching(unsigned x, uint32_t color)
 {
    static uint32_t pixels[SIZE * SIZE];
    unsigned result = 0;
 
-   glReadPixels(0, 0, SIZE, SIZE, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+   glReadPixels(x, 0, SIZE, SIZE, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
    for (unsigned i = 0; i < SIZE * SIZE; ++i)
       result += pixels[i] == color;
    return result;
@@ -130,7 +155,7 @@ main(void)
       EGL_NONE,
    };
    const EGLint context_attrs[] = {
-#ifdef PS5_GLSL_400_TEST
+#if defined(PS5_GLSL_400_TEST) || defined(PS5_VIEWPORT_ARRAY_TEST)
       EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 0,
 #else
       EGL_CONTEXT_MAJOR_VERSION_KHR, 3, EGL_CONTEXT_MINOR_VERSION_KHR, 3,
@@ -146,7 +171,7 @@ main(void)
    GLuint programs[2] = {0}, vao = 0, buffers[2] = {0};
    unsigned green_count = 0, cyan_count = 0, draws = 0;
    const char *glsl = NULL;
-   int draw_indirect = 0, gpu_shader5 = 0;
+   int draw_indirect = 0, gpu_shader5 = 0, viewport_array = 0;
    int status = -1, passed = 0;
 
    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -162,6 +187,7 @@ main(void)
    glsl = (const char *)glGetString(GL_SHADING_LANGUAGE_VERSION);
    draw_indirect = has_extension("GL_ARB_draw_indirect");
    gpu_shader5 = has_extension("GL_ARB_gpu_shader5");
+   viewport_array = has_extension("GL_ARB_viewport_array");
    printf("[%s] glsl=%s indirect=%d gpu-shader5=%d\n", TEST_NAME,
           glsl ? glsl : "(null)", draw_indirect, gpu_shader5);
    if (!draw_indirect
@@ -170,6 +196,9 @@ main(void)
 #endif
 #ifdef PS5_FP64_TEST
        || !has_extension("GL_ARB_gpu_shader_fp64")
+#endif
+#ifdef PS5_VIEWPORT_ARRAY_TEST
+       || !viewport_array
 #endif
        )
       goto done;
@@ -186,20 +215,45 @@ main(void)
    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[1]);
    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices,
                 GL_STATIC_DRAW);
+#ifdef PS5_VIEWPORT_ARRAY_TEST
+   {
+      const GLfloat viewports[8] = {
+         0, 0, SIZE, SIZE, SIZE, 0, SIZE, SIZE,
+      };
+      const GLint scissors[8] = {
+         0, 0, SIZE, SIZE, SIZE, 0, SIZE, SIZE,
+      };
+      glViewportArrayv(0, 2, viewports);
+      glScissorArrayv(0, 2, scissors);
+      glEnable(GL_SCISSOR_TEST);
+   }
+#else
    glViewport(0, 0, SIZE, SIZE);
+#endif
    glClearColor(0, 0, 0, 1);
    glUseProgram(programs[0]);
    glClear(GL_COLOR_BUFFER_BIT);
    glDrawArraysIndirect(GL_TRIANGLES, 0);
-   green_count = matching(UINT32_C(0xff00ff00));
+   green_count = matching(0, UINT32_C(0xff00ff00));
+#ifdef PS5_VIEWPORT_ARRAY_TEST
+   green_count += matching(SIZE, UINT32_C(0xff00ff00));
+#endif
    glUseProgram(programs[1]);
    glClear(GL_COLOR_BUFFER_BIT);
    glDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT,
                           (const void *)(uintptr_t)16);
-   cyan_count = matching(UINT32_C(0xffffff00));
+   cyan_count = matching(0, UINT32_C(0xffffff00));
+#ifdef PS5_VIEWPORT_ARRAY_TEST
+   cyan_count += matching(SIZE, UINT32_C(0xffffff00));
+#endif
    status = ps5_egl_current_draw_status(&draws);
    passed = glGetError() == GL_NO_ERROR && status == 0 && draws == 4 &&
-            green_count > 500 && cyan_count > 500;
+            green_count >
+#ifdef PS5_VIEWPORT_ARRAY_TEST
+               1000 && cyan_count > 1000;
+#else
+               500 && cyan_count > 500;
+#endif
 
 done:
    printf("[%s] arrays=%u indexed=%u draws=%u status=%d result=%s\n",
