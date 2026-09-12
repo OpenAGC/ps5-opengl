@@ -618,9 +618,8 @@ int ps5_agc_gate2_set_point_coord_input(uint32_t enabled)
 #define TEXTURE_WIDTH 64u
 #define TEXTURE_HEIGHT 64u
 #define TESS_OFFCHIP_WORKGROUPS 160u
-#define TESS_FACTOR_WORKGROUPS 120u
 #define TESS_OFFCHIP_BYTES (TESS_OFFCHIP_WORKGROUPS * 32768u)
-#define TESS_FACTOR_BYTES (TESS_FACTOR_WORKGROUPS * 1024u)
+#define TESS_FACTOR_BYTES 0x4000u
 #define NATIVE_COLOR_FORMAT_RGBA8_UNORM 1u
 #define NATIVE_COLOR_SWIZZLE_64KB_R_X 27u
 
@@ -735,6 +734,8 @@ typedef struct agc_api {
     uint32_t (*wait_rendering)(uint32_t **, uint32_t, uint32_t, uint32_t,
                                int);
     int (*submit)(void *);
+    int (*set_tf_ring)(uintptr_t, uint32_t);
+    int (*get_tf_ring)(uintptr_t *, uint32_t *);
 } agc_api_t;
 
 static uint32_t *set_linkage_uc_state(const agc_api_t *agc,
@@ -1810,6 +1811,8 @@ static int load_apis(void *agc_module, void *driver_module,
     extern uint32_t sceAgcDriverWaitUntilSafeForRendering(
         uint32_t **, uint32_t, uint32_t, uint32_t, int);
     extern int sceAgcDriverSubmitDcb(void *);
+    extern int sceAgcDriverSetTFRing(uintptr_t, uint32_t);
+    extern int sceAgcDriverGetTFRing(uintptr_t *, uint32_t *);
     extern int sceVideoOutOpen(int32_t, int32_t, int32_t, const void *);
     extern int sceVideoOutClose(int32_t);
     extern int sceVideoOutSetFlipRate(int32_t, int32_t);
@@ -1848,6 +1851,8 @@ static int load_apis(void *agc_module, void *driver_module,
         sceAgcDriverGetWaitRenderingPacketSizeInDwords,
         sceAgcDriverWaitUntilSafeForRendering,
         sceAgcDriverSubmitDcb,
+        sceAgcDriverSetTFRing,
+        sceAgcDriverGetTFRing,
     };
     *video = (video_api_t){
         sceVideoOutOpen,
@@ -1895,6 +1900,8 @@ static int load_apis(void *agc_module, void *driver_module,
     LOAD(agc->wait_rendering, driver_module,
          "sceAgcDriverWaitUntilSafeForRendering");
     LOAD(agc->submit, driver_module, "sceAgcDriverSubmitDcb");
+    LOAD(agc->set_tf_ring, driver_module, "sceAgcDriverSetTFRing");
+    LOAD(agc->get_tf_ring, driver_module, "sceAgcDriverGetTFRing");
 
     LOAD(video->open, video_module, "sceVideoOutOpen");
     LOAD(video->close, video_module, "sceVideoOutClose");
@@ -2480,6 +2487,9 @@ int main(void)
     int work_unmap_rc = 0, work_release_rc = 0;
     int init_rc = -1, vertex_rc = -1, pixel_rc = -1, hull_rc = -1;
     int link_rc = -1;
+    int tf_ring_set_rc = -1, tf_ring_get_rc = -1, tf_ring_unset_rc = -1;
+    uintptr_t tf_ring_address = 0;
+    uint32_t tf_ring_bytes = 0;
     int work_alloc_rc = -1, work_map_rc = -1;
     int framebuffer_alloc_rc = -1, framebuffer_map_rc = -1;
 #ifdef AGC_OFFSCREEN_COLOR_VARIANT
@@ -2685,6 +2695,18 @@ int main(void)
             0x4000);
     if (work_alloc_rc != 0 || work_map_rc != 0 || !memory)
         goto receipt;
+    if (runtime_hs_package) {
+        uintptr_t factor = (uintptr_t)(memory + WORK_BYTES +
+                                       TESS_OFFCHIP_BYTES);
+
+        tf_ring_set_rc = agc.set_tf_ring(factor, TESS_FACTOR_BYTES);
+        if (tf_ring_set_rc == 0)
+            tf_ring_get_rc = agc.get_tf_ring(&tf_ring_address,
+                                             &tf_ring_bytes);
+        if (tf_ring_set_rc != 0 || tf_ring_get_rc != 0 ||
+            tf_ring_address != factor || tf_ring_bytes != TESS_FACTOR_BYTES)
+            goto receipt;
+    }
     memset(memory, 0, work_bytes);
 #ifdef AGC_RUNTIME_PACKAGES
     completion_marker = (volatile uint32_t *)(memory + 0x6ff0);
@@ -3993,6 +4015,11 @@ receipt:
            (uint32_t)work_map_rc, (uint64_t)work_start,
            (uint32_t)framebuffer_alloc_rc, (uint32_t)framebuffer_map_rc,
            (uint64_t)framebuffer_start, memory, framebuffer);
+    if (runtime_hs_package)
+        printf(LOG_PREFIX " tf_ring=%08" PRIx32 "/%08" PRIx32
+               " address=%016" PRIxPTR " bytes=%u\n",
+               (uint32_t)tf_ring_set_rc, (uint32_t)tf_ring_get_rc,
+               tf_ring_address, tf_ring_bytes);
 #ifdef AGC_OFFSCREEN_COLOR_VARIANT
     printf(LOG_PREFIX " offscreen=%08" PRIx32 "/%08" PRIx32
            "/%016" PRIx64 " mapped=%p bytes=%u\n",
@@ -4009,6 +4036,8 @@ receipt:
     }
 
 cleanup:
+    if (tf_ring_set_rc == 0)
+        tf_ring_unset_rc = agc.set_tf_ring(0, 0);
 #ifdef AGC_DEPTH_TEST_VARIANT
     if (depth)
         depth_unmap_rc = munmap(depth, DEPTH_BYTES);
@@ -4046,11 +4075,12 @@ cleanup:
     {
     printf(LOG_PREFIX " cleanup unregister=%08" PRIx32
            " close=%08" PRIx32 " framebuffer=%08" PRIx32
-           "/%08" PRIx32 " work=%08" PRIx32 "/%08" PRIx32 "\n",
+           "/%08" PRIx32 " work=%08" PRIx32 "/%08" PRIx32
+           " tf_ring=%08" PRIx32 "\n",
            (uint32_t)unregister_rc, (uint32_t)close_rc,
            (uint32_t)framebuffer_unmap_rc,
            (uint32_t)framebuffer_release_rc, (uint32_t)work_unmap_rc,
-           (uint32_t)work_release_rc);
+           (uint32_t)work_release_rc, (uint32_t)tf_ring_unset_rc);
 #ifdef AGC_OFFSCREEN_COLOR_VARIANT
     printf(LOG_PREFIX " cleanup offscreen=%08" PRIx32 "/%08" PRIx32 "\n",
            (uint32_t)offscreen_unmap_rc, (uint32_t)offscreen_release_rc);

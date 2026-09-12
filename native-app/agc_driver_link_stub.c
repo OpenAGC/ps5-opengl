@@ -14,3 +14,11 @@ uint32_t sceAgcDriverWaitUntilSafeForRendering(uint32_t **command,
     return command != 0 || video_handle || buffer_index || generation || mode;
 }
 int sceAgcDriverSubmitDcb(void *description) { return description ? -1 : 0; }
+int sceAgcDriverSetTFRing(uintptr_t address, uint32_t size)
+{
+    return address && size ? 0 : -1;
+}
+int sceAgcDriverGetTFRing(uintptr_t *address, uint32_t *size)
+{
+    return address && size ? 0 : -1;
+}
