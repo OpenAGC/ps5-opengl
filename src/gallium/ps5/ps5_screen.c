@@ -4093,6 +4093,14 @@ ps5_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
 
    (void)screen;
 
+   if (format == PIPE_FORMAT_NONE)
+      return PS5_ENABLE_GLSL_430_CANDIDATE &&
+             target == PIPE_TEXTURE_2D &&
+             bindings == PIPE_BIND_RENDER_TARGET &&
+             ((sample_count <= 1 && storage_sample_count <= 1) ||
+              (PS5_ENABLE_MSAA4_CANDIDATE && sample_count == 4 &&
+               storage_sample_count == 4));
+
    if (sample_count > 1 || storage_sample_count > 1)
       return PS5_ENABLE_MSAA4_CANDIDATE &&
              (target == PIPE_TEXTURE_2D ||
@@ -8953,7 +8961,8 @@ ps5_set_framebuffer_state(struct pipe_context *base,
 
    util_copy_framebuffer_state(&context->framebuffer, framebuffer);
    context->framebuffer_valid = framebuffer && colors_valid &&
-      (has_color || has_depth) &&
+      (has_color || has_depth ||
+       (PS5_ENABLE_GLSL_430_CANDIDATE && !framebuffer->nr_cbufs)) &&
       ((PS5_ENABLE_PADDED_FBO_CANDIDATE ||
         PS5_ENABLE_DYNAMIC_COLOR_TARGET_CANDIDATE)
           ? (framebuffer->width > 0 && framebuffer->height > 0 &&
@@ -12538,6 +12547,7 @@ ps5_screen_create(void)
    caps->cube_map_array = PS5_ENABLE_TEXTURE_CUBE_ARRAY_CANDIDATE;
    caps->copy_between_compressed_and_plain_formats =
       PS5_ENABLE_GLSL_430_CANDIDATE;
+   caps->framebuffer_no_attachment = PS5_ENABLE_GLSL_430_CANDIDATE;
    caps->gl_begin_end_buffer_size = 512 * 1024;
    caps->min_map_buffer_alignment = 64;
    vs_caps = (struct pipe_shader_caps *)

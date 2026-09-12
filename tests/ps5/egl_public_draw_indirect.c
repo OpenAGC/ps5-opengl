@@ -194,7 +194,8 @@ main(void)
    EGLSurface surface = EGL_NO_SURFACE;
    EGLContext context = EGL_NO_CONTEXT;
    EGLint count = 0;
-   GLuint programs[2] = {0}, vao = 0, buffers[4] = {0};
+   GLuint programs[2] = {0}, vao = 0, buffers[4] = {0}, empty_fbo = 0;
+   GLenum empty_status = 0;
    unsigned green_count = 0, cyan_count = 0, draws = 0;
 #ifdef PS5_FP64_VERTEX_TEST
    unsigned base_instance_count = 0;
@@ -382,7 +383,39 @@ main(void)
                500 && cyan_count > 500;
 #endif
 
+#ifdef PS5_GL43_FRAMEBUFFER_NO_ATTACHMENTS_TEST
+   {
+      typedef void (GLAPIENTRY *framebuffer_parameter_proc)(GLenum, GLenum,
+                                                             GLint);
+      framebuffer_parameter_proc framebuffer_parameter =
+         (framebuffer_parameter_proc)eglGetProcAddress("glFramebufferParameteri");
+      glGenFramebuffers(1, &empty_fbo);
+      glBindFramebuffer(GL_FRAMEBUFFER, empty_fbo);
+      if (framebuffer_parameter) {
+         framebuffer_parameter(GL_FRAMEBUFFER, GL_FRAMEBUFFER_DEFAULT_WIDTH,
+                               SIZE);
+         framebuffer_parameter(GL_FRAMEBUFFER, GL_FRAMEBUFFER_DEFAULT_HEIGHT,
+                               SIZE);
+         framebuffer_parameter(GL_FRAMEBUFFER, GL_FRAMEBUFFER_DEFAULT_LAYERS,
+                               1);
+      }
+      glDrawBuffer(GL_NONE);
+      glReadBuffer(GL_NONE);
+      empty_status = glCheckFramebufferStatus(GL_FRAMEBUFFER);
+      glUseProgram(programs[0]);
+      glDrawArrays(GL_TRIANGLES, 0, 3);
+      status = ps5_egl_current_draw_status(&draws);
+      passed &= framebuffer_parameter &&
+                has_extension("GL_ARB_framebuffer_no_attachments") &&
+                empty_status == GL_FRAMEBUFFER_COMPLETE &&
+                glGetError() == GL_NO_ERROR && status == 0 && draws == 7;
+   }
+#endif
+
 done:
+#ifdef PS5_GL43_FRAMEBUFFER_NO_ATTACHMENTS_TEST
+   printf("[%s] no-attachments=0x%x\n", TEST_NAME, empty_status);
+#endif
 #ifdef PS5_VIEWPORT_ARRAY_TEST
    printf("[%s] left=%u/%u right=%u/%u\n", TEST_NAME, green_left,
           cyan_left, green_count, cyan_count);
@@ -393,6 +426,8 @@ done:
    printf("[%s] arrays=%u indexed=%u draws=%u status=%d result=%s\n",
           TEST_NAME, green_count, cyan_count, draws, status,
           passed ? "pass" : "fail");
+   if (empty_fbo)
+      glDeleteFramebuffers(1, &empty_fbo);
    glDeleteBuffers(4, buffers);
    glDeleteVertexArrays(1, &vao);
    glDeleteProgram(programs[0]);

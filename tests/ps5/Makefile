@@ -709,6 +709,10 @@ egl_public_gl43_copy_image.o: egl_public_gl43_copy_image.c \
 		egl_public_core33_texture_copy.c
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
 
+egl_public_gl43_framebuffer_no_attachments.o: \
+		egl_public_gl43_framebuffer_no_attachments.c egl_public_draw_indirect.c
+	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
+
 egl_public_glsl400.o: egl_public_glsl400.c egl_public_draw_indirect.c
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
 
