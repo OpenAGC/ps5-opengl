@@ -12436,6 +12436,11 @@ ps5_screen_create(void)
    caps->conditional_render_inverted =
       PS5_ENABLE_OCCLUSION_QUERY_CANDIDATE;
    caps->draw_indirect = PS5_ENABLE_DRAW_INDIRECT_CANDIDATE;
+   caps->texture_query_lod = PS5_ENABLE_SHADER_TEXTURE_LOD_CANDIDATE;
+   caps->stream_output_pause_resume =
+      PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDATE;
+   caps->stream_output_interleave_buffers =
+      PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDATE;
    caps->depth_clip_disable = PS5_ENABLE_DEPTH_CLAMP_CANDIDATE;
    caps->texture_multisample = PS5_ENABLE_MSAA4_CANDIDATE;
    caps->sample_shading = PS5_ENABLE_MSAA4_CANDIDATE;

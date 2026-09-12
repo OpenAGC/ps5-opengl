@@ -130,7 +130,11 @@ main(void)
       EGL_NONE,
    };
    const EGLint context_attrs[] = {
+#ifdef PS5_GLSL_400_TEST
+      EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 0,
+#else
       EGL_CONTEXT_MAJOR_VERSION_KHR, 3, EGL_CONTEXT_MINOR_VERSION_KHR, 3,
+#endif
       EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR,
       EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR, EGL_NONE,
    };
@@ -162,7 +166,7 @@ main(void)
           glsl ? glsl : "(null)", draw_indirect, gpu_shader5);
    if (!draw_indirect
 #ifdef PS5_GLSL_400_TEST
-       || !gpu_shader5
+       || !gpu_shader5 || !glsl || strncmp(glsl, "4.00", 4)
 #endif
 #ifdef PS5_FP64_TEST
        || !has_extension("GL_ARB_gpu_shader_fp64")
