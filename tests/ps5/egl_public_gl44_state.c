@@ -140,7 +140,7 @@ main(void)
    glClear(GL_COLOR_BUFFER_BIT);
    glDrawArrays(GL_TRIANGLES, 0, 3);
    glEndQuery(GL_TIME_ELAPSED);
-   glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &pixel);
+   glReadPixels(16, 16, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &pixel);
    glGenBuffers(1, &query_buffer);
    glBindBuffer(GL_QUERY_BUFFER, query_buffer);
    glBufferData(GL_QUERY_BUFFER, sizeof(query_value), NULL, GL_DYNAMIC_READ);
@@ -171,8 +171,10 @@ done:
           stride, linked, storage_ok, immutable_error,
           (unsigned long long)query_value, mirror_ok, pixel, error,
           passed ? "pass" : "fail");
-   if (mapped)
+   if (mapped) {
+      glBindBuffer(GL_ARRAY_BUFFER, storage);
       glUnmapBuffer(GL_ARRAY_BUFFER);
+   }
    if (texture)
       glDeleteTextures(1, &texture);
    if (query)
