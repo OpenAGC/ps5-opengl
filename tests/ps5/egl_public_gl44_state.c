@@ -24,7 +24,7 @@ compile(GLenum type, const char *source)
       char log[512] = {0};
       GLsizei length = 0;
       glGetShaderInfoLog(shader, sizeof(log), &length, log);
-      printf("[ps5-egl-gl44-state] shader=%x log=%.*s\n", type, length, log);
+      printf("[ps5-egl-gl45-state] shader=%x log=%.*s\n", type, length, log);
       glDeleteShader(shader);
       return 0;
    }
@@ -48,17 +48,22 @@ int
 main(void)
 {
    static const char *vertex_source =
-      "#version 440 core\n"
+      "#version 450 core\n"
       "layout(location=0) in vec3 p;"
       "layout(location=0,component=1) out float v;"
+      "uniform int mode;"
       "void main(){int i=gl_VertexID;"
       "vec2 q=vec2(i==1?0.8:-0.8,i==2?0.8:-0.8);"
-      "gl_Position=vec4(q+p.xy*0.001,0,1);v=1.0;}\n";
+      "gl_Position=vec4(q+p.xy*0.001,mode==1?-0.5:0.0,1);"
+      "gl_CullDistance[0]=mode==2?-1.0:1.0;v=1.0;}\n";
    static const char *fragment_source =
-      "#version 440 core\n"
+      "#version 450 core\n"
       "layout(location=0,component=1) in float v;"
       "layout(location=0) out vec4 c;"
-      "void main(){c=vec4(0,v,0,1);}\n";
+      "uniform sampler2DMS ms;"
+      "void main(){float d=dFdxFine(gl_FragCoord.x);"
+      "c=v>0.0&&abs(d-1.0)<0.01&&textureSamples(ms)==4?"
+      "vec4(0,1,0,1):vec4(1,0,0,1);}\n";
    static const uint32_t initial[] = {0x10203040, 0x50607080};
    static const uint32_t packed_vertices[3] = {0, 0, 0};
    const EGLint config_attrs[] = {
@@ -67,7 +72,7 @@ main(void)
       EGL_NONE,
    };
    const EGLint context_attrs[] = {
-      EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 4,
+      EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 5,
       EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR,
       EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR, EGL_NONE,
    };
@@ -78,10 +83,10 @@ main(void)
    EGLint count = 0;
    GLuint shaders[2] = {0}, program = 0, storage = 0, query_buffer = 0;
    GLuint vao = 0, packed_buffer = 0;
-   GLuint query = 0, texture = 0;
+   GLuint query = 0, texture = 0, ms_texture = 0;
    GLint linked = GL_FALSE, stride = 0;
    uint64_t query_value = 0;
-   uint32_t pixel = 0;
+   uint32_t pixel = 0, clip_pixel = 0, cull_pixel = 0;
    uint32_t *mapped = NULL;
    GLenum immutable_error = GL_NO_ERROR, error = GL_NO_ERROR;
    int storage_ok = 0, query_ok = 0, mirror_ok = 0, passed = 0;
@@ -134,6 +139,12 @@ main(void)
                          sizeof(uint32_t), NULL);
    glEnableVertexAttribArray(0);
    glUseProgram(program);
+   glUniform1i(glGetUniformLocation(program, "ms"), 0);
+   glGenTextures(1, &ms_texture);
+   glActiveTexture(GL_TEXTURE0);
+   glBindTexture(GL_TEXTURE_2D_MULTISAMPLE, ms_texture);
+   glTexImage2DMultisample(GL_TEXTURE_2D_MULTISAMPLE, 4, GL_RGBA8,
+                           1, 1, GL_TRUE);
    glViewport(0, 0, 64, 64);
    glClearColor(0, 0, 0, 1);
    glBeginQuery(GL_TIME_ELAPSED, query);
@@ -141,6 +152,17 @@ main(void)
    glDrawArrays(GL_TRIANGLES, 0, 3);
    glEndQuery(GL_TIME_ELAPSED);
    glReadPixels(16, 16, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &pixel);
+   glTextureBarrier();
+   glUniform1i(glGetUniformLocation(program, "mode"), 1);
+   glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
+   glClear(GL_COLOR_BUFFER_BIT);
+   glDrawArrays(GL_TRIANGLES, 0, 3);
+   glReadPixels(16, 16, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &clip_pixel);
+   glUniform1i(glGetUniformLocation(program, "mode"), 2);
+   glClipControl(GL_LOWER_LEFT, GL_NEGATIVE_ONE_TO_ONE);
+   glClear(GL_COLOR_BUFFER_BIT);
+   glDrawArrays(GL_TRIANGLES, 0, 3);
+   glReadPixels(16, 16, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &cull_pixel);
    glGenBuffers(1, &query_buffer);
    glBindBuffer(GL_QUERY_BUFFER, query_buffer);
    glBufferData(GL_QUERY_BUFFER, sizeof(query_value), NULL, GL_DYNAMIC_READ);
@@ -157,19 +179,29 @@ main(void)
    error = glGetError();
    passed = linked && stride >= 2048 && storage_ok && query_ok && mirror_ok &&
             pixel == UINT32_C(0xff00ff00) &&
+            clip_pixel == UINT32_C(0xff000000) &&
+            cull_pixel == UINT32_C(0xff000000) &&
             immutable_error == GL_INVALID_OPERATION && error == GL_NO_ERROR &&
             has_extension("GL_ARB_buffer_storage") &&
             has_extension("GL_ARB_enhanced_layouts") &&
             has_extension("GL_ARB_query_buffer_object") &&
             has_extension("GL_ARB_texture_mirror_clamp_to_edge") &&
-            has_extension("GL_ARB_vertex_type_10f_11f_11f_rev");
+            has_extension("GL_ARB_vertex_type_10f_11f_11f_rev") &&
+            has_extension("GL_ARB_ES3_1_compatibility") &&
+            has_extension("GL_ARB_clip_control") &&
+            has_extension("GL_ARB_cull_distance") &&
+            has_extension("GL_ARB_derivative_control") &&
+            has_extension("GL_ARB_shader_texture_image_samples") &&
+            has_extension("GL_NV_texture_barrier");
 
 done:
-   printf("[ps5-egl-gl44-state] gl=%s glsl=%s stride=%d linked=%d storage=%d "
-          "immutable=0x%x query=%llu mirror=%d pixel=%08x error=0x%x result=%s\n",
+   printf("[ps5-egl-gl45-state] gl=%s glsl=%s stride=%d linked=%d storage=%d "
+          "immutable=0x%x query=%llu mirror=%d pixel=%08x clip=%08x "
+          "cull=%08x error=0x%x result=%s\n",
           glGetString(GL_VERSION), glGetString(GL_SHADING_LANGUAGE_VERSION),
           stride, linked, storage_ok, immutable_error,
-          (unsigned long long)query_value, mirror_ok, pixel, error,
+          (unsigned long long)query_value, mirror_ok, pixel, clip_pixel,
+          cull_pixel, error,
           passed ? "pass" : "fail");
    if (mapped) {
       glBindBuffer(GL_ARRAY_BUFFER, storage);
@@ -177,6 +209,8 @@ done:
    }
    if (texture)
       glDeleteTextures(1, &texture);
+   if (ms_texture)
+      glDeleteTextures(1, &ms_texture);
    if (query)
       glDeleteQueries(1, &query);
    glDeleteBuffers(1, &packed_buffer);

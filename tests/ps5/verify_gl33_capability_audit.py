@@ -517,7 +517,7 @@ for default_extension in (
             f"Mesa default extension changed: {default_extension}")
 
 for cap in (
-    "caps->glsl_feature_level = PS5_ENABLE_GLSL_440_CANDIDATE ? 440 :",
+    "caps->glsl_feature_level = PS5_ENABLE_GLSL_450_CANDIDATE ? 450 :",
     "PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :",
     "caps->doubles = PS5_ENABLE_FP64_CANDIDATE",
     "caps->cube_map_array = PS5_ENABLE_TEXTURE_CUBE_ARRAY_CANDIDATE",
@@ -550,6 +550,7 @@ require("#define PS5_ENABLE_DUAL_SOURCE_BLEND_CANDIDATE 0" in SCREEN and
         "PS5_ENABLE_DUAL_SOURCE_BLEND_CANDIDATE ? 1 : 0" in SCREEN,
         "dual-source capability is not conservatively gated")
 require("caps->glsl_feature_level_compatibility =" in SCREEN and
+        "PS5_ENABLE_GLSL_450_CANDIDATE ? 450 :" in SCREEN and
         "PS5_ENABLE_GLSL_440_CANDIDATE ? 440 :" in SCREEN and
         "PS5_ENABLE_GLSL_420_CANDIDATE ? 420 :" in SCREEN and
         "PS5_ENABLE_GLSL_430_CANDIDATE ? 430 :" in SCREEN and
@@ -564,6 +565,13 @@ require("context->base.get_query_result_resource = ps5_get_query_result_resource
         "caps->texture_mirror_clamp_to_edge = PS5_ENABLE_GLSL_440_CANDIDATE" in SCREEN and
         "caps->shader_array_components = PS5_ENABLE_GLSL_440_CANDIDATE" in SCREEN,
         "OpenGL 4.4 capability group lost its candidate gate or query writer")
+require("context->base.texture_barrier = ps5_memory_barrier" in SCREEN and
+        "caps->clip_halfz = PS5_ENABLE_GLSL_450_CANDIDATE" in SCREEN and
+        "caps->cull_distance = PS5_ENABLE_GLSL_450_CANDIDATE" in SCREEN and
+        "caps->fs_fine_derivative = PS5_ENABLE_GLSL_450_CANDIDATE" in SCREEN and
+        "caps->texture_query_samples = PS5_ENABLE_GLSL_450_CANDIDATE" in SCREEN and
+        "caps->texture_barrier = PS5_ENABLE_GLSL_450_CANDIDATE" in SCREEN,
+        "OpenGL 4.5 capability group lost its candidate gate or barrier")
 require("fs_caps->max_shader_buffers = PS5_COMPUTE_STORAGE_SLOTS" in SCREEN and
         "fs_caps->max_shader_images = PS5_COMPUTE_IMAGE_SLOTS" in SCREEN and
         "caps->max_shader_buffer_size = 1u << 27" in SCREEN,

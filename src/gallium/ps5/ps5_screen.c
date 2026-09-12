@@ -551,6 +551,9 @@ ps5_render_condition_passes(const struct ps5_context *context);
 #ifndef PS5_ENABLE_GLSL_440_CANDIDATE
 #define PS5_ENABLE_GLSL_440_CANDIDATE 0
 #endif
+#ifndef PS5_ENABLE_GLSL_450_CANDIDATE
+#define PS5_ENABLE_GLSL_450_CANDIDATE 0
+#endif
 #ifndef PS5_ENABLE_FP64_CANDIDATE
 #define PS5_ENABLE_FP64_CANDIDATE 0
 #endif
@@ -1785,8 +1788,7 @@ ps5_encode_rasterizer_state(const struct pipe_rasterizer_state *state,
        state->poly_stipple_enable ||
        state->point_smooth ||
        (state->multisample && !PS5_ENABLE_MSAA4_CANDIDATE) ||
-       state->line_stipple_enable || state->conservative_raster_mode ||
-       state->clip_halfz)
+       state->line_stipple_enable || state->conservative_raster_mode)
       return false;
    if ((state->fill_front == PIPE_POLYGON_MODE_LINE ||
         state->fill_back == PIPE_POLYGON_MODE_LINE) &&
@@ -1857,6 +1859,7 @@ ps5_encode_graphics_state(const struct ps5_context *context,
       ? ((!context->rasterizer->depth_clip_near ? 1u << 26 : 0u) |
          (!context->rasterizer->depth_clip_far ? 1u << 27 : 0u) |
          (context->rasterizer->rasterizer_discard ? 1u << 22 : 0u) |
+         (context->rasterizer->clip_halfz ? 1u << 19 : 0u) |
          (1u << 24))
       : 0;
    native->point_line[0] = 0;
@@ -12378,6 +12381,7 @@ ps5_context_create(struct pipe_screen *screen, void *priv, unsigned flags)
 #endif
    context->base.draw_vbo = ps5_draw_vbo;
    context->base.memory_barrier = ps5_memory_barrier;
+   context->base.texture_barrier = ps5_memory_barrier;
    context->base.create_query = ps5_create_query;
    context->base.destroy_query = ps5_destroy_query;
    context->base.begin_query = ps5_begin_query;
@@ -12538,7 +12542,8 @@ ps5_screen_create(void)
       PS5_ENABLE_FRAMEBUFFER_SRGB_CANDIDATE;
    caps->blend_equation_separate = true;
    caps->doubles = PS5_ENABLE_FP64_CANDIDATE;
-   caps->glsl_feature_level = PS5_ENABLE_GLSL_440_CANDIDATE ? 440 :
+   caps->glsl_feature_level = PS5_ENABLE_GLSL_450_CANDIDATE ? 450 :
+                              PS5_ENABLE_GLSL_440_CANDIDATE ? 440 :
                               PS5_ENABLE_GLSL_430_CANDIDATE ? 430 :
                               PS5_ENABLE_GLSL_420_CANDIDATE ? 420 :
                               PS5_ENABLE_GLSL_410_CANDIDATE ? 410 :
@@ -12546,6 +12551,7 @@ ps5_screen_create(void)
                               PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :
                               PS5_ENABLE_GEOMETRY_CANDIDATE ? 150 : 140;
    caps->glsl_feature_level_compatibility =
+      PS5_ENABLE_GLSL_450_CANDIDATE ? 450 :
       PS5_ENABLE_GLSL_440_CANDIDATE ? 440 :
       PS5_ENABLE_GLSL_430_CANDIDATE ? 430 :
       PS5_ENABLE_GLSL_420_CANDIDATE ? 420 :
@@ -12674,6 +12680,11 @@ ps5_screen_create(void)
    caps->query_buffer_object = PS5_ENABLE_GLSL_440_CANDIDATE;
    caps->texture_mirror_clamp_to_edge = PS5_ENABLE_GLSL_440_CANDIDATE;
    caps->shader_array_components = PS5_ENABLE_GLSL_440_CANDIDATE;
+   caps->clip_halfz = PS5_ENABLE_GLSL_450_CANDIDATE;
+   caps->cull_distance = PS5_ENABLE_GLSL_450_CANDIDATE;
+   caps->fs_fine_derivative = PS5_ENABLE_GLSL_450_CANDIDATE;
+   caps->texture_query_samples = PS5_ENABLE_GLSL_450_CANDIDATE;
+   caps->texture_barrier = PS5_ENABLE_GLSL_450_CANDIDATE;
    caps->gl_begin_end_buffer_size = 512 * 1024;
    caps->min_map_buffer_alignment = 64;
    vs_caps = (struct pipe_shader_caps *)
