@@ -26,7 +26,7 @@ mock = r'''
 #include <stdlib.h>
 typedef struct { int unused; } video_api_t;
 struct pipe_screen { int unused; };
-struct pipe_resource { void *data; size_t size; bool image; };
+struct pipe_resource { void *data; size_t size; bool image; size_t allocation_size; };
 static int ps5_resource_storage_image_descriptor(struct pipe_resource *r,unsigned level,uint32_t d[8]) {
     if(!r || !r->image || level) return -1;
     const uint32_t srd[8]={(uintptr_t)r->data>>8,0,0x80000000,0x90000204,63,0x400000,0,0};
@@ -38,6 +38,9 @@ static int ps5_resource_sampled_image_descriptor(struct pipe_resource *r,unsigne
 }
 static unsigned locked, allocations, submissions, dispatches, flushes, userdata_count;
 static unsigned out_of_space;
+static const void *watched_resource;
+static size_t watched_allocation;
+static unsigned watched_flushes, watched_acquires;
 static int runtime_agc_initialized, fail_map, fail_emit, fail_alloc;
 static int64_t direct_size=1024*1024;
 static void *mapped_memory;
@@ -55,7 +58,7 @@ static int ps5_resource_info(struct pipe_resource *r, void **p, size_t *n, size_
     if (!r) return -1;
     if (p) *p=r->data;
     if (n) *n=r->size;
-    if (a) *a=r->size;
+    if (a) *a=r->allocation_size;
     return 0;
 }
 static void runtime_require_retirement(int done) { assert(done); }
@@ -83,7 +86,10 @@ static int sceKernelReleaseDirectMemory(int64_t p, size_t n) {
     assert(locked && p==1 && n && allocations); --allocations; return 0;
 }
 static void sceKernelUsleep(uint32_t n) { assert(n==1000); }
-static void flush_gpu_data(const void *p, size_t n) { assert(locked && p && n); ++flushes; }
+static void flush_gpu_data(const void *p, size_t n) {
+    assert(locked && p && n); ++flushes;
+    if(p==watched_resource) { assert(n==watched_allocation); ++watched_flushes; }
+}
 static uint8_t command_out_of_space(agc_command_buffer_t *c, uint32_t n, void *p) {
     (void)c; (void)n; (void)p; out_of_space=1; return 0;
 }
@@ -108,6 +114,7 @@ static uint32_t *set_direct(void *p, uint32_t off, const uint32_t *data, uint32_
 uint32_t *sceAgcDcbAcquireMem(void *p, uint8_t engine, uint32_t coher, uint32_t gcr,
                               uint64_t address, uint64_t n, uint32_t poll) {
     assert(!engine && !coher && gcr==0x4380 && address && n && poll==0xa0);
+    if(address==(uintptr_t)watched_resource) { assert(n==watched_allocation); ++watched_acquires; }
     return emit(p);
 }
 uint32_t *sceAgcCbDispatch(void *p, uint32_t x, uint32_t y, uint32_t z, uint32_t modifier) {
@@ -152,12 +159,14 @@ code = r'''
 #include "ps5_agc_package.h"
 ''' + types + mock + parsers + compute + "\n" + probe + r'''
 static void submission_contract(PsbcShaderOutput *out) {
-    _Alignas(16) uint32_t table_data[31*4+8*8+8*12]={0}, output[16]={0};
+    _Alignas(16) uint32_t table_data[31*4+8*8+8*12]={0}, output[32]={0};
+    const size_t logical_output=64;
     table_data[0]=(uintptr_t)output; table_data[1]=(uintptr_t)output>>32;
-    table_data[2]=sizeof(output); table_data[3]=0x31016fac;
+    table_data[2]=logical_output; table_data[3]=0x31016fac;
     memcpy(table_data+30*4,table_data,16); /* Highest UBO uses the same owned range. */
     struct pipe_screen screen={0};
-    struct pipe_resource table={table_data, sizeof(table_data)}, buffer={output, sizeof(output)};
+    struct pipe_resource table={table_data, sizeof(table_data), false, sizeof(table_data)};
+    struct pipe_resource buffer={output, logical_output, false, sizeof(output)};
     struct pipe_resource *buffers[]={&buffer};
     uint32_t groups[3]={2,3,4};
     out->metadata.address32_hi=(uintptr_t)table_data>>32;
@@ -169,7 +178,11 @@ static void submission_contract(PsbcShaderOutput *out) {
         assert(dispatches==old_dispatches && flushes==old_flushes);
         return; /* Known native MEMVIOL: host success must not enable execution. */
     }
+    watched_resource=output; watched_allocation=sizeof(output);
+    watched_flushes=watched_acquires=0;
     assert(ps5_agc_compute_execute(&screen, out, &table, buffers, 1, groups)==0);
+    assert(watched_flushes==2 && watched_acquires==1);
+    watched_resource=NULL;
     assert(!locked && !allocations && submissions==old_submits+1);
     assert(userdata_count==out->metadata.user_sgpr_count);
     assert(saved_tmpring==(out->metadata.scratch_valid ?
@@ -177,10 +190,10 @@ static void submission_contract(PsbcShaderOutput *out) {
     assert(saved_userdata[2]==(uint32_t)(uintptr_t)table_data && !memcmp(saved_groups, groups, 12));
     if (out->metadata.compute_grid_size_valid) assert(!memcmp(saved_userdata+3, groups, 12));
     const unsigned old_dispatches=dispatches;
-    for (unsigned fault=0; fault<13; ++fault) {
+    for (unsigned fault=0; fault<21; ++fault) {
         if (fault==0) groups[0]=0;
         if (fault==1) table.size=16;
-        if (fault==2) table_data[2]=sizeof(output)+1;
+        if (fault==2) table_data[2]=logical_output+1; /* Within allocation, outside logical range. */
         if (fault==3) table_data[3]=0;
         if (fault==4) out->metadata.address32_hi++;
         if (fault==5) fail_map=1;
@@ -189,11 +202,21 @@ static void submission_contract(PsbcShaderOutput *out) {
         if (fault==8) direct_size=0;
         if (fault==9) direct_size=-1;
         if (fault==10) direct_size=0x4000; /* Reject an arena larger than the heap. */
-        if (fault==11) table_data[30*4+2]=sizeof(output)+1;
+        if (fault==11) table_data[30*4+2]=logical_output+1;
         if (fault==12) table.size=31*16-1;
+        if (fault==13) buffer.allocation_size=0;
+        if (fault==14) buffer.allocation_size=logical_output-1;
+        if (fault==15) buffer.allocation_size=(size_t)UINT32_MAX+1;
+        if (fault==16) buffer.size=0;
+        if (fault==17) table.allocation_size=0;
+        if (fault==18) table.allocation_size=table.size-1;
+        if (fault==19) table.allocation_size=(size_t)UINT32_MAX+1;
+        if (fault==20) table_data[0]=(uintptr_t)output+logical_output; /* Padding is not an owned SSBO range. */
         assert(ps5_agc_compute_execute(&screen, out, &table, buffers, 1, groups)<0);
         assert(!locked && !allocations && submissions==old_submits+1 && dispatches==old_dispatches);
-        groups[0]=2; table.size=sizeof(table_data); table_data[2]=sizeof(output); table_data[3]=0x31016fac;
+        groups[0]=2; table.size=table.allocation_size=sizeof(table_data);
+        buffer.size=logical_output; buffer.allocation_size=sizeof(output);
+        table_data[0]=(uintptr_t)output; table_data[2]=logical_output; table_data[3]=0x31016fac;
         out->metadata.address32_hi=(uintptr_t)table_data>>32; fail_map=fail_emit=fail_alloc=0;
         direct_size=1024*1024;
         memcpy(table_data+30*4,table_data,16);
@@ -204,7 +227,7 @@ static void submission_contract(PsbcShaderOutput *out) {
         .binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
         .type=PSBC_DESCRIPTOR_STORAGE_IMAGE,.array_size=8,.stride=32,.offset=31*16};
     _Alignas(256) uint32_t pixels[192]={0};
-    struct pipe_resource image={pixels,sizeof(pixels),true};
+    struct pipe_resource image={pixels,sizeof(pixels),true,sizeof(pixels)};
     uint32_t expected[8]; assert(!ps5_resource_storage_image_descriptor(&image,0,expected));
     memcpy(table_data+31*4+7*8,expected,32);
     struct pipe_resource *all[PS5_AGC_COMPUTE_MAX_RESOURCES];
@@ -634,3 +657,4 @@ with tempfile.TemporaryDirectory() as directory:
             "-pthread", "-lm"], check=True)
         subprocess.run([executable], check=True, timeout=30)
 print("PASS: compute package, grid/LDS metadata, malformed inputs; mocked submission lock/bounds/cleanup")
+print("PASS: allocated-span pre/post flush and acquire; logical SSBO/UBO ownership retained; invalid allocation extents rejected")

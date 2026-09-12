@@ -287,10 +287,11 @@ main(void)
    static const struct {
       const char *name, *layout;
       GLenum internal_format, raw_type;
-      unsigned endpoint;
+      unsigned endpoint, levels;
    } normalized_formats[] = {
-      {"RGBA16", "rgba16", GL_RGBA16, GL_UNSIGNED_SHORT, 0xffffu},
-      {"RGBA8 mipmapped-linear", "rgba8", GL_RGBA8, GL_UNSIGNED_BYTE, 0xffu},
+      {"RGBA16", "rgba16", GL_RGBA16, GL_UNSIGNED_SHORT, 0xffffu, 1},
+      {"RGBA8 mipmapped-linear", "rgba8", GL_RGBA8, GL_UNSIGNED_BYTE, 0xffu, 2},
+      {"RGBA8 base-only tiled", "rgba8", GL_RGBA8, GL_UNSIGNED_BYTE, 0xffu, 1},
    };
    static const char *capacity_source =
       "#version 330\n"
@@ -328,8 +329,8 @@ main(void)
    GLuint shader = 0, program = 0, buffers[2] = {0, 0};
    GLuint extra_shaders[3] = {0}, extra_programs[3] = {0};
    GLuint grid_shaders[3] = {0}, grid_programs[3] = {0}, grid_buffers[2] = {0};
-   GLuint normalized_shaders[2][2] = {{0}}, normalized_programs[2][2] = {{0}};
-   GLuint normalized_textures[2] = {0};
+   GLuint normalized_shaders[3][2] = {{0}}, normalized_programs[3][2] = {{0}};
+   GLuint normalized_textures[3] = {0};
    GLuint capacity_shader = 0, capacity_program = 0, capacity_buffer = 0;
    GLuint texture = 0, atomic_buffer = 0;
    GLint major = 0, minor = 0, profile = 0;
@@ -599,10 +600,11 @@ main(void)
       goto cleanup;
    puts(TAG "dispatch delta=14 (prior 9 + IDs/shared/arguments/indirect 4 + restored 1); negatives=3 PASS");
 
-   for (unsigned format = 0; format < 2; ++format) {
+   for (unsigned format = 0; format < 3; ++format) {
       const char *name = normalized_formats[format].name;
       const GLenum internal_format = normalized_formats[format].internal_format;
       const GLenum raw_type = normalized_formats[format].raw_type;
+      const unsigned levels = normalized_formats[format].levels;
       const int byte_format = raw_type == GL_UNSIGNED_BYTE;
       char store_source[512], load_source[512], store_name[32], load_name[32];
       int store_length = snprintf(store_source, sizeof(store_source), normalized_store_template,
@@ -635,12 +637,11 @@ main(void)
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
       glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_BASE_LEVEL, 0);
-      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, byte_format ? 1 : 0);
+      glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAX_LEVEL, levels - 1);
       /* Rows are 12/24 bytes, both aligned to the unchanged default pack/unpack 4. */
-      if (byte_format) {
-         /* Base-only RGBA8 render backing is native tiled and remains unsupported
-          * by the linear image SRD. Immutable two-level storage selects the
-          * existing canonical-linear mip path without an intermediate allocation. */
+      if (levels > 1) {
+         /* Immutable two-level RGBA8 selects canonical-linear mip storage.
+          * The separate base-only entry exercises the checked tiled image SRD. */
          if (!has_extension("GL_ARB_texture_storage"))
             goto cleanup;
          PFNGLTEXSTORAGE2DPROC texture_storage =
@@ -649,8 +650,8 @@ main(void)
             puts(TAG "missing glTexStorage2D entrypoint");
             goto cleanup;
          }
-         puts(TAG "RGBA8 mipmapped-linear immutable levels=2; base-only tiled image gap remains");
-         texture_storage(GL_TEXTURE_2D, 2, GL_RGBA8, 3, 3);
+         puts(TAG "RGBA8 mipmapped-linear immutable levels=2");
+         texture_storage(GL_TEXTURE_2D, levels, internal_format, 3, 3);
          if (!check_gl("RGBA8 immutable allocation"))
             goto cleanup;
          glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, 3, 3, GL_RGBA, GL_UNSIGNED_BYTE, initial8);
@@ -662,7 +663,9 @@ main(void)
          if (!check_gl("RGBA8 two-level storage") || !immutable || mip_width != 1 || mip_height != 1)
             goto cleanup;
       } else {
-         glTexImage2D(GL_TEXTURE_2D, 0, internal_format, 3, 3, 0, GL_RGBA, raw_type, initial16);
+         printf(TAG "%s mutable base-only allocation\n", name);
+         glTexImage2D(GL_TEXTURE_2D, 0, internal_format, 3, 3, 0, GL_RGBA, raw_type,
+                      byte_format ? (const void *)initial8 : (const void *)initial16);
       }
       if (!check_gl("normalized sentinel texture") || !normalized_textures[format])
          goto cleanup;
@@ -699,7 +702,7 @@ main(void)
             }
          }
          printf(TAG "%s pass=%u raw lanes=36/36 neighbors=8/8 PASS\n", name, pass);
-         if (byte_format) {
+         if (levels > 1) {
             GLubyte mip1_raw[4] = {0};
             glGetTexImage(GL_TEXTURE_2D, 1, GL_RGBA, GL_UNSIGNED_BYTE, mip1_raw);
             if (!check_gl("RGBA8 mip1 readback"))
@@ -728,7 +731,7 @@ main(void)
          printf(TAG "%s pass=%u channels=4/4 SSBO guards=76/76 PASS\n", name, pass);
       }
    }
-   puts(TAG "dispatch delta=22 (prior 14 + RGBA16 base-only 4 + RGBA8 mipmapped-linear 4); negatives=3 PASS");
+   puts(TAG "dispatch delta=26 (prior 14 + RGBA16 4 + RGBA8 mipmapped-linear 4 + RGBA8 base-only tiled 4); negatives=3 PASS");
 
    GLint advertised_ssbo_size = 0;
    glGetIntegerv(GL_MAX_SHADER_STORAGE_BLOCK_SIZE, &advertised_ssbo_size);
@@ -780,7 +783,7 @@ main(void)
    glBindBufferRange(GL_SHADER_STORAGE_BUFFER, 0, capacity_buffer, 32, capacity_bytes);
    glUseProgram(capacity_program);
    if (!check_gl("capacity ranges") ||
-       !dispatch_checked("128MiB unsized capacity", mesa->pipe, baseline + 23,
+       !dispatch_checked("128MiB unsized capacity", mesa->pipe, baseline + 27,
                          GL_SHADER_STORAGE_BARRIER_BIT | GL_BUFFER_UPDATE_BARRIER_BIT) ||
        !check_buffer("capacity length", GL_SHADER_STORAGE_BUFFER, buffers[1], UINT32_C(33554432)))
       goto cleanup;
@@ -809,7 +812,7 @@ main(void)
    capacity_buffer = 0;
    if (!check_gl("capacity buffer delete"))
       goto cleanup;
-   puts(TAG "dispatch delta=23 (prior 22 + capacity 1); negatives=3 PASS; capacity interior unchecked");
+   puts(TAG "dispatch delta=27 (prior 26 + capacity 1); negatives=3 PASS; capacity interior unchecked");
    passed = 1;
 
 cleanup:
@@ -834,17 +837,17 @@ cleanup:
          glBindBufferBase(GL_ATOMIC_COUNTER_BUFFER, 7, 0);
          glDeleteBuffers(1, &atomic_buffer);
       }
-      if (texture || normalized_textures[0] || normalized_textures[1]) {
+      if (texture || normalized_textures[0] || normalized_textures[1] || normalized_textures[2]) {
          glBindImageTexture(0, 0, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_R32F);
          glBindTexture(GL_TEXTURE_2D, 0);
          glDeleteTextures(1, &texture);
-         glDeleteTextures(2, normalized_textures);
+         glDeleteTextures(3, normalized_textures);
       }
       glDeleteBuffers(2, buffers);
       if (grid_buffers[1])
          glBindBuffer(GL_DISPATCH_INDIRECT_BUFFER, 0);
       glDeleteBuffers(2, grid_buffers);
-      for (unsigned i = 0; i < 2; ++i) {
+      for (unsigned i = 0; i < 3; ++i) {
          for (unsigned operation = 0; operation < 2; ++operation) {
             if (normalized_programs[i][operation])
                glDeleteProgram(normalized_programs[i][operation]);

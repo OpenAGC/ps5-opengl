@@ -19,8 +19,10 @@ sampler_helpers = source[bits_at:source.index("static size_t\nps5_tiled_depth_la
 sampler_helpers += source[sampler_at:source.index("static uint32_t\nps5_pack_float_12p4(", sampler_at)]
 extent_at = source.index("static unsigned\nps5_linear_mip_storage_extent(")
 extent_helper = source[extent_at:source.index("static bool\nps5_packed_depth_sample_layout(", extent_at)]
-image_at = source.index("static int\nps5_resource_linear_image_descriptor(")
+image_at = source.index("static int\nps5_resource_image_descriptor(")
 image_descriptor = source[image_at:source.index("\nstruct pipe_resource *", image_at)]
+tiled_at = source.index("static size_t\nps5_tiled_color_surface_size(")
+tiled_helper = source[tiled_at:source.index("static uint32_t\nps5_color_target_info(", tiled_at)]
 array_at = source.index("static unsigned\nps5_storage_image_texel_size(")
 array_layout = source[array_at:source.index("static unsigned\nps5_texture_format_size(", array_at)]
 format_at = source.index("static bool\nps5_integer_texture_format(")
@@ -146,7 +148,7 @@ static unsigned with_filtered;
 static bool multi, with_constants, fail_upload;
 static bool fail_info;
 static struct ps5_resource *upload_resource;
-''' + extent_helper + array_layout + linear_helpers + format_encoding + image_descriptor + r'''
+''' + extent_helper + array_layout + linear_helpers + format_encoding + tiled_helper + image_descriptor + r'''
 static int ps5_resource_info(struct pipe_resource *base, void **address, size_t *size, size_t *allocation) {
     (void)allocation;
     if (fail_info) return -1;
@@ -855,6 +857,63 @@ int main(void) {
         }
     }
     }
+    /* Exact graphics-compatible tiled RGBA8 SRD, with a physical footprint
+     * larger than the logical texels. Malformed backing must remain rejected. */
+    static _Alignas(65536) uint8_t tiled_pixels[262144];
+    struct ps5_resource tiled=canonical;
+    tiled.base.format=PIPE_FORMAT_R8G8B8A8_UNORM;
+    tiled.base.bind=PIPE_BIND_SAMPLER_VIEW|PIPE_BIND_RENDER_TARGET;
+    tiled.data=tiled_pixels;
+    tiled.size=tiled.layer_stride=17*3*4;
+    tiled.level_stride[0]=17*4;
+    tiled.level_offset[0]=0;
+    tiled.allocation_size=65536;
+    assert(!ps5_linear_sampled_layout(&tiled.base));
+    assert(ps5_tiled_color_surface_size(tiled.base.format,129,129)==sizeof(tiled_pixels));
+    assert(!ps5_resource_storage_image_descriptor(&tiled.base,0,descriptor));
+    const uint32_t tiled_srd[8]={
+        (uint32_t)((uintptr_t)tiled.data>>8),
+        0x03800000u|(uint32_t)((uintptr_t)tiled.data>>40),
+        0x80008004u,0x91b00facu,0,0x00400000u,0,0};
+    assert(!memcmp(descriptor,tiled_srd,sizeof(tiled_srd)));
+    assert(!ps5_resource_sampled_image_descriptor(&tiled.base,0,0,descriptor));
+    assert(!memcmp(descriptor,tiled_srd,sizeof(tiled_srd)));
+    for(unsigned stage=0;stage<2;++stage) {
+        mesa_shader_stage which=stage ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
+        struct pipe_image_view v={.resource=&tiled.base,.format=tiled.base.format,
+            .access=PIPE_IMAGE_ACCESS_READ_WRITE,.u.tex.single_layer_view=true};
+        ps5_set_shader_images(&context.base,which,7,1,0,&v);
+        assert(!(stage ? context.fragment_images_invalid : context.compute_images_invalid));
+        assert(tiled.base.reference.count==2);
+        v.format=PIPE_FORMAT_R8G8B8A8_SRGB;
+        ps5_set_shader_images(&context.base,which,7,1,0,&v);
+        assert(stage ? context.fragment_images_invalid : context.compute_images_invalid);
+        assert(tiled.base.reference.count==2);
+        ps5_set_shader_images(&context.base,which,7,0,1,NULL);
+        assert(tiled.base.reference.count==1);
+    }
+    for(unsigned fault=0;fault<14;++fault) {
+        struct ps5_resource bad=tiled;
+        if(fault==0) bad.data+=256;
+        if(fault==1) bad.allocation_size=65535;
+        if(fault==2) bad.size--;
+        if(fault==3) bad.layer_stride++;
+        if(fault==4) bad.level_stride[0]++;
+        if(fault==5) bad.level_offset[0]=256;
+        if(fault==6) bad.render_staging_size=65536;
+        if(fault==7) bad.render_staging_offset=65536;
+        if(fault==8) bad.base.bind|=PIPE_BIND_DISPLAY_TARGET;
+        if(fault==9) bad.base.bind|=PIPE_BIND_DEPTH_STENCIL;
+        if(fault==10) bad.base.nr_samples=4;
+        if(fault==11) bad.base.nr_storage_samples=4;
+        if(fault==12) bad.base.format=PIPE_FORMAT_R8G8B8A8_SRGB;
+        if(fault==13) bad.base.last_level=1;
+        memset(descriptor,0xa5,sizeof(descriptor));
+        assert(ps5_resource_storage_image_descriptor(&bad.base,0,descriptor)<0);
+        assert(ps5_resource_sampled_image_descriptor(&bad.base,0,0,descriptor)<0);
+        for(unsigned i=0;i<8;++i) assert(descriptor[i]==0xa5a5a5a5u);
+    }
+    assert(ps5_resource_storage_image_descriptor(&tiled.base,1,descriptor)<0);
     const enum pipe_format still_gated[]={PIPE_FORMAT_R16G16B16A16_SNORM,
         PIPE_FORMAT_R8G8B8A8_SNORM,PIPE_FORMAT_R16_UNORM,PIPE_FORMAT_R16G16_UNORM};
     for(unsigned i=0;i<ARRAY_SIZE(still_gated);++i) {
@@ -1285,11 +1344,13 @@ with tempfile.TemporaryDirectory() as directory:
         "-I", str(ROOT / "src/platform"),
         "-I", str(MESA / "src/amd/common"),
         "-I", str(ROOT / "third_party/opengnm-psbc/src/amd/common"),
-        "-x", "c", "-o", executable, "-", str(table)], input=code, text=True, check=True)
+        "-x", "c", "-o", executable, "-", str(table), "-x", "none",
+        str(ROOT / "third_party/opengnm-psbc/libpsbc.a"),
+        "-lstdc++", "-pthread", "-lm"], input=code, text=True, check=True)
     subprocess.run([executable], check=True, timeout=10)
 print("PASS: Gallium 39-resource bindings, image descriptors/lifetime, upload failure, direct/indirect guards and unbind")
 print("PASS: Mesa sampler+render canonical SRDs without image hint; staging/allocation/layout guards, CS/FS refs and format mismatch")
 print("PASS: R/RG X001/XY01 and identity views, arbitrary remap rejection, atomic replacement/trailing unbind and references")
-print("PASS: RGBA16/RGBA8_UNORM real GFX10 encoding, canonical/staged CS/FS bindings, mip/array bounds; tiled and other normalized formats gated")
+print("PASS: RGBA16/RGBA8_UNORM real GFX10 encoding, canonical/staged CS/FS bindings, mip/array bounds; guarded base-only tiled RGBA8")
 print("PASS: Mesa atomic handoff CS/FS, SSBO counts 0/1/8 + bindings 0/7, alignment/offset state, refs, isolation, replacement/unbind")
 print("PASS: Mesa CS/FS zero-initialized 0-to-16-to-2-to-0 tracking, stale cleanup, reference counts and stage isolation")
