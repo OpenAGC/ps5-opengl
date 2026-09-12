@@ -15,6 +15,16 @@
 #define HEIGHT 1080
 #define SIZE 64
 
+#ifdef PS5_CUBE_ARRAY_TEST
+#define ARRAY_TARGET GL_TEXTURE_CUBE_MAP_ARRAY
+#define ARRAY_DEPTH 18
+#define ARRAY_NAME "ps5-egl-cube-array"
+#else
+#define ARRAY_TARGET GL_TEXTURE_2D_ARRAY_EXT
+#define ARRAY_DEPTH 3
+#define ARRAY_NAME "ps5-egl-array"
+#endif
+
 static int
 compile_shader(GLenum type, const char *source, GLuint *result)
 {
@@ -44,6 +54,22 @@ hash32(const void *data, size_t size)
       hash = (hash ^ *bytes++) * UINT32_C(16777619);
    return hash;
 }
+
+#ifdef PS5_CUBE_ARRAY_TEST
+static int
+has_indexed_extension(const char *name)
+{
+   GLint count = 0;
+
+   glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+   for (GLint i = 0; i < count; ++i) {
+      const char *extension = (const char *)glGetStringi(GL_EXTENSIONS, i);
+      if (extension && !strcmp(extension, name))
+         return 1;
+   }
+   return 0;
+}
+#endif
 
 #ifndef PS5_CORE33_ARRAY_MIPMAP_TEST
 static int
@@ -82,8 +108,8 @@ draw_oracle(GLint layer_uniform, GLint lod_uniform, float layer, float lod,
 
    for (unsigned i = 0; i < SIZE * SIZE; ++i)
       matching += pixels[i] == expected;
-   printf("[ps5-egl-array] layer=%.1f lod=%.1f matching=%u hash=%08x error=0x%x\n",
-          (double)layer, (double)lod, matching, hash, error);
+   printf("[%s] layer=%.1f lod=%.1f matching=%u hash=%08x error=0x%x\n",
+          ARRAY_NAME, (double)layer, (double)lod, matching, hash, error);
    return matching == SIZE * SIZE && hash == expected_hash &&
           error == GL_NO_ERROR;
 }
@@ -91,7 +117,19 @@ draw_oracle(GLint layer_uniform, GLint lod_uniform, float layer, float lod,
 int
 main(void)
 {
-#ifdef PS5_CORE33_ARRAY_MIPMAP_TEST
+#ifdef PS5_CUBE_ARRAY_TEST
+   static const char *vertex_source =
+      "#version 330 core\n"
+      "layout(location=0) in vec2 a_position;\n"
+      "void main() { gl_Position = vec4(a_position, 0.0, 1.0); }\n";
+   static const char *fragment_source =
+      "#version 330 core\n"
+      "#extension GL_ARB_texture_cube_map_array : require\n"
+      "uniform samplerCubeArray u_array;\n"
+      "uniform float u_layer; uniform float u_lod;\n"
+      "layout(location=0) out vec4 color;\n"
+      "void main() { color=textureLod(u_array,vec4(1,0,0,u_layer),u_lod); }\n";
+#elif defined(PS5_CORE33_ARRAY_MIPMAP_TEST)
    static const char *vertex_source =
       "#version 330 core\n"
       "layout(location=0) in vec2 a_position;\n"
@@ -128,7 +166,7 @@ main(void)
    static const uint32_t hashes[3] = {
       UINT32_C(0x0ec31dc5), UINT32_C(0xcec31dc5), UINT32_C(0x8ec31dc5),
    };
-   static uint32_t texels[3][SIZE * SIZE];
+   static uint32_t texels[ARRAY_DEPTH][SIZE * SIZE];
    static uint32_t pixels[SIZE * SIZE];
    const EGLint config_attributes[] = {
       EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
@@ -165,9 +203,15 @@ main(void)
    int made_current = 0, extension_present = 0, layers_ok = 1;
    int mipmaps_ok = 1, passed = 0;
 
-   for (unsigned z = 0; z < 3; ++z)
+   for (unsigned z = 0; z < ARRAY_DEPTH; ++z)
       for (unsigned i = 0; i < SIZE * SIZE; ++i)
-         texels[z][i] = colors[z];
+         texels[z][i] = colors[
+#ifdef PS5_CUBE_ARRAY_TEST
+            z / 6
+#else
+            z
+#endif
+         ];
 
    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
    if (display == EGL_NO_DISPLAY ||
@@ -193,7 +237,12 @@ main(void)
    if (!version || !glsl)
       goto cleanup;
 #ifdef PS5_CORE33_ARRAY_MIPMAP_TEST
-   extension_present = 1;
+   extension_present =
+#ifdef PS5_CUBE_ARRAY_TEST
+      has_indexed_extension("GL_ARB_texture_cube_map_array");
+#else
+      1;
+#endif
 #else
    extensions = (const char *)glGetString(GL_EXTENSIONS);
    if (!extensions)
@@ -233,27 +282,27 @@ main(void)
    glEnableVertexAttribArray(0);
 
    glGenTextures(1, &texture);
-   glBindTexture(GL_TEXTURE_2D_ARRAY_EXT, texture);
-   glTexParameteri(GL_TEXTURE_2D_ARRAY_EXT, GL_TEXTURE_MIN_FILTER,
+   glBindTexture(ARRAY_TARGET, texture);
+   glTexParameteri(ARRAY_TARGET, GL_TEXTURE_MIN_FILTER,
 #ifdef PS5_CORE33_ARRAY_MIPMAP_TEST
                    GL_NEAREST_MIPMAP_NEAREST);
 #else
                    GL_NEAREST);
 #endif
-   glTexParameteri(GL_TEXTURE_2D_ARRAY_EXT, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-   glTexParameteri(GL_TEXTURE_2D_ARRAY_EXT, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-   glTexParameteri(GL_TEXTURE_2D_ARRAY_EXT, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-   glTexParameteri(GL_TEXTURE_2D_ARRAY_EXT, GL_TEXTURE_BASE_LEVEL, 0);
-   glTexParameteri(GL_TEXTURE_2D_ARRAY_EXT, GL_TEXTURE_MAX_LEVEL,
+   glTexParameteri(ARRAY_TARGET, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+   glTexParameteri(ARRAY_TARGET, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+   glTexParameteri(ARRAY_TARGET, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+   glTexParameteri(ARRAY_TARGET, GL_TEXTURE_BASE_LEVEL, 0);
+   glTexParameteri(ARRAY_TARGET, GL_TEXTURE_MAX_LEVEL,
 #ifdef PS5_CORE33_ARRAY_MIPMAP_TEST
                    6);
 #else
                    0);
 #endif
-   glTexImage3D(GL_TEXTURE_2D_ARRAY_EXT, 0, GL_RGBA8, SIZE, SIZE, 3, 0,
+   glTexImage3D(ARRAY_TARGET, 0, GL_RGBA8, SIZE, SIZE, ARRAY_DEPTH, 0,
                 GL_RGBA, GL_UNSIGNED_BYTE, texels);
 #ifdef PS5_CORE33_ARRAY_MIPMAP_TEST
-   glGenerateMipmap(GL_TEXTURE_2D_ARRAY_EXT);
+   glGenerateMipmap(ARRAY_TARGET);
 #endif
 
    glViewport(0, 0, WIDTH, HEIGHT);
@@ -306,8 +355,8 @@ cleanup:
    cleanup_egl_error = eglGetError();
    passed = passed && cleanup_ok && cleanup_gl_error == GL_NO_ERROR &&
             cleanup_egl_error == EGL_SUCCESS;
-   printf("[ps5-egl-array] ext=%d max=%d layers=%d mipmaps=%d cleanup=%x/%x result=%d\n",
-          extension_present, max_layers, layers_ok, mipmaps_ok,
+   printf("[%s] ext=%d max=%d layers=%d mipmaps=%d cleanup=%x/%x result=%d\n",
+          ARRAY_NAME, extension_present, max_layers, layers_ok, mipmaps_ok,
           cleanup_gl_error, cleanup_egl_error, passed ? 0 : 1);
    return passed ? 0 : 1;
 }
