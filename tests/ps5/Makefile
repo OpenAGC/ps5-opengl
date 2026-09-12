@@ -244,6 +244,7 @@ ps5_screen_core33.o: $(DRIVER)/ps5_screen.c $(DRIVER)/ps5_screen.h \
 		-DPS5_ENABLE_DEPTH_CLAMP_CANDIDATE=1 \
 		-DPS5_ENABLE_GLSL_330_CANDIDATE=1 \
 		-DPS5_ENABLE_GLSL_400_CANDIDATE=1 \
+		-DPS5_ENABLE_FP64_CANDIDATE=1 \
 		-DPS5_ENABLE_PACKED_VERTEX_CANDIDATE=1 \
 		-DPS5_ENABLE_INTEGER_VERTEX_CANDIDATE=1 \
 		-DPS5_ENABLE_PACKED_DEPTH_STENCIL=1 \
@@ -700,6 +701,9 @@ egl_public_draw_indirect.o: egl_public_draw_indirect.c
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
 
 egl_public_glsl400.o: egl_public_glsl400.c egl_public_draw_indirect.c
+	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
+
+egl_public_fp64.o: egl_public_fp64.c egl_public_draw_indirect.c
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
 
 egl_public_tessellation.elf: egl_public_tessellation.o ps5_egl_core33.o \

@@ -337,6 +337,7 @@ require(all(flag in core33_build for flag in (
             "PS5_ENABLE_DEPTH_CLAMP_CANDIDATE",
             "PS5_ENABLE_GLSL_330_CANDIDATE",
             "PS5_ENABLE_GLSL_400_CANDIDATE",
+            "PS5_ENABLE_FP64_CANDIDATE",
             "PS5_ENABLE_PACKED_VERTEX_CANDIDATE",
             "PS5_ENABLE_PACKED_DEPTH_STENCIL",
             "PS5_ENABLE_PADDED_FBO_CANDIDATE",
@@ -513,6 +514,7 @@ for default_extension in (
 for cap in (
     "caps->glsl_feature_level = PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :",
     "PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :",
+    "caps->doubles = PS5_ENABLE_FP64_CANDIDATE",
     "caps->fs_coord_origin_upper_left = true",
     "caps->fs_coord_pixel_center_half_integer = true",
     "caps->fs_coord_pixel_center_integer = true",

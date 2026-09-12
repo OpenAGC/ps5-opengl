@@ -13,7 +13,14 @@
 
 #define SIZE 64
 
-#ifdef PS5_GLSL_400_TEST
+#if defined(PS5_FP64_TEST)
+#define TEST_NAME "ps5-egl-fp64"
+#define GLSL_VERSION "#version 330 core\n#extension GL_ARB_gpu_shader_fp64 : require\n"
+#define VERTEX_PROBE "double bias64=double(gl_VertexID)-3.0lf;"
+#define VERTEX_ID "int(bias64)"
+#define GREEN_BODY "double x=double(gl_FragCoord.x)+1.0lf;c=abs((x/2.0lf)*2.0lf-x)<0.0001lf?vec4(0,1,0,1):vec4(1,0,0,1);"
+#define CYAN_BODY "double y=double(gl_FragCoord.y)+1.0lf;c=abs(sqrt(y*y)-y)<0.0001lf?vec4(0,1,1,1):vec4(1,0,0,1);"
+#elif defined(PS5_GLSL_400_TEST)
 #define TEST_NAME "ps5-egl-glsl400"
 #define GLSL_VERSION "#version 400 core\n"
 #define VERTEX_PROBE "uint bias=bitfieldExtract(0x38u,3,3)-4u;"
@@ -156,6 +163,9 @@ main(void)
    if (!draw_indirect
 #ifdef PS5_GLSL_400_TEST
        || !gpu_shader5
+#endif
+#ifdef PS5_FP64_TEST
+       || !has_extension("GL_ARB_gpu_shader_fp64")
 #endif
        )
       goto done;
