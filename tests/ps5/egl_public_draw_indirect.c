@@ -15,7 +15,7 @@
 
 #if defined(PS5_FP64_VERTEX_TEST)
 #define TEST_NAME "ps5-egl-fp64-vertex"
-#define GLSL_VERSION "#version 430 core\n"
+#define GLSL_VERSION "#version 440 core\n"
 #define VERTEX_PROBE ""
 #define VERTEX_ID "gl_VertexID-3"
 #define GREEN_BODY "c=vec4(0,1,0,1);"
@@ -179,7 +179,7 @@ main(void)
 #if defined(PS5_GLSL_400_TEST) || defined(PS5_VIEWPORT_ARRAY_TEST) || \
     defined(PS5_FP64_VERTEX_TEST)
 #ifdef PS5_FP64_VERTEX_TEST
-      EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 3,
+      EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 4,
 #else
       EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 0,
 #endif
@@ -293,7 +293,7 @@ main(void)
        || !has_extension("GL_ARB_gpu_shader_fp64")
 #endif
 #ifdef PS5_FP64_VERTEX_TEST
-       || !glsl || strncmp(glsl, "4.30", 4) ||
+       || !glsl || strncmp(glsl, "4.40", 4) ||
           max_texture < 16384 || max_renderbuffer < 16384 ||
           max_cube < 16384 || max_3d < 2048 || max_layers < 2048 ||
           !has_extension("GL_ARB_gpu_shader_fp64") ||
@@ -306,7 +306,14 @@ main(void)
           !has_extension("GL_ARB_shading_language_420pack") ||
           !has_extension("GL_ARB_shading_language_packing") ||
           !has_extension("GL_ARB_texture_compression_bptc") ||
-          !has_extension("GL_ARB_transform_feedback_instanced")
+          !has_extension("GL_ARB_transform_feedback_instanced") ||
+          max_vertex_stride < 2048 ||
+          !has_extension("GL_ARB_buffer_storage") ||
+          !has_extension("GL_ARB_enhanced_layouts") ||
+          !has_extension("GL_ARB_query_buffer_object") ||
+          !has_extension("GL_ARB_texture_mirror_clamp_to_edge") ||
+          !has_extension("GL_ARB_texture_stencil8") ||
+          !has_extension("GL_ARB_vertex_type_10f_11f_11f_rev")
 #endif
 #ifdef PS5_VIEWPORT_ARRAY_TEST
        || !viewport_array
