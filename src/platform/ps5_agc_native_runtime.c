@@ -3104,6 +3104,17 @@ int main(void)
          append_hull_shader_state(hull, sh, &sh_count) != 0))
         goto receipt;
     if (runtime_hs_package) {
+        uint32_t stages = last_register_value(cx, cx_count, 0x02d5);
+
+        /* GFX10.3 tessellation preamble defaults from Mesa ac_cmdbuf.c.
+         * CLEAR_STATE does not supply a usable tessellation distribution. */
+        if ((stages & UINT32_C(0x211f)) != UINT32_C(0x210d))
+            goto receipt;
+        cx[cx_count++] = (agc_register_t){0x0286, 0,
+                                         UINT32_C(0x42800000)};
+        cx[cx_count++] = (agc_register_t){0x0287, 0, 0};
+        cx[cx_count++] = (agc_register_t){0x02d4, 0,
+                                         UINT32_C(0xd8181e0c)};
         cx[cx_count++] = (agc_register_t){0x02d6, 0,
                                          runtime_ls_hs_config};
         cx[cx_count++] = (agc_register_t){0x02db, 0, runtime_tf_param};
