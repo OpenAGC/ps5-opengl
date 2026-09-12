@@ -1085,6 +1085,7 @@ ps5_packed_vertex_format(enum pipe_format format)
    case PIPE_FORMAT_B10G10R10A2_USCALED:
    case PIPE_FORMAT_R10G10B10A2_SSCALED:
    case PIPE_FORMAT_B10G10R10A2_SSCALED:
+   case PIPE_FORMAT_R11G11B10_FLOAT:
       return true;
    default:
       return false;
@@ -9873,6 +9874,9 @@ ps5_vertex_format(enum pipe_format format, PsbcVertexFormat *out)
    case PIPE_FORMAT_R64G64B64A64_FLOAT:
       *out = PSBC_VERTEX_FORMAT_R64G64B64A64_FLOAT;
       return PS5_ENABLE_FP64_CANDIDATE;
+   case PIPE_FORMAT_R11G11B10_FLOAT:
+      *out = PSBC_VERTEX_FORMAT_R11G11B10_FLOAT;
+      return PS5_ENABLE_PACKED_VERTEX_CANDIDATE;
    case PIPE_FORMAT_R32_SINT:
       *out = PSBC_VERTEX_FORMAT_R32_SINT;
       return PS5_ENABLE_INTEGER_VERTEX_CANDIDATE;

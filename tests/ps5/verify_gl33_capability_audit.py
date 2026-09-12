@@ -1129,7 +1129,7 @@ require("-DHAVE_FUNC_ATTRIBUTE_PACKED=1" in PSBC_HOST_CONFIG,
         "host PSBC build lost the shared packed-NIR ABI")
 require('--verify-psbc' in PSBC_PS5_BUILD and
         json.loads((ROOT / 'dependencies.json').read_text())['psbc_patch']['patched_tree'] ==
-                'dca0caa543ecee72f20bc0e24aee39254973758a',
+                    'f41c4e63baa6d1de55eb9715ae3a0dd0286e063f',
         "PS5 compiler archive is not pinned to the expected source tree")
 require("-DOPENGNM_PSBC_ORBIS=1" in PSBC_PS5_CONFIG and
         "defined(OPENGNM_PSBC_ORBIS)" in ACO_ISEL_HELPERS and

@@ -49,22 +49,25 @@ main(void)
 {
    static const char *vertex_source =
       "#version 440 core\n"
-      "layout(location=0) in vec4 p;"
+      "layout(location=0) in vec3 p;"
       "layout(location=0,component=1) out float v;"
-      "void main(){gl_Position=p;v=1.0;}\n";
+      "void main(){int i=gl_VertexID;"
+      "vec2 q=vec2(i==1?0.8:-0.8,i==2?0.8:-0.8);"
+      "gl_Position=vec4(q+p.xy*0.001,0,1);v=1.0;}\n";
    static const char *fragment_source =
       "#version 440 core\n"
       "layout(location=0,component=1) in float v;"
       "layout(location=0) out vec4 c;"
       "void main(){c=vec4(0,v,0,1);}\n";
    static const uint32_t initial[] = {0x10203040, 0x50607080};
+   static const uint32_t packed_vertices[3] = {0, 0, 0};
    const EGLint config_attrs[] = {
       EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
       EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
       EGL_NONE,
    };
    const EGLint context_attrs[] = {
-      EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 3,
+      EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 4,
       EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR,
       EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR, EGL_NONE,
    };
@@ -74,9 +77,11 @@ main(void)
    EGLConfig config = NULL;
    EGLint count = 0;
    GLuint shaders[2] = {0}, program = 0, storage = 0, query_buffer = 0;
+   GLuint vao = 0, packed_buffer = 0;
    GLuint query = 0, texture = 0;
    GLint linked = GL_FALSE, stride = 0;
    uint64_t query_value = 0;
+   uint32_t pixel = 0;
    uint32_t *mapped = NULL;
    GLenum immutable_error = GL_NO_ERROR, error = GL_NO_ERROR;
    int storage_ok = 0, query_ok = 0, mirror_ok = 0, passed = 0;
@@ -119,9 +124,23 @@ main(void)
    immutable_error = glGetError();
 
    glGenQueries(1, &query);
+   glGenVertexArrays(1, &vao);
+   glBindVertexArray(vao);
+   glGenBuffers(1, &packed_buffer);
+   glBindBuffer(GL_ARRAY_BUFFER, packed_buffer);
+   glBufferData(GL_ARRAY_BUFFER, sizeof(packed_vertices), packed_vertices,
+                GL_STATIC_DRAW);
+   glVertexAttribPointer(0, 3, GL_UNSIGNED_INT_10F_11F_11F_REV, GL_FALSE,
+                         sizeof(uint32_t), NULL);
+   glEnableVertexAttribArray(0);
+   glUseProgram(program);
+   glViewport(0, 0, 64, 64);
+   glClearColor(0, 0, 0, 1);
    glBeginQuery(GL_TIME_ELAPSED, query);
    glClear(GL_COLOR_BUFFER_BIT);
+   glDrawArrays(GL_TRIANGLES, 0, 3);
    glEndQuery(GL_TIME_ELAPSED);
+   glReadPixels(32, 32, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &pixel);
    glGenBuffers(1, &query_buffer);
    glBindBuffer(GL_QUERY_BUFFER, query_buffer);
    glBufferData(GL_QUERY_BUFFER, sizeof(query_value), NULL, GL_DYNAMIC_READ);
@@ -137,18 +156,20 @@ main(void)
    mirror_ok = glGetError() == GL_NO_ERROR;
    error = glGetError();
    passed = linked && stride >= 2048 && storage_ok && query_ok && mirror_ok &&
+            pixel == UINT32_C(0xff00ff00) &&
             immutable_error == GL_INVALID_OPERATION && error == GL_NO_ERROR &&
             has_extension("GL_ARB_buffer_storage") &&
             has_extension("GL_ARB_enhanced_layouts") &&
             has_extension("GL_ARB_query_buffer_object") &&
-            has_extension("GL_ARB_texture_mirror_clamp_to_edge");
+            has_extension("GL_ARB_texture_mirror_clamp_to_edge") &&
+            has_extension("GL_ARB_vertex_type_10f_11f_11f_rev");
 
 done:
    printf("[ps5-egl-gl44-state] gl=%s glsl=%s stride=%d linked=%d storage=%d "
-          "immutable=0x%x query=%llu mirror=%d error=0x%x result=%s\n",
+          "immutable=0x%x query=%llu mirror=%d pixel=%08x error=0x%x result=%s\n",
           glGetString(GL_VERSION), glGetString(GL_SHADING_LANGUAGE_VERSION),
           stride, linked, storage_ok, immutable_error,
-          (unsigned long long)query_value, mirror_ok, error,
+          (unsigned long long)query_value, mirror_ok, pixel, error,
           passed ? "pass" : "fail");
    if (mapped)
       glUnmapBuffer(GL_ARRAY_BUFFER);
@@ -156,6 +177,8 @@ done:
       glDeleteTextures(1, &texture);
    if (query)
       glDeleteQueries(1, &query);
+   glDeleteBuffers(1, &packed_buffer);
+   glDeleteVertexArrays(1, &vao);
    glDeleteBuffers(1, &query_buffer);
    glDeleteBuffers(1, &storage);
    glDeleteProgram(program);

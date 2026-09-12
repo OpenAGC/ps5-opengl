@@ -2552,7 +2552,7 @@ index bacbc6a..bc7cdc4 100644
      /* Set next_stage based on the pipeline graph.
       * For standalone compilation we assume the simplest pipeline:
       *   VS → FS, VS → HS → DS → FS, VS → GS → FS
-@@ -992,46 +2827,418 @@ PsbcResult psbc_compile_shader(
+@@ -992,46 +2827,421 @@ PsbcResult psbc_compile_shader(
      case MESA_SHADER_GEOMETRY:  stage.next_stage = MESA_SHADER_FRAGMENT;     break;
      default:                    stage.next_stage = MESA_SHADER_NONE;         break;
      }
@@ -2822,6 +2822,9 @@ index bacbc6a..bc7cdc4 100644
 +            break;
 +        case PSBC_VERTEX_FORMAT_R64G64B64A64_FLOAT:
 +            format = PIPE_FORMAT_R64G64B64A64_FLOAT;
++            break;
++        case PSBC_VERTEX_FORMAT_R11G11B10_FLOAT:
++            format = PIPE_FORMAT_R11G11B10_FLOAT;
 +            break;
 +        case PSBC_VERTEX_FORMAT_B8G8R8A8_UNORM:
 +            format = PIPE_FORMAT_B8G8R8A8_UNORM;
@@ -3252,7 +3255,7 @@ index 000e7e1..bc6077d 100644
  /* === Types === */
  
  typedef enum {
-@@ -49,11 +54,167 @@ typedef enum {
+@@ -49,11 +54,168 @@ typedef enum {
      PSBC_RESULT_COMPILE_ACO,
      PSBC_RESULT_OUT_OF_MEMORY,
      PSBC_RESULT_INTERNAL_ERROR,
@@ -3305,6 +3308,7 @@ index 000e7e1..bc6077d 100644
 +    PSBC_VERTEX_FORMAT_R64G64_FLOAT,
 +    PSBC_VERTEX_FORMAT_R64G64B64_FLOAT,
 +    PSBC_VERTEX_FORMAT_R64G64B64A64_FLOAT,
++    PSBC_VERTEX_FORMAT_R11G11B10_FLOAT,
 +} PsbcVertexFormat;
 +
 +typedef struct {
