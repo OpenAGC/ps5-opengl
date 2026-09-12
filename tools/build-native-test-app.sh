@@ -48,9 +48,9 @@ esac
 }
 test_name=${gate_object%.o}
 case ${PS5_COMPUTE_API_TEST:-0} in 0|1) ;; *) echo 'Invalid compute API test mode' >&2; exit 2 ;; esac
-if [[ $test_name == egl_public_compute_api ]]; then
-    [[ ${PS5_COMPUTE_API_TEST:-0} == 1 && -z ${PS5_OPENGL_PREFIX:-} ]] || {
-        echo 'Compute API gate requires PS5_COMPUTE_API_TEST=1 and no SDK prefix' >&2; exit 2;
+if [[ $test_name == egl_public_compute_api && ${PS5_COMPUTE_API_TEST:-0} == 1 ]]; then
+    [[ -z ${PS5_OPENGL_PREFIX:-} ]] || {
+        echo 'Private compute API gate cannot use an SDK prefix' >&2; exit 2;
     }
 elif [[ ${PS5_COMPUTE_API_TEST:-0} == 1 ]]; then
     echo 'Compute API test mode is restricted to egl_public_compute_api' >&2

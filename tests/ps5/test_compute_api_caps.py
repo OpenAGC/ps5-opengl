@@ -55,6 +55,7 @@ def caps_source():
 #define PS5_ENABLE_GLSL_400_CANDIDATE 0
 #define PS5_ENABLE_GLSL_410_CANDIDATE 0
 #define PS5_ENABLE_GLSL_420_CANDIDATE 0
+#define PS5_ENABLE_GLSL_430_CANDIDATE 0
 #define PS5_ENABLE_GEOMETRY_CANDIDATE 1
 ''' + default[0] + "\n" + "\n".join(defines) + r'''
 static void baseline(struct pipe_screen *screen) {
@@ -72,7 +73,7 @@ int main(void) {
    struct pipe_screen actual = {0}, expected = {0};
    baseline(&actual); baseline(&expected);
    assert(!actual.caps.compute);
-   assert(actual.shader_caps[MESA_SHADER_FRAGMENT].max_const_buffers == 13);
+   assert(actual.shader_caps[MESA_SHADER_FRAGMENT].max_const_buffers == 15);
    apply(&actual);
 #if PS5_ENABLE_COMPUTE_API_TEST
    struct pipe_caps *caps = (struct pipe_caps *)&expected.caps;
@@ -85,13 +86,13 @@ int main(void) {
    caps->compute = true;
    caps->image_store_formatted = true;
    caps->shader_buffer_offset_alignment = 16;
-   caps->max_shader_buffer_size = 16384;
+   caps->max_shader_buffer_size = 1u << 27;
    struct pipe_compute_caps *cc = (struct pipe_compute_caps *)&expected.compute_caps;
    *cc = (struct pipe_compute_caps){
       .max_threads_per_block=1024, .max_local_size=32768,
       .max_grid_size={65535,65535,65535}, .max_block_size={1024,1024,64},
    };
-   assert(actual.shader_caps[MESA_SHADER_FRAGMENT].max_const_buffers == 13);
+   assert(actual.shader_caps[MESA_SHADER_FRAGMENT].max_const_buffers == 15);
    assert(actual.compute_caps.max_variable_threads_per_block == 0);
 #else
    const struct pipe_shader_caps disabled = {0};
@@ -120,18 +121,17 @@ def preflight(temporary, env):
     # missing-template fallback.
     base = {**env, "PS5_NATIVE_APP_TEMPLATE": str(temporary / "absent-template")}
     cases = (
-        ("egl_public_compute_api.o", {}, "requires PS5_COMPUTE_API_TEST=1 and no SDK prefix"),
         ("egl_public_compute_render.o", {"PS5_COMPUTE_API_TEST": "1"},
          "restricted to egl_public_compute_api"),
         ("egl_public_compute_api.o", {"PS5_COMPUTE_API_TEST": "1", "PS5_OPENGL_PREFIX": str(temporary)},
-         "requires PS5_COMPUTE_API_TEST=1 and no SDK prefix"),
+         "Private compute API gate cannot use an SDK prefix"),
         ("egl_public_compute_api.o", {"PS5_COMPUTE_API_TEST": "2"}, "Invalid compute API test mode"),
     )
     for gate, settings, diagnostic in cases:
         result = run(["bash", str(script), gate], cwd=ROOT, env={**base, **settings})
         assert result.returncode == 2 and diagnostic in result.stderr, result.stdout + result.stderr
         assert "unknown public OpenGL test" not in result.stderr
-    print("PASS four private-gate preflight rejections (before builds)")
+    print("PASS three private-gate preflight rejections (before builds)")
 
 
 def make_paths(temporary, env):

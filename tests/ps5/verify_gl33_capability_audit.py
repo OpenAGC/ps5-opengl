@@ -339,6 +339,7 @@ require(all(flag in core33_build for flag in (
             "PS5_ENABLE_GLSL_400_CANDIDATE",
             "PS5_ENABLE_GLSL_410_CANDIDATE",
             "PS5_ENABLE_GLSL_420_CANDIDATE",
+            "PS5_ENABLE_GLSL_430_CANDIDATE",
             "PS5_ENABLE_FP64_CANDIDATE",
             "PS5_ENABLE_VIEWPORT_ARRAY_CANDIDATE",
             "PS5_ENABLE_TEXTURE_CUBE_ARRAY_CANDIDATE",
@@ -516,7 +517,7 @@ for default_extension in (
             f"Mesa default extension changed: {default_extension}")
 
 for cap in (
-    "caps->glsl_feature_level = PS5_ENABLE_GLSL_420_CANDIDATE ? 420 :",
+    "caps->glsl_feature_level = PS5_ENABLE_GLSL_430_CANDIDATE ? 430 :",
     "PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :",
     "caps->doubles = PS5_ENABLE_FP64_CANDIDATE",
     "caps->cube_map_array = PS5_ENABLE_TEXTURE_CUBE_ARRAY_CANDIDATE",
@@ -548,6 +549,7 @@ require("#define PS5_ENABLE_DUAL_SOURCE_BLEND_CANDIDATE 0" in SCREEN and
         "dual-source capability is not conservatively gated")
 require("caps->glsl_feature_level_compatibility =" in SCREEN and
         "PS5_ENABLE_GLSL_420_CANDIDATE ? 420 :" in SCREEN and
+        "PS5_ENABLE_GLSL_430_CANDIDATE ? 430 :" in SCREEN and
         "PS5_ENABLE_GLSL_410_CANDIDATE ? 410 :" in SCREEN and
         "PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :" in SCREEN and
         "PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :" in SCREEN and
@@ -997,7 +999,7 @@ require("PS5_ENABLE_BORDER_COLOR_CANDIDATE=1" in CORE33_MK and
         "Core 3.3 sampler border-color routes regressed")
 require("PS5_ENABLE_UBO_CANDIDATE" in SCREEN and
         "#define PS5_ENABLE_UBO_CANDIDATE 1" in SCREEN and
-        "PS5_MAX_CONSTANT_BUFFERS 13u" in SCREEN and
+        "PS5_MAX_CONSTANT_BUFFERS 15u" in SCREEN and
         "PS5_MAX_CONSTANT_BUFFER_SIZE 0x4000u" in SCREEN and
         "PS5_MAX_DEFAULT_CONSTANT_BUFFER_SIZE 0x1080u" in SCREEN and
         "vs_caps->max_const_buffer0_size =" in SCREEN and

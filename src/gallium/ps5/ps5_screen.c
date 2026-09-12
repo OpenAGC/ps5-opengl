@@ -150,7 +150,7 @@ ps5_draw_batch_drain(void)
 
 #define PS5_MAX_TEXTURE_UNITS 16u
 #define PS5_MERGED_TEXTURE_UNITS (2u * PS5_MAX_TEXTURE_UNITS)
-#define PS5_MAX_CONSTANT_BUFFERS 13u
+#define PS5_MAX_CONSTANT_BUFFERS 15u
 #define PS5_DESCRIPTOR_STAGE_COUNT 2u
 #define PS5_TEXTURE_STAGE_COUNT 3u
 #define PS5_CONSTANT_STAGE_COUNT 3u
@@ -544,6 +544,9 @@ ps5_render_condition_passes(const struct ps5_context *context);
 #endif
 #ifndef PS5_ENABLE_GLSL_420_CANDIDATE
 #define PS5_ENABLE_GLSL_420_CANDIDATE 0
+#endif
+#ifndef PS5_ENABLE_GLSL_430_CANDIDATE
+#define PS5_ENABLE_GLSL_430_CANDIDATE 0
 #endif
 #ifndef PS5_ENABLE_FP64_CANDIDATE
 #define PS5_ENABLE_FP64_CANDIDATE 0
@@ -12410,12 +12413,14 @@ ps5_screen_create(void)
       PS5_ENABLE_FRAMEBUFFER_SRGB_CANDIDATE;
    caps->blend_equation_separate = true;
    caps->doubles = PS5_ENABLE_FP64_CANDIDATE;
-   caps->glsl_feature_level = PS5_ENABLE_GLSL_420_CANDIDATE ? 420 :
+   caps->glsl_feature_level = PS5_ENABLE_GLSL_430_CANDIDATE ? 430 :
+                              PS5_ENABLE_GLSL_420_CANDIDATE ? 420 :
                               PS5_ENABLE_GLSL_410_CANDIDATE ? 410 :
                               PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :
                               PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :
                               PS5_ENABLE_GEOMETRY_CANDIDATE ? 150 : 140;
    caps->glsl_feature_level_compatibility =
+      PS5_ENABLE_GLSL_430_CANDIDATE ? 430 :
       PS5_ENABLE_GLSL_420_CANDIDATE ? 420 :
       PS5_ENABLE_GLSL_410_CANDIDATE ? 410 :
       PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :
@@ -12585,7 +12590,7 @@ ps5_screen_create(void)
       tes_caps->max_inputs = tes_caps->max_outputs = 16;
       tcs_caps->max_texture_samplers = tcs_caps->max_sampler_views = 0;
       tes_caps->max_texture_samplers = tes_caps->max_sampler_views = 0;
-      /* Mesa's UBO capability is all-stage: fewer than 13 here would also
+      /* Mesa's UBO capability is all-stage: fewer than 15 here would also
        * remove UBOs from the already-qualified VS/FS core profile. */
       tcs_caps->max_const_buffers = tes_caps->max_const_buffers =
          PS5_MAX_CONSTANT_BUFFERS;
@@ -12616,7 +12621,7 @@ ps5_screen_create(void)
       caps->shader_buffer_offset_alignment = 16;
       caps->max_shader_buffer_size = 1u << 27;
    }
-#if PS5_ENABLE_COMPUTE_API_TEST
+#if PS5_ENABLE_COMPUTE_API_TEST || PS5_ENABLE_GLSL_430_CANDIDATE
    /* Private GL integration fixture only. Initialize before Mesa/CSO caches
     * capabilities; this is not a release/conformance feature advertisement. */
    struct pipe_shader_caps *cs_caps = (struct pipe_shader_caps *)
@@ -12630,7 +12635,7 @@ ps5_screen_create(void)
    caps->compute = true;
    caps->image_store_formatted = true;
    caps->shader_buffer_offset_alignment = 16;
-   caps->max_shader_buffer_size = 16384;
+   caps->max_shader_buffer_size = 1u << 27;
    *compute_caps = (struct pipe_compute_caps){
       .max_threads_per_block = 1024, .max_local_size = 32768,
       .max_grid_size = {65535, 65535, 65535},
