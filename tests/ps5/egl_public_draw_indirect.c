@@ -179,7 +179,7 @@ main(void)
 #if defined(PS5_GLSL_400_TEST) || defined(PS5_VIEWPORT_ARRAY_TEST) || \
     defined(PS5_FP64_VERTEX_TEST)
 #ifdef PS5_FP64_VERTEX_TEST
-      EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 2,
+      EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 1,
 #else
       EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 0,
 #endif
@@ -235,6 +235,17 @@ main(void)
    printf("[%s] limits texture=%d renderbuffer=%d cube=%d 3d=%d layers=%d\n",
           TEST_NAME, max_texture, max_renderbuffer, max_cube, max_3d,
           max_layers);
+   printf("[%s] gl42-prereqs base=%d depth=%d ifq=%d atomic=%d image=%d "
+          "pack420=%d packing=%d bptc=%d xfb=%d\n", TEST_NAME,
+          has_extension("GL_ARB_base_instance"),
+          has_extension("GL_ARB_conservative_depth"),
+          has_extension("GL_ARB_internalformat_query"),
+          has_extension("GL_ARB_shader_atomic_counters"),
+          has_extension("GL_ARB_shader_image_load_store"),
+          has_extension("GL_ARB_shading_language_420pack"),
+          has_extension("GL_ARB_shading_language_packing"),
+          has_extension("GL_ARB_texture_compression_bptc"),
+          has_extension("GL_ARB_transform_feedback_instanced"));
 #endif
 #ifdef PS5_VIEWPORT_ARRAY_TEST
    viewport_array = has_extension("GL_ARB_viewport_array");
