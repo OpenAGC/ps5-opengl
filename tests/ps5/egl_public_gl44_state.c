@@ -89,6 +89,8 @@ main(void)
    uint32_t pixel = 0, clip_pixel = 0, cull_pixel = 0;
    uint32_t *mapped = NULL;
    GLenum immutable_error = GL_NO_ERROR, error = GL_NO_ERROR;
+   PFNGLCLIPCONTROLPROC clip_control = NULL;
+   PFNGLTEXTUREBARRIERPROC texture_barrier = NULL;
    int storage_ok = 0, query_ok = 0, mirror_ok = 0, passed = 0;
 
    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -103,6 +105,11 @@ main(void)
       goto done;
 
    glGetIntegerv(GL_MAX_VERTEX_ATTRIB_STRIDE, &stride);
+   clip_control = (PFNGLCLIPCONTROLPROC)eglGetProcAddress("glClipControl");
+   texture_barrier =
+      (PFNGLTEXTUREBARRIERPROC)eglGetProcAddress("glTextureBarrier");
+   if (!clip_control || !texture_barrier)
+      goto done;
    shaders[0] = compile(GL_VERTEX_SHADER, vertex_source);
    shaders[1] = compile(GL_FRAGMENT_SHADER, fragment_source);
    if (!shaders[0] || !shaders[1])
@@ -152,14 +159,14 @@ main(void)
    glDrawArrays(GL_TRIANGLES, 0, 3);
    glEndQuery(GL_TIME_ELAPSED);
    glReadPixels(16, 16, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &pixel);
-   glTextureBarrier();
+   texture_barrier();
    glUniform1i(glGetUniformLocation(program, "mode"), 1);
-   glClipControl(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
+   clip_control(GL_LOWER_LEFT, GL_ZERO_TO_ONE);
    glClear(GL_COLOR_BUFFER_BIT);
    glDrawArrays(GL_TRIANGLES, 0, 3);
    glReadPixels(16, 16, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &clip_pixel);
    glUniform1i(glGetUniformLocation(program, "mode"), 2);
-   glClipControl(GL_LOWER_LEFT, GL_NEGATIVE_ONE_TO_ONE);
+   clip_control(GL_LOWER_LEFT, GL_NEGATIVE_ONE_TO_ONE);
    glClear(GL_COLOR_BUFFER_BIT);
    glDrawArrays(GL_TRIANGLES, 0, 3);
    glReadPixels(16, 16, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, &cull_pixel);
