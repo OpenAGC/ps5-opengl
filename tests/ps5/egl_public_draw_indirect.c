@@ -79,10 +79,9 @@ program(const char *fragment)
    static const char *geometry =
       GLSL_VERSION
       "#extension GL_ARB_viewport_array : require\n"
-      "layout(triangles) in;layout(triangle_strip,max_vertices=6) out;"
-      "void main(){for(int vp=0;vp<2;++vp){gl_ViewportIndex=vp;"
-      "for(int i=0;i<3;++i){gl_Position=gl_in[i].gl_Position;EmitVertex();}"
-      "EndPrimitive();}}\n";
+      "layout(triangles) in;layout(triangle_strip,max_vertices=3) out;"
+      "void main(){gl_ViewportIndex=1;for(int i=0;i<3;++i){"
+      "gl_Position=gl_in[i].gl_Position;EmitVertex();}EndPrimitive();}\n";
    shaders[2] = shader(GL_GEOMETRY_SHADER, geometry);
 #endif
    GLuint result = glCreateProgram();
@@ -170,6 +169,9 @@ main(void)
    EGLint count = 0;
    GLuint programs[2] = {0}, vao = 0, buffers[2] = {0};
    unsigned green_count = 0, cyan_count = 0, draws = 0;
+#ifdef PS5_VIEWPORT_ARRAY_TEST
+   unsigned green_left = 0, cyan_left = 0;
+#endif
    const char *glsl = NULL;
    int draw_indirect = 0, gpu_shader5 = 0, viewport_array = 0;
    int status = -1, passed = 0;
@@ -234,28 +236,41 @@ main(void)
    glUseProgram(programs[0]);
    glClear(GL_COLOR_BUFFER_BIT);
    glDrawArraysIndirect(GL_TRIANGLES, 0);
-   green_count = matching(0, UINT32_C(0xff00ff00));
 #ifdef PS5_VIEWPORT_ARRAY_TEST
-   green_count += matching(SIZE, UINT32_C(0xff00ff00));
+   green_left = matching(0, UINT32_C(0xff00ff00));
+   green_count = matching(SIZE, UINT32_C(0xff00ff00));
+#else
+   green_count = matching(0, UINT32_C(0xff00ff00));
 #endif
    glUseProgram(programs[1]);
    glClear(GL_COLOR_BUFFER_BIT);
    glDrawElementsIndirect(GL_TRIANGLES, GL_UNSIGNED_SHORT,
                           (const void *)(uintptr_t)16);
-   cyan_count = matching(0, UINT32_C(0xffffff00));
 #ifdef PS5_VIEWPORT_ARRAY_TEST
-   cyan_count += matching(SIZE, UINT32_C(0xffffff00));
+   cyan_left = matching(0, UINT32_C(0xffffff00));
+   cyan_count = matching(SIZE, UINT32_C(0xffffff00));
+#else
+   cyan_count = matching(0, UINT32_C(0xffffff00));
 #endif
    status = ps5_egl_current_draw_status(&draws);
-   passed = glGetError() == GL_NO_ERROR && status == 0 && draws == 4 &&
+   passed = glGetError() == GL_NO_ERROR && status == 0 && draws ==
+#ifdef PS5_VIEWPORT_ARRAY_TEST
+            2 && !green_left && !cyan_left &&
+#else
+            4 &&
+#endif
             green_count >
 #ifdef PS5_VIEWPORT_ARRAY_TEST
-               1000 && cyan_count > 1000;
+               500 && cyan_count > 500;
 #else
                500 && cyan_count > 500;
 #endif
 
 done:
+#ifdef PS5_VIEWPORT_ARRAY_TEST
+   printf("[%s] left=%u/%u right=%u/%u\n", TEST_NAME, green_left,
+          cyan_left, green_count, cyan_count);
+#endif
    printf("[%s] arrays=%u indexed=%u draws=%u status=%d result=%s\n",
           TEST_NAME, green_count, cyan_count, draws, status,
           passed ? "pass" : "fail");
