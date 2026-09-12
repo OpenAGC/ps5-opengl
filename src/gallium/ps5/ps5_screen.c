@@ -532,6 +532,9 @@ ps5_render_condition_passes(const struct ps5_context *context);
 #ifndef PS5_ENABLE_GLSL_330_CANDIDATE
 #define PS5_ENABLE_GLSL_330_CANDIDATE 0
 #endif
+#ifndef PS5_ENABLE_GLSL_400_CANDIDATE
+#define PS5_ENABLE_GLSL_400_CANDIDATE 0
+#endif
 #ifndef PS5_ENABLE_PACKED_VERTEX_CANDIDATE
 #define PS5_ENABLE_PACKED_VERTEX_CANDIDATE 0
 #endif
@@ -12305,9 +12308,11 @@ ps5_screen_create(void)
    caps->dest_surface_srgb_control =
       PS5_ENABLE_FRAMEBUFFER_SRGB_CANDIDATE;
    caps->blend_equation_separate = true;
-   caps->glsl_feature_level = PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :
+   caps->glsl_feature_level = PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :
+                              PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :
                               PS5_ENABLE_GEOMETRY_CANDIDATE ? 150 : 140;
    caps->glsl_feature_level_compatibility =
+      PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :
       PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :
       PS5_ENABLE_GEOMETRY_CANDIDATE ? 150 : 140;
    caps->max_render_targets = PS5_ENABLE_MRT_CANDIDATE

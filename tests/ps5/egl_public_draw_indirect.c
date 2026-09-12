@@ -13,6 +13,22 @@
 
 #define SIZE 64
 
+#ifdef PS5_GLSL_400_TEST
+#define TEST_NAME "ps5-egl-glsl400"
+#define GLSL_VERSION "#version 400 core\n"
+#define VERTEX_PROBE "uint bias=bitfieldExtract(0x38u,3,3)-4u;"
+#define VERTEX_ID "gl_VertexID-int(bias)"
+#define GREEN_BODY "c=bitCount(15u)==4?vec4(0,1,0,1):vec4(1,0,0,1);"
+#define CYAN_BODY "c=findLSB(8u)==3?vec4(0,1,1,1):vec4(1,0,0,1);"
+#else
+#define TEST_NAME "ps5-egl-draw-indirect"
+#define GLSL_VERSION "#version 330 core\n"
+#define VERTEX_PROBE ""
+#define VERTEX_ID "gl_VertexID-3"
+#define GREEN_BODY "c=vec4(0,1,0,1);"
+#define CYAN_BODY "c=vec4(0,1,1,1);"
+#endif
+
 int ps5_egl_current_draw_status(unsigned *draw_calls);
 
 static GLuint
@@ -28,8 +44,7 @@ shader(GLenum type, const char *source)
       char log[512] = {0};
       GLsizei length = 0;
       glGetShaderInfoLog(result, sizeof(log), &length, log);
-      printf("[ps5-egl-draw-indirect] shader=%x log=%.*s\n",
-             type, length, log);
+      printf("[%s] shader=%x log=%.*s\n", TEST_NAME, type, length, log);
       glDeleteShader(result);
       return 0;
    }
@@ -40,8 +55,8 @@ static GLuint
 program(const char *fragment)
 {
    static const char *vertex =
-      "#version 330 core\n"
-      "void main(){int id=gl_VertexID-3;"
+      GLSL_VERSION
+      "void main(){" VERTEX_PROBE "int id=" VERTEX_ID ";"
       "float x=id==1?0.8:-0.8;float y=id==2?0.8:-0.8;"
       "gl_Position=vec4(x,y,0.5,1.0);}\n";
    GLuint shaders[2] = {shader(GL_VERTEX_SHADER, vertex),
@@ -94,9 +109,9 @@ int
 main(void)
 {
    static const char *green =
-      "#version 330 core\nout vec4 c;void main(){c=vec4(0,1,0,1);}\n";
+      GLSL_VERSION "out vec4 c;void main(){" GREEN_BODY "}\n";
    static const char *cyan =
-      "#version 330 core\nout vec4 c;void main(){c=vec4(0,1,1,1);}\n";
+      GLSL_VERSION "out vec4 c;void main(){" CYAN_BODY "}\n";
    static const uint32_t commands[] = {
       3, 1, 3, 0,
       3, 1, 0, 3, 0,
@@ -130,7 +145,13 @@ main(void)
    context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attrs);
    if (surface == EGL_NO_SURFACE || context == EGL_NO_CONTEXT ||
        !eglMakeCurrent(display, surface, surface, context) ||
-       !has_extension("GL_ARB_draw_indirect"))
+       !has_extension("GL_ARB_draw_indirect")
+#ifdef PS5_GLSL_400_TEST
+       || !has_extension("GL_ARB_gpu_shader5") ||
+       strncmp((const char *)glGetString(GL_SHADING_LANGUAGE_VERSION),
+               "4.00", 4)
+#endif
+       )
       goto done;
    programs[0] = program(green);
    programs[1] = program(cyan);
@@ -161,8 +182,9 @@ main(void)
             green_count > 500 && cyan_count > 500;
 
 done:
-   printf("[ps5-egl-draw-indirect] arrays=%u indexed=%u draws=%u status=%d result=%s\n",
-          green_count, cyan_count, draws, status, passed ? "pass" : "fail");
+   printf("[%s] arrays=%u indexed=%u draws=%u status=%d result=%s\n",
+          TEST_NAME, green_count, cyan_count, draws, status,
+          passed ? "pass" : "fail");
    glDeleteBuffers(2, buffers);
    glDeleteVertexArrays(1, &vao);
    glDeleteProgram(programs[0]);

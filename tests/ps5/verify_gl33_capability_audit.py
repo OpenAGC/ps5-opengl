@@ -336,6 +336,7 @@ require(all(flag in core33_build for flag in (
             "PS5_ENABLE_OCCLUSION_QUERY_CANDIDATE",
             "PS5_ENABLE_DEPTH_CLAMP_CANDIDATE",
             "PS5_ENABLE_GLSL_330_CANDIDATE",
+            "PS5_ENABLE_GLSL_400_CANDIDATE",
             "PS5_ENABLE_PACKED_VERTEX_CANDIDATE",
             "PS5_ENABLE_PACKED_DEPTH_STENCIL",
             "PS5_ENABLE_PADDED_FBO_CANDIDATE",
@@ -510,7 +511,8 @@ for default_extension in (
             f"Mesa default extension changed: {default_extension}")
 
 for cap in (
-    "caps->glsl_feature_level = PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :",
+    "caps->glsl_feature_level = PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :",
+    "PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :",
     "caps->fs_coord_origin_upper_left = true",
     "caps->fs_coord_pixel_center_half_integer = true",
     "caps->fs_coord_pixel_center_integer = true",
@@ -535,6 +537,7 @@ require("#define PS5_ENABLE_DUAL_SOURCE_BLEND_CANDIDATE 0" in SCREEN and
         "PS5_ENABLE_DUAL_SOURCE_BLEND_CANDIDATE ? 1 : 0" in SCREEN,
         "dual-source capability is not conservatively gated")
 require("caps->glsl_feature_level_compatibility =" in SCREEN and
+        "PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :" in SCREEN and
         "PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :" in SCREEN and
         "PS5_ENABLE_GEOMETRY_CANDIDATE ? 150 : 140" in SCREEN,
         "GLSL compatibility ceiling lost its geometry gate")
