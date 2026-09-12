@@ -279,15 +279,35 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
             assert(pair[i]->machine_code && pair[i]->machine_code_size);
             assert(!pair[i]->data && !pair[i]->size);
             assert(pair[i]->metadata.source_stage==(i ? PSBC_STAGE_TESS_EVAL : PSBC_STAGE_TESS_CTRL));
-            assert(pair[i]->metadata.hardware_stage==(i ? PSBC_HW_STAGE_UNKNOWN : PSBC_HW_STAGE_HULL));
-            assert(!pair[i]->metadata.linkage_valid);
-            assert(!pair[i]->metadata.context_register_count);
+            assert(pair[i]->metadata.hardware_stage==(i ? PSBC_HW_STAGE_NGG : PSBC_HW_STAGE_HULL));
             uint8_t* package=NULL; size_t size=0;
             if (i) {
-                assert(!pair[i]->metadata.shader_register_count);
-                assert(ps5_agc_package_build(pair[i],0,&package,&size)<0);
-                assert(!package && !size);
+                assert(pair[i]->metadata.linkage_valid);
+                assert(pair[i]->metadata.context_register_count);
+                assert(pair[i]->metadata.shader_register_count==6);
+                assert(G_028B54_LS_EN(pair[i]->metadata.linkage_stages_en.value)==V_028B54_LS_STAGE_ON);
+                assert(G_028B54_HS_EN(pair[i]->metadata.linkage_stages_en.value));
+                assert(G_028B54_DYNAMIC_HS(pair[i]->metadata.linkage_stages_en.value));
+                assert(G_028B54_ES_EN(pair[i]->metadata.linkage_stages_en.value)==V_028B54_ES_STAGE_DS);
+                assert(G_028B54_PRIMGEN_EN(pair[i]->metadata.linkage_stages_en.value));
+                assert(G_03096C_VERT_GRP_SIZE(pair[i]->metadata.linkage_ge_cntl.value)==0);
+                printf("TES metadata stages=%08x ge=%08x context=%u shader=%u ngg-lds=%u/%u\n",
+                       pair[i]->metadata.linkage_stages_en.value,
+                       pair[i]->metadata.linkage_ge_cntl.value,
+                       pair[i]->metadata.context_register_count,
+                       pair[i]->metadata.shader_register_count,
+                       pair[i]->metadata.ngg_lds_layout_valid,
+                       pair[i]->metadata.ngg_lds_layout);
+                assert(ps5_agc_package_build(pair[i],0,&package,&size)==0);
+                uint64_t sections=0, header_at=0;
+                memcpy(&sections,package+40,8);
+                memcpy(&header_at,package+sections+2*64+24,8);
+                const uint8_t *header=package+header_at;
+                assert(header[90]==2);
+                free(package);
             } else {
+                assert(!pair[i]->metadata.linkage_valid);
+                assert(!pair[i]->metadata.context_register_count);
                 assert(pair[i]->metadata.shader_register_count==2);
                 assert(pair[i]->metadata.shader_registers[0].offset==0x148);
                 assert(pair[i]->metadata.shader_registers[1].offset==0x10a);
@@ -311,7 +331,7 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
     }
     psbc_free_tessellation_output(NULL);
     for (unsigned i=0;i<3;++i) ralloc_free(inputs[i]);
-    puts("PASS public linked tessellation API: ownership, rejection, hull packaging");
+    puts("PASS public linked tessellation API: ownership, rejection, HS/TES packaging");
 }
 
 int main(int argc,char **argv) {
