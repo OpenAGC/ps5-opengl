@@ -8,7 +8,7 @@
 
 /* Test-only bounded register lowering; production compiler unchanged. */
 static nir_builder private_array_fixture(unsigned words) {
-    assert(words==4 || words==8 || words==16 || words==32);
+    assert(words>=4 && words<=1024 && !(words&(words-1)));
     nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
         psbc_get_nir_options(PSBC_STAGE_COMPUTE), "private-array-lowering");
     b.shader->info.workgroup_size[0]=16;
@@ -36,6 +36,7 @@ static nir_builder private_array_fixture(unsigned words) {
     return b;
 }
 static void private_array_lower(nir_shader *nir) {
+    assert(nir->scratch_size<=128);
     nir_lower_scratch_to_var(nir);
     nir_lower_indirect_derefs_to_if_else_trees(nir,nir_var_function_temp,32);
     nir_lower_vars_to_ssa(nir);

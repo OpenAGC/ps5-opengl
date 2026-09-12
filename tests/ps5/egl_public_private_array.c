@@ -18,6 +18,7 @@
 #define COUNT 1024u
 #define GUARDS 32u
 #define SENTINEL UINT32_C(0xcdcdcdcd)
+#define MAX_PRIVATE_WORDS (PS5_PRIVATE_BUFFER_TEST?1024u:32u)
 
 int main(void) {
     int status=1;
@@ -28,7 +29,7 @@ int main(void) {
     if (!screen) return 1;
     psbc_init();
     const unsigned sizes[]={16*16, (COUNT+2*GUARDS)*4, (3*COUNT+2*GUARDS)*4,
-        (COUNT*34+2*GUARDS)*4};
+        (COUNT*(MAX_PRIVATE_WORDS+2)+2*GUARDS)*4};
     for (unsigned i=0;i<3+PS5_PRIVATE_BUFFER_TEST;++i) {
         struct pipe_resource templ={.target=PIPE_BUFFER,.format=PIPE_FORMAT_R8_UNORM,
             .width0=sizes[i],.height0=1,.depth0=1,.array_size=1,
@@ -49,8 +50,13 @@ int main(void) {
         table[slot*4]=address; table[slot*4+1]=address>>32;
         table[slot*4+2]=COUNT*4*(slot?3:1); table[slot*4+3]=UINT32_C(0x31016fac);
     }
-    for (unsigned test=0;test<5;++test) {
-        const unsigned words=test<4?4u<<test:0;
+    const unsigned cases[]={4,8,16,32,
+#if PS5_PRIVATE_BUFFER_TEST
+        64,256,1024,
+#endif
+        0};
+    for (unsigned test=0;test<sizeof(cases)/sizeof(cases[0]);++test) {
+        const unsigned words=cases[test];
         memset(memory[1],0xcd,sizes[1]); memset(memory[2],0xcd,sizes[2]);
 #if PS5_PRIVATE_BUFFER_TEST
         memset(memory[3],0xcd,sizes[3]);
@@ -60,7 +66,7 @@ int main(void) {
 #endif
         for (unsigned i=0;i<COUNT;++i) {
             input[i*3]=words?i%words:0;
-            input[i*3+1]=words?(i/words)%words:0;
+            input[i*3+1]=words?(i/words+17*i)%words:0;
             input[i*3+2]=UINT32_C(0xfffff000)+i*UINT32_C(2654435761);
         }
         nir_builder b;
@@ -95,7 +101,7 @@ int main(void) {
         unsigned correct=0, guards=0, unchanged=0;
         for (unsigned i=0;i<COUNT;++i) {
             const uint32_t seed=UINT32_C(0xfffff000)+i*UINT32_C(2654435761);
-            const unsigned w=words?i%words:0, r=words?(i/words)%words:0;
+            const unsigned w=words?i%words:0, r=words?(i/words+17*i)%words:0;
             const uint32_t expected=words?(r==w?seed+991:seed^(17+37*r)):i*3+17;
             correct+=output[i]==expected;
             unchanged+=input[i*3]==w && input[i*3+1]==r && input[i*3+2]==seed;

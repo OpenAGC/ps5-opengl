@@ -36,7 +36,7 @@ static void private_buffer_lower(nir_shader *nir) {
     assert(nir->info.workgroup_size[0]==16 && nir->info.workgroup_size[1]==1 &&
         nir->info.workgroup_size[2]==1);
     unsigned words=nir->scratch_size/4;
-    assert(words>=4 && words<=32 && nir->scratch_size==words*4);
+    assert(words>=4 && words<=1024 && !(words&(words-1)) && nir->scratch_size==words*4);
     assert(nir_shader_intrinsics_pass(nir,private_buffer_intrinsic,nir_metadata_control_flow,&words));
     nir->scratch_size=0;
     nir->info.num_ssbos=3;

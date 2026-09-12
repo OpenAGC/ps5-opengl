@@ -605,7 +605,9 @@ static void atomic_alignment_lowering(void) {
 #include "private_array_fixture.h"
 #include "private_buffer_fixture.h"
 static void private_buffer_contract(void) {
-    for (unsigned words=4; words<=32; words*=2) {
+    const unsigned sizes[]={4,8,16,32,64,256,1024};
+    for (unsigned test=0; test<sizeof(sizes)/sizeof(sizes[0]); ++test) {
+        const unsigned words=sizes[test];
         nir_builder b=private_array_fixture(words);
         assert(b.shader->scratch_size==words*4);
         private_buffer_lower(b.shader);
