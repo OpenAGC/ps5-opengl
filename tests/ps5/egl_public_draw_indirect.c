@@ -134,6 +134,8 @@ main(void)
    EGLint count = 0;
    GLuint programs[2] = {0}, vao = 0, buffers[2] = {0};
    unsigned green_count = 0, cyan_count = 0, draws = 0;
+   const char *glsl = NULL;
+   int draw_indirect = 0, gpu_shader5 = 0;
    int status = -1, passed = 0;
 
    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -144,12 +146,16 @@ main(void)
    surface = eglCreateWindowSurface(display, config, 0, NULL);
    context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attrs);
    if (surface == EGL_NO_SURFACE || context == EGL_NO_CONTEXT ||
-       !eglMakeCurrent(display, surface, surface, context) ||
-       !has_extension("GL_ARB_draw_indirect")
+       !eglMakeCurrent(display, surface, surface, context))
+      goto done;
+   glsl = (const char *)glGetString(GL_SHADING_LANGUAGE_VERSION);
+   draw_indirect = has_extension("GL_ARB_draw_indirect");
+   gpu_shader5 = has_extension("GL_ARB_gpu_shader5");
+   printf("[%s] glsl=%s indirect=%d gpu-shader5=%d\n", TEST_NAME,
+          glsl ? glsl : "(null)", draw_indirect, gpu_shader5);
+   if (!draw_indirect
 #ifdef PS5_GLSL_400_TEST
-       || !has_extension("GL_ARB_gpu_shader5") ||
-       strncmp((const char *)glGetString(GL_SHADING_LANGUAGE_VERSION),
-               "4.00", 4)
+       || !gpu_shader5 || !glsl || strncmp(glsl, "4.00", 4)
 #endif
        )
       goto done;
