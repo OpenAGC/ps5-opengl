@@ -15,7 +15,9 @@
 
 #if defined(PS5_FP64_VERTEX_TEST)
 #define TEST_NAME "ps5-egl-fp64-vertex"
-#define GLSL_VERSION "#version 400 core\n#extension GL_ARB_gpu_shader_fp64 : require\n"
+#define GLSL_VERSION "#version 400 core\n" \
+   "#extension GL_ARB_gpu_shader_fp64 : require\n" \
+   "#extension GL_ARB_vertex_attrib_64bit : require\n"
 #define VERTEX_PROBE ""
 #define VERTEX_ID "gl_VertexID-3"
 #define GREEN_BODY "c=vec4(0,1,0,1);"
