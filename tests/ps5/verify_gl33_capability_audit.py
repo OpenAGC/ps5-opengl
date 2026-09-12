@@ -530,6 +530,8 @@ for cap in (
     "caps->fs_position_is_sysval = true",
     "PS5_ENABLE_VIEWPORT_ARRAY_CANDIDATE ? PS5_MAX_VIEWPORTS : 1",
     "caps->max_vertex_buffers = 16",
+    "caps->max_vertex_attrib_stride = 2048",
+    "caps->max_vertex_element_src_offset = 2047",
     "caps->primitive_restart = true",
     "caps->vs_instanceid = true",
     "caps->vertex_element_instance_divisor = true",

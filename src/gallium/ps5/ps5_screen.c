@@ -12610,6 +12610,8 @@ ps5_screen_create(void)
       PS5_ENABLE_GEOMETRY_CANDIDATE ? 1024 : 0;
    caps->max_gs_invocations = PS5_ENABLE_GEOMETRY_CANDIDATE ? 32 : 0;
    caps->max_vertex_buffers = 16;
+   caps->max_vertex_attrib_stride = 2048;
+   caps->max_vertex_element_src_offset = 2047;
    caps->supported_prim_modes = (1u << MESA_PRIM_POINTS) |
                                 (1u << MESA_PRIM_LINES) |
                                 (1u << MESA_PRIM_LINE_STRIP) |
