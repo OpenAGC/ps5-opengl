@@ -100,6 +100,9 @@ static uint32_t runtime_viewport[RUNTIME_MAX_VIEWPORTS][8] = {{
 static uint32_t runtime_scissor[RUNTIME_MAX_VIEWPORTS][2] = {{
     UINT32_C(0x80000000), UINT32_C(0x04380780),
 }};
+static uint32_t runtime_generic_scissor[2] = {
+    UINT32_C(0x80000000), UINT32_C(0x04380780),
+};
 static unsigned runtime_viewport_count = 1;
 static uint32_t runtime_rasterizer_control;
 static uint32_t runtime_rasterizer_valid;
@@ -362,6 +365,9 @@ int ps5_agc_gate2_set_graphics_state(
     memcpy(runtime_blend_color, blend_color, sizeof(runtime_blend_color));
     memcpy(runtime_viewport[0], viewport, sizeof(runtime_viewport[0]));
     memcpy(runtime_scissor[0], scissor, sizeof(runtime_scissor[0]));
+    if (runtime_viewport_count == 1)
+        memcpy(runtime_generic_scissor, scissor,
+               sizeof(runtime_generic_scissor));
     runtime_rasterizer_control = rasterizer_control;
     runtime_rasterizer_valid = rasterizer_valid;
     memcpy(runtime_polygon_offset, polygon_offset,
@@ -374,10 +380,25 @@ int ps5_agc_gate2_set_viewport_states(
     const uint32_t viewport[RUNTIME_MAX_VIEWPORTS][8],
     const uint32_t scissor[RUNTIME_MAX_VIEWPORTS][2], unsigned count)
 {
+    unsigned minx = UINT16_MAX, miny = UINT16_MAX, maxx = 0, maxy = 0;
+
     if (!viewport || !scissor || !count || count > RUNTIME_MAX_VIEWPORTS)
         return -1;
     memcpy(runtime_viewport, viewport, count * sizeof(runtime_viewport[0]));
     memcpy(runtime_scissor, scissor, count * sizeof(runtime_scissor[0]));
+    for (unsigned i = 0; i < count; ++i) {
+        unsigned x = scissor[i][0] & UINT32_C(0x7fff);
+        unsigned y = (scissor[i][0] >> 16) & UINT32_C(0x7fff);
+        unsigned right = scissor[i][1] & UINT32_C(0x7fff);
+        unsigned bottom = (scissor[i][1] >> 16) & UINT32_C(0x7fff);
+
+        if (x < minx) minx = x;
+        if (y < miny) miny = y;
+        if (right > maxx) maxx = right;
+        if (bottom > maxy) maxy = bottom;
+    }
+    runtime_generic_scissor[0] = UINT32_C(0x80000000) | minx | (miny << 16);
+    runtime_generic_scissor[1] = maxx | (maxy << 16);
     runtime_viewport_count = count;
     return 0;
 }
@@ -3292,14 +3313,20 @@ int main(void)
                 runtime_viewport[viewport][7]
             };
             graphics_state[graphics_count++] = (agc_register_t){
-                (uint16_t)(0x0090u + viewport * 2u), 0,
+                (uint16_t)(0x0094u + viewport * 2u), 0,
                 runtime_scissor[viewport][0]
             };
             graphics_state[graphics_count++] = (agc_register_t){
-                (uint16_t)(0x0091u + viewport * 2u), 0,
+                (uint16_t)(0x0095u + viewport * 2u), 0,
                 runtime_scissor[viewport][1]
             };
         }
+        graphics_state[graphics_count++] = (agc_register_t){
+            0x0090, 0, runtime_generic_scissor[0]
+        };
+        graphics_state[graphics_count++] = (agc_register_t){
+            0x0091, 0, runtime_generic_scissor[1]
+        };
         if (runtime_rasterizer_valid)
             graphics_state[graphics_count++] = (agc_register_t){
                 0x0205, 0, runtime_rasterizer_control
