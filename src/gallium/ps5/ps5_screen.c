@@ -7483,13 +7483,22 @@ ps5_draw_vbo_locked(struct pipe_context *base,
                        packed_clip | (packed_cull << 8);
       vs_out_control_valid = 1;
    }
-   if (!vertex_metadata->base_vertex_valid ||
-       vertex_metadata->base_vertex_user_data_dword >= user_data_count) {
+   if (tessellation_active) {
+      /* The merged VS runs in the hull stage, so its draw parameters are not
+       * part of the TES/NGG user-data layout selected above. */
+      if (base_vertex || info->start_instance) {
+         context->last_draw_status = -10;
+         return;
+      }
+   } else if (!vertex_metadata->base_vertex_valid ||
+              vertex_metadata->base_vertex_user_data_dword >=
+                 user_data_count) {
       context->last_draw_status = -10;
       return;
+   } else {
+      user_data[vertex_metadata->base_vertex_user_data_dword] = base_vertex;
    }
-   user_data[vertex_metadata->base_vertex_user_data_dword] = base_vertex;
-   if (info->start_instance) {
+   if (!tessellation_active && info->start_instance) {
       if (!vertex_metadata->start_instance_valid ||
           vertex_metadata->start_instance_user_data_dword >= user_data_count) {
          context->last_draw_status = -10;
@@ -7497,7 +7506,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       }
       user_data[vertex_metadata->start_instance_user_data_dword] =
          info->start_instance;
-   } else if (vertex_metadata->start_instance_valid) {
+   } else if (!tessellation_active && vertex_metadata->start_instance_valid) {
       if (vertex_metadata->start_instance_user_data_dword >= user_data_count) {
          context->last_draw_status = -10;
          return;
