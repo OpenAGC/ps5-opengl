@@ -2916,6 +2916,8 @@ int ps5_agc_gate2_set_scanout(void *framebuffer, size_t size)
    __attribute__((weak));
 int ps5_agc_gate2_set_vertex_user_data(const uint32_t *values, unsigned count)
    __attribute__((weak));
+int ps5_agc_gate2_set_hull_user_data(const uint32_t *values, unsigned count)
+   __attribute__((weak));
 int ps5_agc_gate2_set_index_buffer(const void *indices, unsigned index_count)
    __attribute__((weak));
 int ps5_agc_gate2_set_index_buffer_typed(const void *indices,
@@ -7113,6 +7115,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
    struct pipe_draw_start_count_bias draw;
    const PsbcShaderOutput *vertex_output;
    const PsbcShaderMetadata *vertex_metadata;
+   const PsbcShaderMetadata *input_metadata;
    const uint8_t *vertex_package;
    size_t vertex_package_size;
    struct ps5_resource *descriptor_resource;
@@ -7120,12 +7123,15 @@ ps5_draw_vbo_locked(struct pipe_context *base,
    uintptr_t descriptor_address;
    uint32_t *descriptor;
    uint32_t user_data[32] = {0};
+   uint32_t hull_user_data[32] = {0};
+   uint32_t *input_user_data;
    uint32_t pixel_user_data[32] = {0};
    struct ps5_vertex_layout vertex_layout;
    struct ps5_vertex_layout fragment_layout = {0};
    struct ps5_fragment_exports fragment_exports;
    struct ps5_native_graphics_state graphics;
    unsigned user_data_count;
+   unsigned input_user_data_count;
    unsigned pixel_user_data_count;
    uint32_t primitive_type;
    uint32_t fragment_primitive_type;
@@ -7428,9 +7434,15 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       }
    }
    user_data_count = vertex_output->metadata.user_sgpr_count;
+   input_metadata = tessellation_active
+      ? &context->tessellation_output.hs.metadata
+      : &vertex_output->metadata;
+   input_user_data = tessellation_active ? hull_user_data : user_data;
+   input_user_data_count = input_metadata->user_sgpr_count;
    pixel_user_data_count =
       context->fs->active->output.metadata.user_sgpr_count;
-   if (user_data_count > 32 || pixel_user_data_count > 32) {
+   if (user_data_count > 32 || input_user_data_count > 32 ||
+       pixel_user_data_count > 32) {
       context->last_draw_status = -11;
       return;
    }
@@ -7483,37 +7495,30 @@ ps5_draw_vbo_locked(struct pipe_context *base,
                        packed_clip | (packed_cull << 8);
       vs_out_control_valid = 1;
    }
-   if (tessellation_active) {
-      /* The merged VS runs in the hull stage, so its draw parameters are not
-       * part of the TES/NGG user-data layout selected above. */
-      if (base_vertex || info->start_instance) {
-         context->last_draw_status = -10;
-         return;
-      }
-   } else if (!vertex_metadata->base_vertex_valid ||
-              vertex_metadata->base_vertex_user_data_dword >=
-                 user_data_count) {
+   if (!input_metadata->base_vertex_valid ||
+       input_metadata->base_vertex_user_data_dword >= input_user_data_count) {
       context->last_draw_status = -10;
       return;
-   } else {
-      user_data[vertex_metadata->base_vertex_user_data_dword] = base_vertex;
    }
-   if (!tessellation_active && info->start_instance) {
-      if (!vertex_metadata->start_instance_valid ||
-          vertex_metadata->start_instance_user_data_dword >= user_data_count) {
+   input_user_data[input_metadata->base_vertex_user_data_dword] = base_vertex;
+   if (info->start_instance) {
+      if (!input_metadata->start_instance_valid ||
+          input_metadata->start_instance_user_data_dword >=
+             input_user_data_count) {
          context->last_draw_status = -10;
          return;
       }
-      user_data[vertex_metadata->start_instance_user_data_dword] =
+      input_user_data[input_metadata->start_instance_user_data_dword] =
          info->start_instance;
-   } else if (!tessellation_active && vertex_metadata->start_instance_valid) {
-      if (vertex_metadata->start_instance_user_data_dword >= user_data_count) {
+   } else if (input_metadata->start_instance_valid) {
+      if (input_metadata->start_instance_user_data_dword >=
+          input_user_data_count) {
          context->last_draw_status = -10;
          return;
       }
-      user_data[vertex_metadata->start_instance_user_data_dword] = 0;
+      input_user_data[input_metadata->start_instance_user_data_dword] = 0;
    }
-   if (vertex_metadata->vertex_buffer_table_valid) {
+   if (input_metadata->vertex_buffer_table_valid) {
       uint32_t binding_mask = 0;
       uint32_t binding_records[PIPE_MAX_ATTRIBS] = {0};
       unsigned descriptor_index = 0;
@@ -7578,9 +7583,9 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       }
       descriptor_address = (uintptr_t)descriptor_resource->data;
       if ((uint32_t)(descriptor_address >> 32) !=
-             vertex_metadata->address32_hi ||
-          vertex_metadata->vertex_buffer_table_user_data_dword >=
-             user_data_count) {
+             input_metadata->address32_hi ||
+          input_metadata->vertex_buffer_table_user_data_dword >=
+             input_user_data_count) {
          context->last_draw_status = -10;
          return;
       }
@@ -7626,19 +7631,19 @@ ps5_draw_vbo_locked(struct pipe_context *base,
          ps5_flush_gpu_data(vertex_resource->data, vertex_resource->size);
          descriptor_index++;
       }
-      user_data[vertex_metadata->vertex_buffer_table_user_data_dword] =
+      input_user_data[input_metadata->vertex_buffer_table_user_data_dword] =
          (uint32_t)descriptor_address;
       ps5_flush_gpu_data(descriptor_resource->data,
                          descriptor_index * 16);
    }
-   if (!ps5_prepare_constant(context, context->vs, 0, user_data,
-                             user_data_count, vertex_metadata)) {
+   if (!ps5_prepare_constant(context, context->vs, 0, input_user_data,
+                             input_user_data_count, input_metadata)) {
       printf("[ps5-gallium] resource-prepare reject=vertex-constants\n");
       context->last_draw_status = -15;
       return;
    }
-   if (!ps5_prepare_texture(context, context->vs, 0, user_data,
-                            user_data_count, vertex_metadata, NULL)) {
+   if (!ps5_prepare_texture(context, context->vs, 0, input_user_data,
+                            input_user_data_count, input_metadata, NULL)) {
       printf("[ps5-gallium] resource-prepare reject=vertex-textures\n");
       context->last_draw_status = -15;
       return;
@@ -7681,6 +7686,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
          (PS5_ENABLE_MRT_CANDIDATE &&
           !ps5_agc_gate2_set_graphics_state_mrt))) ||
        !ps5_agc_gate2_set_vertex_user_data ||
+       (tessellation_active && !ps5_agc_gate2_set_hull_user_data) ||
        !ps5_agc_gate2_set_index_buffer ||
        !ps5_agc_gate2_set_draw_state ||
        !ps5_agc_gate2_set_instance_count ||
@@ -8062,6 +8068,12 @@ ps5_draw_vbo_locked(struct pipe_context *base,
    }
    if (ps5_agc_gate2_set_vertex_user_data(user_data,
                                           user_data_count) != 0) {
+      context->last_draw_status = -6;
+      return;
+   }
+   if (tessellation_active &&
+       ps5_agc_gate2_set_hull_user_data(hull_user_data,
+                                        input_user_data_count) != 0) {
       context->last_draw_status = -6;
       return;
    }

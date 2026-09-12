@@ -332,6 +332,9 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
                 assert(!pair[i]->metadata.linkage_valid);
                 assert(!pair[i]->metadata.context_register_count);
                 assert(pair[i]->metadata.shader_register_count==2);
+                assert(pair[i]->metadata.base_vertex_valid);
+                assert(pair[i]->metadata.base_vertex_user_data_dword <
+                       pair[i]->metadata.user_sgpr_count);
                 assert(pair[i]->metadata.shader_registers[0].offset==0x148);
                 assert(pair[i]->metadata.shader_registers[1].offset==0x10a);
                 assert(ps5_agc_package_build(pair[i],0,&package,&size)==0);

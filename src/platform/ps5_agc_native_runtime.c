@@ -67,6 +67,8 @@ static uint8_t *runtime_framebuffer;
 static size_t runtime_framebuffer_size;
 static uint32_t runtime_vertex_user_data[32];
 static unsigned int runtime_vertex_user_data_count;
+static uint32_t runtime_hull_user_data[32];
+static unsigned int runtime_hull_user_data_count;
 static uint32_t runtime_pixel_user_data[32];
 static unsigned int runtime_pixel_user_data_count;
 static const void *runtime_index_buffer;
@@ -162,6 +164,20 @@ int ps5_agc_gate2_set_vertex_user_data(const uint32_t *values,
     if (count)
         memcpy(runtime_vertex_user_data, values, count * sizeof(values[0]));
     runtime_vertex_user_data_count = count;
+    return 0;
+}
+
+int ps5_agc_gate2_set_hull_user_data(const uint32_t *values,
+                                     unsigned int count)
+{
+    if (count > sizeof(runtime_hull_user_data) /
+                    sizeof(runtime_hull_user_data[0]) ||
+        (count && !values))
+        return -1;
+    memset(runtime_hull_user_data, 0, sizeof(runtime_hull_user_data));
+    if (count)
+        memcpy(runtime_hull_user_data, values, count * sizeof(values[0]));
+    runtime_hull_user_data_count = count;
     return 0;
 }
 
@@ -3189,6 +3205,9 @@ int main(void)
 
         agc.set_sh_direct(&command, 0x102, pointer, 2);
         agc.set_sh_direct(&command, 0x082, pointer, 2);
+        if (runtime_hull_user_data_count)
+            agc.set_sh_direct(&command, 0x10c, runtime_hull_user_data,
+                              runtime_hull_user_data_count);
     }
     if (runtime_vertex_user_data_count)
         agc.set_sh_direct(&command, 0x8c, runtime_vertex_user_data,

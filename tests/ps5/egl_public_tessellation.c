@@ -87,6 +87,13 @@ main(void)
       "float x=gl_VertexID==1?0.8:-0.8;"
       "float y=gl_VertexID==2?0.8:-0.8;"
       "gl_Position=vec4(x,y,0.5,1.0);}\n";
+   static const char *tess_vs =
+      "#version 330 core\n"
+      "void main(){"
+      "int id=gl_VertexID-3;"
+      "float x=id==1?0.8:-0.8;"
+      "float y=id==2?0.8:-0.8;"
+      "gl_Position=vec4(x,y,0.5,1.0);}\n";
    static const char *tcs =
       "#version 330 core\n"
       "#extension GL_ARB_tessellation_shader : require\n"
@@ -111,7 +118,7 @@ main(void)
    static const char *blue =
       "#version 330 core\n"
       "out vec4 c;void main(){c=vec4(0,0,1,1);}\n";
-   const char *tess_sources[] = {vs, tcs, tes, green};
+   const char *tess_sources[] = {tess_vs, tcs, tes, green};
    const GLenum tess_types[] = {GL_VERTEX_SHADER, GL_TESS_CONTROL_SHADER,
                                 GL_TESS_EVALUATION_SHADER,
                                 GL_FRAGMENT_SHADER};
@@ -159,7 +166,7 @@ main(void)
    glUseProgram(programs[0]);
    glClearColor(0, 0, 0, 1);
    glClear(GL_COLOR_BUFFER_BIT);
-   glDrawArrays(GL_PATCHES, 0, 3);
+   glDrawArrays(GL_PATCHES, 3, 3);
    green_count = matching(UINT32_C(0xff00ff00));
    glUseProgram(programs[1]);
    glClear(GL_COLOR_BUFFER_BIT);
