@@ -322,6 +322,22 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
                 free(package);
             }
         }
+        assert(out.runtime.valid && out.runtime.input_patch_vertices==3);
+        assert(out.runtime.output_patch_vertices==3 && out.runtime.num_patches==64);
+        assert(out.runtime.lds_bytes==4112);
+        assert((out.runtime.hs_rsrc2 & S_00B42C_LDS_SIZE_GFX10(10))==
+               S_00B42C_LDS_SIZE_GFX10(10));
+        assert(out.runtime.ls_hs_config==
+               (S_028B58_NUM_PATCHES(64)|S_028B58_HS_NUM_INPUT_CP(3)|
+                S_028B58_HS_NUM_OUTPUT_CP(3)));
+        assert(out.runtime.tf_param==
+               (S_028B6C_TYPE(V_028B6C_TESS_TRIANGLE)|
+                S_028B6C_PARTITIONING(V_028B6C_PART_INTEGER)|
+                S_028B6C_TOPOLOGY(V_028B6C_OUTPUT_TRIANGLE_CCW)));
+        assert(out.runtime.hs_ring_offsets_user_data_dword==0 &&
+               out.runtime.tes_ring_offsets_user_data_dword==0);
+        assert(out.runtime.offchip_ring_bytes_per_workgroup==32768);
+        assert(out.runtime.tess_factor_ring_bytes_per_workgroup==1024);
         PsbcTessellationOutput owned=out;
         assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
         assert(!memcmp(&out,&owned,sizeof(out)));
@@ -337,7 +353,7 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
 int main(int argc,char **argv) {
     assert(argc==2); setvbuf(stdout,NULL,_IONBF,0);
     bool cross=!strcmp(argv[1],"cross");
-    puts("HOST MODEL ONLY: capacity=8192 dwords, address32_hi=2; no native ABI proposal");
+    puts("HOST MODEL: capacity=8192 dwords, address32_hi=2; fixed runtime contract");
     psbc_init();
     struct ac_compiler_info ac={0}; setup_ac_info(&ac,GFX10_3);
     ac.hs_offchip_workgroup_dw_size=8192; /* Hypothetical host capacity; see ac_fill_tess_info. */
@@ -469,7 +485,7 @@ int main(int argc,char **argv) {
     puts("PASS public API matches extracted RADV reference code byte-for-byte");
     assert(radv_select_hw_stage(&hs->info,ac.gfx_level)==AC_HW_HULL_SHADER);
     assert(radv_select_hw_stage(&tes->info,ac.gfx_level)==AC_HW_NEXT_GEN_GEOMETRY_SHADER);
-    printf("PASS %s: linked merged2 HS=%u bytes TES/NGG=%u bytes; compiler-model only\n",argv[1],hb->code_size,tb->code_size);
+    printf("PASS %s: linked merged2 HS=%u bytes TES/NGG=%u bytes; runtime state pinned\n",argv[1],hb->code_size,tb->code_size);
     free(hs_binary); free(tes_binary);
     for(unsigned i=0;i<3;++i) ralloc_free(stages[ids[i]].nir);
     psbc_shutdown(); return 0;
