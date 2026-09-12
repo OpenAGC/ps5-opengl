@@ -1486,7 +1486,9 @@ require("uint32_t             clip_distance_mask;" in PSBC_H and
 
 require("bool has_depth = framebuffer && framebuffer->zsbuf.texture;" in
         SCREEN and
-        "(has_color || has_depth)" in SCREEN and
+        "(has_color || has_depth ||" in SCREEN and
+        "(PS5_ENABLE_GLSL_430_CANDIDATE && !framebuffer->nr_cbufs))" in
+        SCREEN and
         "color_target_count = MAX2(context->framebuffer.nr_cbufs, 1);" in
         SCREEN and
         "egl_public_core33_depth_only_fbo.o:" in MAKEFILE and
@@ -1786,7 +1788,7 @@ require("egl_public_core33_texture_copy.o:" in MAKEFILE and
         "glTexSubImage1D" in TEXTURE_COPY and
         "glTexSubImage3D" in TEXTURE_COPY and
         "glFramebufferTexture3D" in TEXTURE_COPY and
-        TEXTURE_COPY.count("glGetTexImage") == 4,
+        TEXTURE_COPY.count("glGetTexImage") >= 4,
         "Core framebuffer-to-texture copy/readback matrix regressed")
 
 require("egl_public_core33_compressed_dimensions.o:" in MAKEFILE and

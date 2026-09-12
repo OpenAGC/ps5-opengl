@@ -12548,6 +12548,7 @@ ps5_screen_create(void)
    caps->copy_between_compressed_and_plain_formats =
       PS5_ENABLE_GLSL_430_CANDIDATE;
    caps->framebuffer_no_attachment = PS5_ENABLE_GLSL_430_CANDIDATE;
+   caps->robust_buffer_access_behavior = PS5_ENABLE_GLSL_430_CANDIDATE;
    caps->gl_begin_end_buffer_size = 512 * 1024;
    caps->min_map_buffer_alignment = 64;
    vs_caps = (struct pipe_shader_caps *)
