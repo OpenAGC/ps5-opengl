@@ -4104,6 +4104,11 @@ ps5_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
                 format == PIPE_FORMAT_R32G32_FLOAT ||
                 format == PIPE_FORMAT_R32G32B32_FLOAT ||
                 format == PIPE_FORMAT_R32G32B32A32_FLOAT ||
+                (PS5_ENABLE_FP64_CANDIDATE &&
+                 (format == PIPE_FORMAT_R64_FLOAT ||
+                  format == PIPE_FORMAT_R64G64_FLOAT ||
+                  format == PIPE_FORMAT_R64G64B64_FLOAT ||
+                  format == PIPE_FORMAT_R64G64B64A64_FLOAT)) ||
                 (PS5_ENABLE_INTEGER_VERTEX_CANDIDATE &&
                  ps5_integer_vertex_format(format)) ||
                 (PS5_ENABLE_PACKED_VERTEX_CANDIDATE &&
@@ -9726,6 +9731,18 @@ ps5_vertex_format(enum pipe_format format, PsbcVertexFormat *out)
    case PIPE_FORMAT_R32G32B32A32_FLOAT:
       *out = PSBC_VERTEX_FORMAT_R32G32B32A32_FLOAT;
       return true;
+   case PIPE_FORMAT_R64_FLOAT:
+      *out = PSBC_VERTEX_FORMAT_R64_FLOAT;
+      return PS5_ENABLE_FP64_CANDIDATE;
+   case PIPE_FORMAT_R64G64_FLOAT:
+      *out = PSBC_VERTEX_FORMAT_R64G64_FLOAT;
+      return PS5_ENABLE_FP64_CANDIDATE;
+   case PIPE_FORMAT_R64G64B64_FLOAT:
+      *out = PSBC_VERTEX_FORMAT_R64G64B64_FLOAT;
+      return PS5_ENABLE_FP64_CANDIDATE;
+   case PIPE_FORMAT_R64G64B64A64_FLOAT:
+      *out = PSBC_VERTEX_FORMAT_R64G64B64A64_FLOAT;
+      return PS5_ENABLE_FP64_CANDIDATE;
    case PIPE_FORMAT_R32_SINT:
       *out = PSBC_VERTEX_FORMAT_R32_SINT;
       return PS5_ENABLE_INTEGER_VERTEX_CANDIDATE;
@@ -9797,6 +9814,14 @@ ps5_vertex_format_size(enum pipe_format format)
       return 12;
    case PIPE_FORMAT_R32G32B32A32_FLOAT:
       return 16;
+   case PIPE_FORMAT_R64_FLOAT:
+      return PS5_ENABLE_FP64_CANDIDATE ? 8 : 0;
+   case PIPE_FORMAT_R64G64_FLOAT:
+      return PS5_ENABLE_FP64_CANDIDATE ? 16 : 0;
+   case PIPE_FORMAT_R64G64B64_FLOAT:
+      return PS5_ENABLE_FP64_CANDIDATE ? 24 : 0;
+   case PIPE_FORMAT_R64G64B64A64_FLOAT:
+      return PS5_ENABLE_FP64_CANDIDATE ? 32 : 0;
    default:
       if (PS5_ENABLE_INTEGER_VERTEX_CANDIDATE &&
           ps5_integer_vertex_format(format))
@@ -9850,14 +9875,17 @@ ps5_vertex_layout_from_state(const struct ps5_shader *shader,
          return false;
       element = &elements->elements[element_index++];
       attribute = &layout->attributes[layout->count++];
-      if (element->dual_slot ||
-          !ps5_vertex_format(element->src_format, &attribute->format))
+      if (!ps5_vertex_format(element->src_format, &attribute->format))
          return false;
       attribute->location = location;
       attribute->binding = element->vertex_buffer_index;
       attribute->offset = element->src_offset;
       attribute->stride = element->src_stride;
-      attribute->alignment = 4;
+      attribute->alignment =
+         element->src_format == PIPE_FORMAT_R64_FLOAT ||
+         element->src_format == PIPE_FORMAT_R64G64_FLOAT ||
+         element->src_format == PIPE_FORMAT_R64G64B64_FLOAT ||
+         element->src_format == PIPE_FORMAT_R64G64B64A64_FLOAT ? 8 : 4;
       attribute->instance_divisor = element->instance_divisor;
    }
    /* A shared vertex-element state may contain unused trailing attributes

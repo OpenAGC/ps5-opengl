@@ -13,7 +13,14 @@
 
 #define SIZE 64
 
-#if defined(PS5_FP64_TEST)
+#if defined(PS5_FP64_VERTEX_TEST)
+#define TEST_NAME "ps5-egl-fp64-vertex"
+#define GLSL_VERSION "#version 400 core\n#extension GL_ARB_gpu_shader_fp64 : require\n"
+#define VERTEX_PROBE ""
+#define VERTEX_ID "gl_VertexID-3"
+#define GREEN_BODY "c=vec4(0,1,0,1);"
+#define CYAN_BODY "c=vec4(0,1,1,1);"
+#elif defined(PS5_FP64_TEST)
 #define TEST_NAME "ps5-egl-fp64"
 #define GLSL_VERSION "#version 330 core\n#extension GL_ARB_gpu_shader_fp64 : require\n"
 #define VERTEX_PROBE "double bias64=double(gl_VertexID)-3.0lf;"
@@ -69,10 +76,17 @@ static GLuint
 program(const char *fragment)
 {
    static const char *vertex =
+#ifdef PS5_FP64_VERTEX_TEST
+      GLSL_VERSION
+      "layout(location=0) in dvec2 p;void main(){"
+      "dvec2 q=p+dvec2(0.125lf)-dvec2(0.125lf);"
+      "gl_Position=vec4(vec2(q),0.5,1.0);}\n";
+#else
       GLSL_VERSION
       "void main(){" VERTEX_PROBE "int id=" VERTEX_ID ";"
       "float x=id==1?0.8:-0.8;float y=id==2?0.8:-0.8;"
       "gl_Position=vec4(x,y,0.5,1.0);}\n";
+#endif
    GLuint shaders[3] = {shader(GL_VERTEX_SHADER, vertex),
                         shader(GL_FRAGMENT_SHADER, fragment), 0};
 #ifdef PS5_VIEWPORT_ARRAY_TEST
@@ -148,13 +162,20 @@ main(void)
       3, 1, 0, 3, 0,
    };
    static const uint16_t indices[] = {0, 1, 2};
+#ifdef PS5_FP64_VERTEX_TEST
+   static const GLdouble vertices[12] = {
+      -0.8, -0.8, 0.8, -0.8, -0.8, 0.8,
+      -0.8, -0.8, 0.8, -0.8, -0.8, 0.8,
+   };
+#endif
    const EGLint config_attrs[] = {
       EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
       EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
       EGL_NONE,
    };
    const EGLint context_attrs[] = {
-#if defined(PS5_GLSL_400_TEST) || defined(PS5_VIEWPORT_ARRAY_TEST)
+#if defined(PS5_GLSL_400_TEST) || defined(PS5_VIEWPORT_ARRAY_TEST) || \
+    defined(PS5_FP64_VERTEX_TEST)
       EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 0,
 #else
       EGL_CONTEXT_MAJOR_VERSION_KHR, 3, EGL_CONTEXT_MINOR_VERSION_KHR, 3,
@@ -167,13 +188,16 @@ main(void)
    EGLSurface surface = EGL_NO_SURFACE;
    EGLContext context = EGL_NO_CONTEXT;
    EGLint count = 0;
-   GLuint programs[2] = {0}, vao = 0, buffers[2] = {0};
+   GLuint programs[2] = {0}, vao = 0, buffers[3] = {0};
    unsigned green_count = 0, cyan_count = 0, draws = 0;
 #ifdef PS5_VIEWPORT_ARRAY_TEST
    unsigned green_left = 0, cyan_left = 0;
 #endif
    const char *glsl = NULL;
-   int draw_indirect = 0, gpu_shader5 = 0, viewport_array = 0;
+   int draw_indirect = 0, gpu_shader5 = 0;
+#ifdef PS5_VIEWPORT_ARRAY_TEST
+   int viewport_array = 0;
+#endif
    int status = -1, passed = 0;
 
    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
@@ -189,7 +213,9 @@ main(void)
    glsl = (const char *)glGetString(GL_SHADING_LANGUAGE_VERSION);
    draw_indirect = has_extension("GL_ARB_draw_indirect");
    gpu_shader5 = has_extension("GL_ARB_gpu_shader5");
+#ifdef PS5_VIEWPORT_ARRAY_TEST
    viewport_array = has_extension("GL_ARB_viewport_array");
+#endif
    printf("[%s] glsl=%s indirect=%d gpu-shader5=%d\n", TEST_NAME,
           glsl ? glsl : "(null)", draw_indirect, gpu_shader5);
    if (!draw_indirect
@@ -198,6 +224,10 @@ main(void)
 #endif
 #ifdef PS5_FP64_TEST
        || !has_extension("GL_ARB_gpu_shader_fp64")
+#endif
+#ifdef PS5_FP64_VERTEX_TEST
+       || !has_extension("GL_ARB_gpu_shader_fp64") ||
+          !has_extension("GL_ARB_vertex_attrib_64bit")
 #endif
 #ifdef PS5_VIEWPORT_ARRAY_TEST
        || !viewport_array
@@ -210,13 +240,19 @@ main(void)
       goto done;
    glGenVertexArrays(1, &vao);
    glBindVertexArray(vao);
-   glGenBuffers(2, buffers);
+   glGenBuffers(3, buffers);
    glBindBuffer(GL_DRAW_INDIRECT_BUFFER, buffers[0]);
    glBufferData(GL_DRAW_INDIRECT_BUFFER, sizeof(commands), commands,
                 GL_STATIC_DRAW);
    glBindBuffer(GL_ELEMENT_ARRAY_BUFFER, buffers[1]);
    glBufferData(GL_ELEMENT_ARRAY_BUFFER, sizeof(indices), indices,
                 GL_STATIC_DRAW);
+#ifdef PS5_FP64_VERTEX_TEST
+   glBindBuffer(GL_ARRAY_BUFFER, buffers[2]);
+   glBufferData(GL_ARRAY_BUFFER, sizeof(vertices), vertices, GL_STATIC_DRAW);
+   glVertexAttribLPointer(0, 2, GL_DOUBLE, 0, NULL);
+   glEnableVertexAttribArray(0);
+#endif
 #ifdef PS5_VIEWPORT_ARRAY_TEST
    {
       const GLfloat viewports[8] = {
@@ -274,7 +310,7 @@ done:
    printf("[%s] arrays=%u indexed=%u draws=%u status=%d result=%s\n",
           TEST_NAME, green_count, cyan_count, draws, status,
           passed ? "pass" : "fail");
-   glDeleteBuffers(2, buffers);
+   glDeleteBuffers(3, buffers);
    glDeleteVertexArrays(1, &vao);
    glDeleteProgram(programs[0]);
    glDeleteProgram(programs[1]);

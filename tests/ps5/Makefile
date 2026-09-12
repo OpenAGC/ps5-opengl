@@ -708,6 +708,10 @@ egl_public_glsl400.o: egl_public_glsl400.c egl_public_draw_indirect.c
 egl_public_fp64.o: egl_public_fp64.c egl_public_draw_indirect.c
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
 
+egl_public_fp64_vertex.o: egl_public_fp64_vertex.c \
+		egl_public_draw_indirect.c
+	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
+
 egl_public_viewport_array.o: egl_public_viewport_array.c \
 		egl_public_draw_indirect.c
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
