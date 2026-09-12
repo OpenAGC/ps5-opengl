@@ -52,6 +52,9 @@ def caps_source():
 #include "pipe/p_screen.h"
 #define PS5_ENABLE_UBO_CANDIDATE 1
 #define PS5_ENABLE_GLSL_330_CANDIDATE 1
+#define PS5_ENABLE_GLSL_400_CANDIDATE 0
+#define PS5_ENABLE_GLSL_410_CANDIDATE 0
+#define PS5_ENABLE_GLSL_420_CANDIDATE 0
 #define PS5_ENABLE_GEOMETRY_CANDIDATE 1
 ''' + default[0] + "\n" + "\n".join(defines) + r'''
 static void baseline(struct pipe_screen *screen) {

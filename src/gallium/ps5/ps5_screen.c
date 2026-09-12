@@ -542,6 +542,9 @@ ps5_render_condition_passes(const struct ps5_context *context);
 #ifndef PS5_ENABLE_GLSL_410_CANDIDATE
 #define PS5_ENABLE_GLSL_410_CANDIDATE 0
 #endif
+#ifndef PS5_ENABLE_GLSL_420_CANDIDATE
+#define PS5_ENABLE_GLSL_420_CANDIDATE 0
+#endif
 #ifndef PS5_ENABLE_FP64_CANDIDATE
 #define PS5_ENABLE_FP64_CANDIDATE 0
 #endif
@@ -12406,11 +12409,13 @@ ps5_screen_create(void)
       PS5_ENABLE_FRAMEBUFFER_SRGB_CANDIDATE;
    caps->blend_equation_separate = true;
    caps->doubles = PS5_ENABLE_FP64_CANDIDATE;
-   caps->glsl_feature_level = PS5_ENABLE_GLSL_410_CANDIDATE ? 410 :
+   caps->glsl_feature_level = PS5_ENABLE_GLSL_420_CANDIDATE ? 420 :
+                              PS5_ENABLE_GLSL_410_CANDIDATE ? 410 :
                               PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :
                               PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :
                               PS5_ENABLE_GEOMETRY_CANDIDATE ? 150 : 140;
    caps->glsl_feature_level_compatibility =
+      PS5_ENABLE_GLSL_420_CANDIDATE ? 420 :
       PS5_ENABLE_GLSL_410_CANDIDATE ? 410 :
       PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :
       PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :
@@ -12487,6 +12492,7 @@ ps5_screen_create(void)
    caps->primitive_restart = true;
    caps->supported_prim_modes_with_restart = caps->supported_prim_modes;
    caps->vs_instanceid = true;
+   caps->start_instance = PS5_ENABLE_GLSL_420_CANDIDATE;
    caps->vertex_element_instance_divisor = true;
    caps->texture_swizzle = PS5_ENABLE_TEXTURE_SWIZZLE_CANDIDATE;
    caps->fragment_shader_texture_lod = PS5_ENABLE_SHADER_TEXTURE_LOD_CANDIDATE;
@@ -12602,6 +12608,13 @@ ps5_screen_create(void)
    fs_caps->indirect_temp_addr = true;
    fs_caps->indirect_const_addr = true;
    fs_caps->integers = true;
+   if (PS5_ENABLE_GLSL_420_CANDIDATE) {
+      fs_caps->max_shader_buffers = PS5_COMPUTE_STORAGE_SLOTS;
+      fs_caps->max_shader_images = PS5_COMPUTE_IMAGE_SLOTS;
+      caps->image_store_formatted = true;
+      caps->shader_buffer_offset_alignment = 16;
+      caps->max_shader_buffer_size = 1u << 27;
+   }
 #if PS5_ENABLE_COMPUTE_API_TEST
    /* Private GL integration fixture only. Initialize before Mesa/CSO caches
     * capabilities; this is not a release/conformance feature advertisement. */

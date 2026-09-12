@@ -338,6 +338,7 @@ require(all(flag in core33_build for flag in (
             "PS5_ENABLE_GLSL_330_CANDIDATE",
             "PS5_ENABLE_GLSL_400_CANDIDATE",
             "PS5_ENABLE_GLSL_410_CANDIDATE",
+            "PS5_ENABLE_GLSL_420_CANDIDATE",
             "PS5_ENABLE_FP64_CANDIDATE",
             "PS5_ENABLE_VIEWPORT_ARRAY_CANDIDATE",
             "PS5_ENABLE_TEXTURE_CUBE_ARRAY_CANDIDATE",
@@ -515,7 +516,7 @@ for default_extension in (
             f"Mesa default extension changed: {default_extension}")
 
 for cap in (
-    "caps->glsl_feature_level = PS5_ENABLE_GLSL_410_CANDIDATE ? 410 :",
+    "caps->glsl_feature_level = PS5_ENABLE_GLSL_420_CANDIDATE ? 420 :",
     "PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :",
     "caps->doubles = PS5_ENABLE_FP64_CANDIDATE",
     "caps->cube_map_array = PS5_ENABLE_TEXTURE_CUBE_ARRAY_CANDIDATE",
@@ -546,11 +547,16 @@ require("#define PS5_ENABLE_DUAL_SOURCE_BLEND_CANDIDATE 0" in SCREEN and
         "PS5_ENABLE_DUAL_SOURCE_BLEND_CANDIDATE ? 1 : 0" in SCREEN,
         "dual-source capability is not conservatively gated")
 require("caps->glsl_feature_level_compatibility =" in SCREEN and
+        "PS5_ENABLE_GLSL_420_CANDIDATE ? 420 :" in SCREEN and
         "PS5_ENABLE_GLSL_410_CANDIDATE ? 410 :" in SCREEN and
         "PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :" in SCREEN and
         "PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :" in SCREEN and
         "PS5_ENABLE_GEOMETRY_CANDIDATE ? 150 : 140" in SCREEN,
         "GLSL compatibility ceiling lost its geometry gate")
+require("fs_caps->max_shader_buffers = PS5_COMPUTE_STORAGE_SLOTS" in SCREEN and
+        "fs_caps->max_shader_images = PS5_COMPUTE_IMAGE_SLOTS" in SCREEN and
+        "caps->max_shader_buffer_size = 1u << 27" in SCREEN,
+        "GLSL 4.20 fragment image/atomic limits are incomplete")
 
 for pipe_format in (
     "PIPE_FORMAT_R32_FLOAT", "PIPE_FORMAT_R32G32_FLOAT",
