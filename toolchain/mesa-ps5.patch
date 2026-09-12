@@ -243,7 +243,15 @@ diff --git a/src/glx/libgl-symbols.txt b/src/glx/libgl-symbols.txt
  glGetQueryObjectuiv
  glGetQueryObjectuivARB
  glGetRenderbufferParameteriv
-@@ -822,6 +824,7 @@
+@@ -522,6 +524,7 @@
+ glGetVertexAttribIivEXT
+ glGetVertexAttribIuiv
+ glGetVertexAttribIuivEXT
++glGetVertexAttribLdv
+ glGetVertexAttribiv
+ glGetVertexAttribivARB
+ glGetVertexAttribPointerv
+@@ -822,6 +825,7 @@
  glPushDebugGroup
  glPushMatrix
  glPushName
@@ -251,6 +259,24 @@ diff --git a/src/glx/libgl-symbols.txt b/src/glx/libgl-symbols.txt
  glRasterPos2d
  glRasterPos2dv
  glRasterPos2f
+@@ -1240,8 +1244,17 @@
+ glVertexAttribI4usvEXT
+ glVertexAttribIFormat
+ glVertexAttribIPointer
+ glVertexAttribIPointerEXT
++glVertexAttribL1d
++glVertexAttribL1dv
++glVertexAttribL2d
++glVertexAttribL2dv
++glVertexAttribL3d
++glVertexAttribL3dv
++glVertexAttribL4d
++glVertexAttribL4dv
+ glVertexAttribLFormat
++glVertexAttribLPointer
+ glVertexAttribP1ui
+ glVertexAttribP1uiv
+ glVertexAttribP2ui
 diff --git a/src/mesa/state_tracker/st_format.c b/src/mesa/state_tracker/st_format.c
 --- a/src/mesa/state_tracker/st_format.c
 +++ b/src/mesa/state_tracker/st_format.c
