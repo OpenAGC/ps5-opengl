@@ -518,7 +518,7 @@ index 945737d..2e49126 100644
  
  	psbc_free_output(&output);
 diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
-index bacbc6a..a93f13f 100644
+index bacbc6a..c395dd9 100644
 --- a/libpsbc/psbc_compile.c
 +++ b/libpsbc/psbc_compile.c
 @@ -12,6 +12,7 @@
@@ -1499,7 +1499,7 @@ index bacbc6a..a93f13f 100644
          ac_info->has_fma_mix = true;
      } else if (gfxlevel == GFX10) {
          ac_info->max_waves_per_simd = 20;
-@@ -928,26 +1771,737 @@ static void setup_target(PsbcTarget target,
+@@ -928,26 +1771,799 @@ static void setup_target(PsbcTarget target,
      }
  }
  
@@ -2158,6 +2158,68 @@ index bacbc6a..a93f13f 100644
 +    psbc_free_output(&out->tes);
 +}
 +
++static bool lower_compute_private(nir_builder *b, nir_intrinsic_instr *intr, void *data)
++{
++    const unsigned stride = *(const unsigned *)data;
++    const bool store = intr->intrinsic == nir_intrinsic_store_scratch;
++    if (!store && intr->intrinsic != nir_intrinsic_load_scratch)
++        return false;
++    b->cursor = nir_before_instr(&intr->instr);
++    nir_def *local = nir_load_local_invocation_id(b);
++    nir_def *group = nir_load_workgroup_id(b);
++    nir_def *grid = nir_load_num_workgroups(b);
++    const uint16_t *size = b->shader->info.workgroup_size;
++    nir_def *li = nir_iadd(b, nir_channel(b, local, 0), nir_imul_imm(b,
++        nir_iadd(b, nir_channel(b, local, 1), nir_imul_imm(b,
++            nir_channel(b, local, 2), size[1])), size[0]));
++    nir_def *gi = nir_iadd(b, nir_channel(b, group, 0), nir_imul(b,
++        nir_channel(b, grid, 0), nir_iadd(b, nir_channel(b, group, 1),
++            nir_imul(b, nir_channel(b, grid, 1), nir_channel(b, group, 2)))));
++    nir_def *id = nir_iadd(b, li, nir_imul_imm(b, gi, size[0]*size[1]*size[2]));
++    /* Bound even undefined source indices to this invocation's owned region. */
++    nir_def *offset = nir_umin(b, intr->src[store ? 1 : 0].ssa,
++                               nir_imm_int(b, stride - 4));
++    nir_def *base = nir_pack_64_2x32(b, nir_load_scalar_arg_amd(b, 2, .base=0));
++    nir_def *address = nir_iadd(b, base, nir_u2u64(b,
++        nir_iadd(b, nir_imul_imm(b, id, stride), offset)));
++    if (store) {
++        nir_store_global(b, intr->src[0].ssa, address, .align_mul=1,
++                         .write_mask=1, .access=ACCESS_VOLATILE);
++    } else {
++        nir_barrier(b, .memory_scope=SCOPE_INVOCATION,
++                    .memory_semantics=NIR_MEMORY_ACQ_REL, .memory_modes=nir_var_mem_global);
++        nir_def_rewrite_uses(&intr->def, nir_load_global(b, 1, 32, address,
++                             .align_mul=1, .access=ACCESS_VOLATILE));
++    }
++    nir_instr_remove(&intr->instr);
++    return true;
++}
++
++static bool compute_private_supported(nir_shader *nir)
++{
++    unsigned count = 1;
++    if (nir->info.workgroup_size_variable || !nir->scratch_size ||
++        (nir->scratch_size & 3) || nir->scratch_size > 4096)
++        return false;
++    for (unsigned i=0; i<3; ++i) {
++        if (!nir->info.workgroup_size[i] || nir->info.workgroup_size[i] > 1024/count)
++            return false;
++        count *= nir->info.workgroup_size[i];
++    }
++    nir_foreach_function_impl(impl, nir) nir_foreach_block(block, impl)
++        nir_foreach_instr(instr, block) {
++            if (instr->type != nir_instr_type_intrinsic) continue;
++            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
++            bool store = intr->intrinsic == nir_intrinsic_store_scratch;
++            if (!store && intr->intrinsic != nir_intrinsic_load_scratch) continue;
++            nir_def *value = store ? intr->src[0].ssa : &intr->def;
++            if (value->bit_size != 32 || value->num_components != 1 ||
++                intr->src[store ? 1 : 0].ssa->bit_size != 32)
++                return false;
++        }
++    return true;
++}
++
 +static PsbcResult psbc_compile_impl(
      const uint32_t*       spirv,
      size_t                spirv_size,
@@ -2241,7 +2303,7 @@ index bacbc6a..a93f13f 100644
  
      /* Ensure library is initialized */
      psbc_init();
-@@ -961,17 +2515,42 @@ PsbcResult psbc_compile_shader(
+@@ -961,17 +2577,42 @@ PsbcResult psbc_compile_shader(
      /* Construct ac_compiler_info for the target GPU */
      struct ac_compiler_info ac_info = {0};
      setup_ac_info(&ac_info, gfxlevel);
@@ -2285,7 +2347,7 @@ index bacbc6a..a93f13f 100644
      /* ACO uses debug.family for disassembly and init_program assertion */
      compiler_info.debug.family = chipfamily;
  
-@@ -981,6 +2560,7 @@ PsbcResult psbc_compile_shader(
+@@ -981,6 +2622,7 @@ PsbcResult psbc_compile_shader(
      /* Construct radv_shader_stage */
      struct radv_shader_stage stage = {0};
      stage.stage = mesa_stage;
@@ -2293,7 +2355,7 @@ index bacbc6a..a93f13f 100644
      /* Set next_stage based on the pipeline graph.
       * For standalone compilation we assume the simplest pipeline:
       *   VS → FS, VS → HS → DS → FS, VS → GS → FS
-@@ -992,46 +2572,366 @@ PsbcResult psbc_compile_shader(
+@@ -992,46 +2634,379 @@ PsbcResult psbc_compile_shader(
      case MESA_SHADER_GEOMETRY:  stage.next_stage = MESA_SHADER_FRAGMENT;     break;
      default:                    stage.next_stage = MESA_SHADER_NONE;         break;
      }
@@ -2334,6 +2396,19 @@ index bacbc6a..a93f13f 100644
 +    debug_shader_io(input_nir ? "input-NIR" : "SPIR-V", nir, NULL);
 +    debug_shader_io("lowered-io", nir, NULL);
 +
++    unsigned compute_private_stride = 0;
++    if (opts->compute_private_buffer && nir->scratch_size) {
++        if (opts->target != PSBC_TARGET_PS5 || mesa_stage != MESA_SHADER_COMPUTE ||
++            !compute_private_supported(nir)) {
++            ralloc_free(nir);
++            psbc_shutdown();
++            return PSBC_RESULT_COMPILE_NIR;
++        }
++        compute_private_stride = nir->scratch_size;
++        nir_shader_intrinsics_pass(nir, lower_compute_private,
++                                   nir_metadata_control_flow, &compute_private_stride);
++        nir->scratch_size = 0;
++    }
 +    const bool dual_source_blend =
 +        mesa_stage == MESA_SHADER_FRAGMENT &&
 +        (nir->info.outputs_written &
@@ -2684,11 +2759,17 @@ index bacbc6a..a93f13f 100644
  
      /* Determine previous stage for shader args declaration.
       * HS/GS need previous_stage=VERTEX so that the merged-pipeline args
-@@ -1049,10 +2949,16 @@ PsbcResult psbc_compile_shader(
+@@ -1049,10 +3024,22 @@ PsbcResult psbc_compile_shader(
      radv_declare_shader_args(
          &compiler_info, &gfx_state, &stage, previous_stage, NULL
      );
 +    debug_stage("declare-args-end");
++    if (compute_private_stride && (!stage.args.ac.ring_offsets.used ||
++        stage.args.ac.ring_offsets.arg_index != 0 || stage.args.ac.args[0].size != 2)) {
++        ralloc_free(nir);
++        psbc_shutdown();
++        return PSBC_RESULT_COMPILE_NIR;
++    }
  
 -    stage.nir = nir;
      stage.info.user_sgprs_locs = stage.args.user_sgprs_locs;
@@ -2702,7 +2783,7 @@ index bacbc6a..a93f13f 100644
  
      /* For geometry shaders, run the legacy GS lowering pass.
       * On GFX10.3 (PS5), NGG GS requires merging with the previous stage,
-@@ -1080,16 +2986,72 @@ PsbcResult psbc_compile_shader(
+@@ -1080,16 +3067,72 @@ PsbcResult psbc_compile_shader(
              ralloc_free(gs_copy);
      }
  
@@ -2779,7 +2860,7 @@ index bacbc6a..a93f13f 100644
          psbc_shutdown();
          return PSBC_RESULT_COMPILE_ACO;
      }
-@@ -1098,6 +3060,22 @@ PsbcResult psbc_compile_shader(
+@@ -1098,6 +3141,22 @@ PsbcResult psbc_compile_shader(
      struct radv_shader_binary_legacy* legacy =
          (struct radv_shader_binary_legacy*)binary;
  
@@ -2802,7 +2883,7 @@ index bacbc6a..a93f13f 100644
      /* The data layout in radv_shader_binary_legacy is:
       * [stats | code | ir | disasm | debug_info]
       * Code starts at offset stats_size. */
-@@ -1116,28 +3094,103 @@ PsbcResult psbc_compile_shader(
+@@ -1116,28 +3175,104 @@ PsbcResult psbc_compile_shader(
          .psbc_stage = opts->stage,
          .spirv_data = spirv,
          .spirv_size = spirv_size,
@@ -2844,6 +2925,7 @@ index bacbc6a..a93f13f 100644
 +    out->machine_code = machine_code;
 +    out->machine_code_size = legacy->code_size;
 +    fill_shader_metadata(&buildctx, &out->metadata);
++    out->metadata.compute_private_stride = compute_private_stride;
  
      free(binary);
 +    if (previous_nir)
@@ -2910,7 +2992,7 @@ index bacbc6a..a93f13f 100644
  }
  
  const char* psbc_result_string(PsbcResult result) {
-@@ -1149,6 +3202,7 @@ const char* psbc_result_string(PsbcResult result) {
+@@ -1149,6 +3284,7 @@ const char* psbc_result_string(PsbcResult result) {
      case PSBC_RESULT_COMPILE_ACO:      return "ACO shader compilation failed";
      case PSBC_RESULT_OUT_OF_MEMORY:    return "out of memory";
      case PSBC_RESULT_INTERNAL_ERROR:   return "internal error";
@@ -2919,14 +3001,14 @@ index bacbc6a..a93f13f 100644
      }
  }
 diff --git a/libpsbc/psbc_compile.h b/libpsbc/psbc_compile.h
-index 000e7e1..a4ce6c3 100644
+index 000e7e1..28b64df 100644
 --- a/libpsbc/psbc_compile.h
 +++ b/libpsbc/psbc_compile.h
 @@ -20,6 +20,11 @@
  extern "C" {
  #endif
  
-+#define PSBC_SHADER_METADATA_VERSION 11u
++#define PSBC_SHADER_METADATA_VERSION 12u
 +
 +struct nir_shader;
 +struct nir_shader_compiler_options;
@@ -2934,7 +3016,7 @@ index 000e7e1..a4ce6c3 100644
  /* === Types === */
  
  typedef enum {
-@@ -49,11 +54,160 @@ typedef enum {
+@@ -49,11 +54,161 @@ typedef enum {
      PSBC_RESULT_COMPILE_ACO,
      PSBC_RESULT_OUT_OF_MEMORY,
      PSBC_RESULT_INTERNAL_ERROR,
@@ -3084,6 +3166,7 @@ index 000e7e1..a4ce6c3 100644
 +    uint32_t             compute_lds_bytes; /* Final compiler allocation, not source shared size. */
 +    bool                 compute_grid_size_valid;
 +    uint32_t             compute_grid_size_user_data_dword; /* Three direct uint32 values. */
++    uint32_t             compute_private_stride; /* Ordinary storage; reserved user words 0/1. */
 +} PsbcShaderMetadata;
 +
  typedef struct {
@@ -3097,7 +3180,7 @@ index 000e7e1..a4ce6c3 100644
  } PsbcShaderOutput;
  
  typedef struct {
-@@ -61,8 +215,39 @@ typedef struct {
+@@ -61,8 +216,40 @@ typedef struct {
      PsbcStage   stage;
      const char* entrypoint;  /* Default: "main" */
      bool        optimise;    /* Default: true */
@@ -3120,6 +3203,7 @@ index 000e7e1..a4ce6c3 100644
 +    /* Internal NIR only: scalar UBO/SSBO slots index the stage-local banks
 +     * above. Off preserves the existing flat UBO descriptor layout. */
 +    bool        gallium_buffer_arrays;
++    bool        compute_private_buffer; /* Opt-in scalar32 explicit private lowering; not spills. */
  } PsbcCompileOptions;
  
 +/* Compiler-model inputs, not a native tessellation allocation contract. */
@@ -3137,7 +3221,7 @@ index 000e7e1..a4ce6c3 100644
  /* === API === */
  
  /*
-@@ -77,20 +262,26 @@ void psbc_init(void);
+@@ -77,20 +264,26 @@ void psbc_init(void);
   */
  void psbc_shutdown(void);
  
@@ -3169,7 +3253,7 @@ index 000e7e1..a4ce6c3 100644
   */
  PsbcResult psbc_compile_shader(
      const uint32_t*       spirv,
-@@ -99,6 +290,53 @@ PsbcResult psbc_compile_shader(
+@@ -99,6 +292,53 @@ PsbcResult psbc_compile_shader(
      PsbcShaderOutput*     out
  );
  

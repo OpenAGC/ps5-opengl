@@ -21,6 +21,51 @@ align_to(size_t value, size_t alignment)
    return (value + alignment - 1u) & ~(alignment - 1u);
 }
 
+int
+ps5_agc_compute_plan_memory(size_t code_size, uint32_t private_stride,
+                            const uint32_t local[3], const uint32_t groups[3],
+                            size_t budget, struct ps5_agc_compute_memory_layout *out)
+{
+   if (!out)
+      return -1;
+   memset(out, 0, sizeof(*out));
+   if (!local || !groups || !code_size || (code_size & 3u) ||
+       code_size > 16u * 1024u * 1024u || (private_stride & 3u) ||
+       private_stride > 4096u)
+      return -1;
+   uint32_t invocations = 1;
+   for (unsigned i = 0; i < 3; ++i) {
+      if (!local[i] || local[i] > 1024u / invocations ||
+          !groups[i] || groups[i] > 65535u)
+         return -1;
+      invocations *= local[i];
+   }
+   struct ps5_agc_compute_memory_layout plan = {
+      .allocation_size = align_to(0x5000u + code_size, 0x4000u)
+   };
+   if (private_stride) {
+      /* ponytail: retain the qualified 4 KiB/invocation ceiling and 32-bit
+       * byte indexing; wider regions need compiler/addressing qualification. */
+      uint64_t bytes = (uint64_t)invocations * private_stride;
+      for (unsigned i = 0; i < 3; ++i) {
+         if (bytes > UINT32_MAX / groups[i])
+            return -1;
+         bytes *= groups[i];
+      }
+      const uint64_t padded = (bytes + 0x3fffu) & ~UINT64_C(0x3fff);
+      const uint64_t total = plan.allocation_size + padded + 0x8000u;
+      if (total > SIZE_MAX || total > budget)
+         return -1;
+      plan.private_offset = plan.allocation_size + 0x4000u;
+      plan.private_size = (size_t)padded;
+      plan.allocation_size = (size_t)total;
+   }
+   if (plan.allocation_size > budget)
+      return -1;
+   *out = plan;
+   return 0;
+}
+
 static void
 put16(uint8_t *data, size_t offset, uint16_t value)
 {
@@ -101,7 +146,10 @@ compute_metadata_valid(const PsbcShaderMetadata *m)
    static const uint16_t offsets[] = {
       0x20c, 0x20d, 0x212, 0x213, 0x228, 0x207, 0x208, 0x209
    };
-   uint32_t invocations = 1, user_mask = 3; /* Direct CS scratch pointer pair. */
+   uint32_t invocations = 1, user_mask = 3; /* Reserved internal address pair. */
+   if (m->compute_private_stride && ((m->compute_private_stride & 3u) ||
+       m->compute_private_stride > 4096u || !m->compute_grid_size_valid))
+      return false;
    if (m->context_register_count || m->linkage_valid ||
        m->input_semantic_count || m->output_semantic_count ||
        m->vertex_buffer_table_valid || m->base_vertex_valid ||
@@ -217,6 +265,8 @@ ps5_agc_package_build(const PsbcShaderOutput *shader,
    *package = NULL;
    *package_size = 0;
    metadata = &shader->metadata;
+   if (metadata->compute_private_stride && metadata->hardware_stage != PSBC_HW_STAGE_COMPUTE)
+      return -1;
    /* Native flat-scratch addressing is not validated. The initial CS probe
     * hit MEMVIOL despite passing host allocation/binding checks. Reject here
     * so every package consumer stops before allocation or GPU submission. */

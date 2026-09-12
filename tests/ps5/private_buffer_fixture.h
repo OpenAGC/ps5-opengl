@@ -4,7 +4,7 @@
 #pragma once
 #include "private_array_fixture.h"
 
-/* Test-only: fixed 1-D grid, scalar uint accesses, fixture-owned SSBO slot 2.
+/* Test-only: scalar uint accesses, fixture-owned SSBO slot 2.
  * Each invocation gets two guard words around its private region. This is not
  * a production binding policy and does not lower ACO register spills. */
 static bool private_buffer_intrinsic(nir_builder *b, nir_intrinsic_instr *intr, void *data) {
@@ -15,8 +15,7 @@ static bool private_buffer_intrinsic(nir_builder *b, nir_intrinsic_instr *intr, 
     assert(value->bit_size==32 && value->num_components==1);
     assert(nir_intrinsic_align_mul(intr)>=4);
     b->cursor=nir_before_instr(&intr->instr);
-    nir_def *id=nir_iadd(b,nir_channel(b,nir_load_local_invocation_id(b),0),
-        nir_imul_imm(b,nir_channel(b,nir_load_workgroup_id(b),0),16));
+    nir_def *id=private_invocation_index(b);
     nir_def *offset=nir_iadd(b,nir_iadd_imm(b,nir_imul_imm(b,id,(words+2)*4),4),
         intr->src[store?1:0].ssa);
     if (store)
@@ -33,8 +32,8 @@ static bool private_buffer_intrinsic(nir_builder *b, nir_intrinsic_instr *intr, 
 }
 static void private_buffer_lower(nir_shader *nir) {
     assert(nir->info.stage==MESA_SHADER_COMPUTE && nir->info.num_ssbos==2);
-    assert(nir->info.workgroup_size[0]==16 && nir->info.workgroup_size[1]==1 &&
-        nir->info.workgroup_size[2]==1);
+    assert(nir->info.workgroup_size[0] && nir->info.workgroup_size[1] &&
+        nir->info.workgroup_size[2]);
     unsigned words=nir->scratch_size/4;
     assert(words>=4 && words<=1024 && !(words&(words-1)) && nir->scratch_size==words*4);
     assert(nir_shader_intrinsics_pass(nir,private_buffer_intrinsic,nir_metadata_control_flow,&words));

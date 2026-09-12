@@ -17,6 +17,17 @@ int ps5_agc_package_build(const PsbcShaderOutput *shader,
 
 struct pipe_screen;
 struct pipe_resource;
+struct ps5_agc_compute_memory_layout {
+   size_t allocation_size;
+   size_t private_offset;
+   size_t private_size;
+};
+/* Checked arena plan only; does not enable private-storage execution.
+ * Nonzero stride describes ordinary per-invocation storage, not ACO spills.
+ * budget includes code, commands, alignment and two 16 KiB outer guards. */
+int ps5_agc_compute_plan_memory(size_t code_size, uint32_t private_stride,
+                                const uint32_t local[3], const uint32_t groups[3],
+                                size_t budget, struct ps5_agc_compute_memory_layout *out);
 #define PS5_AGC_COMPUTE_MAX_TEXTURES 16u
 #define PS5_AGC_COMPUTE_MAX_RESOURCES (16u + 15u + 8u + PS5_AGC_COMPUTE_MAX_TEXTURES)
 /* Internal bring-up path, not a public GL compute capability. All resources

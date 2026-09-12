@@ -49,6 +49,7 @@ static void *mapped_memory;
 static size_t mapped_size;
 static uint32_t saved_userdata[16], saved_groups[3];
 static uint32_t saved_tmpring;
+static bool expect_private;
 static volatile uint32_t *saved_marker;
 static uint32_t saved_expected;
 #define DIRECT_MEMORY_TYPE 12
@@ -132,15 +133,16 @@ static uint32_t *release(void *p, uint8_t a, int16_t g, uint64_t s, int8_t d, vo
 static int submit(void *p) {
     agc_submit_description_t *s=p;
     assert(locked && s->words && s->word_count && saved_marker && !*saved_marker && flushes>=3);
-    if (saved_tmpring) {
-        assert((saved_tmpring&0xfff)==32 && (saved_userdata[1]&0xffff0000)==0x80000000);
-        uintptr_t scratch=saved_userdata[0] | ((uint64_t)(saved_userdata[1]&0xffff)<<32);
-        size_t bytes=(saved_tmpring>>12)*1024u*32u;
-        assert(!(scratch&0x3fff) && scratch==(uintptr_t)mapped_memory+0xc000);
-        assert(scratch+bytes+0x4000==(uintptr_t)mapped_memory+mapped_size);
-        const uint32_t *before=(const uint32_t *)(scratch-0x4000), *after=(const uint32_t *)(scratch+bytes);
-        for (unsigned i=0; i<0x4000/4; ++i) assert(before[i]==0xa5a5a5a5 && after[i]==0xa5a5a5a5);
-        memset((void *)scratch, 0x37, bytes); /* Only private storage may be overwritten. */
+    assert(!saved_tmpring);
+    if (expect_private) {
+        uintptr_t address=saved_userdata[0] | ((uint64_t)saved_userdata[1]<<32);
+        assert(address==(uintptr_t)mapped_memory+0xc000);
+        assert(mapped_size>0x10000);
+        const size_t size=mapped_size-0x10000;
+        const uint32_t *before=(const uint32_t *)(address-0x4000);
+        const uint32_t *after=(const uint32_t *)(address+size);
+        for(unsigned i=0;i<0x4000/4;++i) assert(before[i]==0xa5a5a5a5 && after[i]==0xa5a5a5a5);
+        memset((void *)address,0x37,size);
     } else assert(!saved_userdata[0] && !saved_userdata[1]);
     *saved_marker=saved_expected; ++submissions; return 0;
 }
@@ -161,6 +163,7 @@ code = r'''
 #include "ps5_agc_package.h"
 ''' + types + mock + parsers + compute + "\n" + probe + r'''
 static void submission_contract(PsbcShaderOutput *out) {
+    expect_private=out->metadata.compute_private_stride!=0;
     _Alignas(16) uint32_t table_data[31*4+8*8+8*12]={0}, output[32]={0};
     const size_t logical_output=64;
     table_data[0]=(uintptr_t)output; table_data[1]=(uintptr_t)output>>32;
@@ -187,8 +190,7 @@ static void submission_contract(PsbcShaderOutput *out) {
     watched_resource=NULL;
     assert(!locked && !allocations && submissions==old_submits+1);
     assert(userdata_count==out->metadata.user_sgpr_count);
-    assert(saved_tmpring==(out->metadata.scratch_valid ?
-        32u|((out->metadata.scratch_bytes_per_wave/1024u)<<12) : 0));
+    assert(!saved_tmpring);
     assert(saved_userdata[2]==(uint32_t)(uintptr_t)table_data && !memcmp(saved_groups, groups, 12));
     if (out->metadata.compute_grid_size_valid) assert(!memcmp(saved_userdata+3, groups, 12));
     const unsigned old_dispatches=dispatches;
@@ -604,20 +606,162 @@ static void atomic_alignment_lowering(void) {
 }
 #include "private_array_fixture.h"
 #include "private_buffer_fixture.h"
+static void private_memory_plan_contract(void) {
+    const uint32_t local[3]={2,2,4}, grid[3]={2,3,5};
+    struct ps5_agc_compute_memory_layout plan;
+    assert(!ps5_agc_compute_plan_memory(676,0,local,grid,SIZE_MAX,&plan));
+    assert(plan.allocation_size==0x8000 && !plan.private_offset && !plan.private_size);
+    assert(!ps5_agc_compute_plan_memory(676,128,local,grid,SIZE_MAX,&plan));
+    assert(plan.private_offset==0xc000 && plan.private_size==0x10000 &&
+        plan.allocation_size==0x20000);
+    for(unsigned stride=4;stride<=4096;stride*=2) {
+        assert(!ps5_agc_compute_plan_memory(676,stride,local,grid,SIZE_MAX,&plan));
+        const size_t required=plan.allocation_size;
+        assert(plan.private_size>=16u*30u*stride && !(plan.private_size&0x3fff));
+        assert(plan.private_offset+plan.private_size+0x4000==required);
+        assert(!ps5_agc_compute_plan_memory(676,stride,local,grid,required,&plan));
+        assert(ps5_agc_compute_plan_memory(676,stride,local,grid,required-1,&plan)<0);
+        assert(!plan.allocation_size && !plan.private_offset && !plan.private_size);
+    }
+    for(unsigned bad=0;bad<13;++bad) {
+        uint32_t l[3]={2,2,4}, g[3]={2,3,5};
+        uint32_t stride=128; size_t code=676, budget=SIZE_MAX;
+        if(bad<3) l[bad]=0;
+        if(bad>=3 && bad<6) g[bad-3]=0;
+        if(bad==6) l[0]=1024; /* Product, not just individual dimensions. */
+        if(bad==7) g[2]=65536;
+        if(bad==8) g[0]=g[1]=g[2]=65535; /* Byte-index overflow. */
+        if(bad==9) stride=4097;
+        if(bad==10) stride=2;
+        if(bad==11) code=16u*1024u*1024u+4;
+        if(bad==12) budget=0;
+        plan=(struct ps5_agc_compute_memory_layout){1,2,3};
+        assert(ps5_agc_compute_plan_memory(code,stride,l,g,budget,&plan)<0);
+        assert(!plan.allocation_size && !plan.private_offset && !plan.private_size);
+    }
+    assert(ps5_agc_compute_plan_memory(0,128,local,grid,SIZE_MAX,&plan)<0);
+    assert(ps5_agc_compute_plan_memory(675,128,local,grid,SIZE_MAX,&plan)<0);
+    assert(ps5_agc_compute_plan_memory(676,128,NULL,grid,SIZE_MAX,&plan)<0);
+    assert(ps5_agc_compute_plan_memory(676,128,local,NULL,SIZE_MAX,&plan)<0);
+    assert(ps5_agc_compute_plan_memory(676,128,local,grid,SIZE_MAX,NULL)<0);
+    puts("Private arena planning: 3D sizes, alignment, guards, exact budgets, overflow/rejection PASS");
+}
+/* Host-only ABI experiment. Never package or submit this shader: production
+ * metadata and runtime allocation do not yet describe this private buffer. */
+static bool private_internal_intrinsic(nir_builder *b,nir_intrinsic_instr *intr,void *data) {
+    bool store=intr->intrinsic==nir_intrinsic_store_scratch;
+    if (!store && intr->intrinsic!=nir_intrinsic_load_scratch) return false;
+    nir_def *value=store?intr->src[0].ssa:&intr->def;
+    assert(value->bit_size==32 && value->num_components==1);
+    b->cursor=nir_before_instr(&intr->instr);
+    /* Pinned GFX10 compute ABI: first argument is the reserved two-word pair.
+     * This is an ordinary address, not the native flat-scratch aperture. */
+    nir_def *base=nir_pack_64_2x32(b,nir_load_scalar_arg_amd(b,2,.base=0));
+    nir_def *offset=nir_iadd(b,nir_imul_imm(b,private_invocation_index(b),*(unsigned *)data),
+        intr->src[store?1:0].ssa);
+    nir_def *address=nir_iadd(b,base,nir_u2u64(b,offset));
+    if (store)
+        nir_store_global(b,value,address,.align_mul=4,.write_mask=1,.access=ACCESS_VOLATILE);
+    else {
+        nir_barrier(b,.memory_scope=SCOPE_INVOCATION,.memory_semantics=NIR_MEMORY_ACQ_REL,
+            .memory_modes=nir_var_mem_global);
+        nir_def_rewrite_uses(value,nir_load_global(b,1,32,address,.align_mul=4,
+            .access=ACCESS_VOLATILE));
+    }
+    nir_instr_remove(&intr->instr);
+    return true;
+}
+static void private_internal_contract(void) {
+    const uint16_t shape[3]={2,2,4};
+    nir_builder b=private_array_fixture_shape(32,shape);
+    unsigned stride=b.shader->scratch_size;
+    assert(nir_shader_intrinsics_pass(b.shader,private_internal_intrinsic,
+        nir_metadata_control_flow,&stride));
+    b.shader->scratch_size=0;
+    nir_validate_shader(b.shader,"host-only internal private address");
+    PsbcShaderOutput out={0};
+    assert(psbc_compile_nir(b.shader,&opts,&out)==PSBC_RESULT_OK);
+    assert(!out.metadata.scratch_valid && !out.metadata.scratch_bytes_per_wave &&
+        !out.metadata.scratch_size_per_thread);
+    assert(b.shader->info.num_ssbos==2 && out.metadata.compute_grid_size_valid);
+    assert(out.metadata.descriptor_binding_count==opts.descriptor_binding_count &&
+        !memcmp(out.metadata.descriptor_bindings,opts.descriptor_bindings,
+            opts.descriptor_binding_count*sizeof(opts.descriptor_bindings[0])));
+    if (getenv("PS5_SCRATCH_DISASSEMBLE")) {
+        printf("PRIVATE_INTERNAL_BYTES ");
+        const unsigned char *bytes=(const unsigned char *)out.machine_code;
+        for(size_t i=0;i<out.machine_code_size;++i) printf("%02x",bytes[i]);
+        putchar('\n');
+    }
+    printf("Internal private address host-only: code=%zu application-ssbos=2 scratch=0 native=NOT-RUN\n",
+        out.machine_code_size);
+    psbc_free_output(&out); ralloc_free(b.shader);
+}
+static void private_compiler_runtime_contract(void) {
+    const uint16_t shape[3]={2,2,4};
+    PsbcCompileOptions options=opts;
+    options.compute_private_buffer=true;
+    const unsigned native_sizes[]={4,32,1024};
+    for(unsigned i=0;i<3;++i) {
+        nir_builder native=private_array_fixture_shape(native_sizes[i],shape);
+        PsbcShaderOutput checked={0};
+        assert(psbc_compile_nir(native.shader,&options,&checked)==PSBC_RESULT_OK);
+        assert(checked.metadata.compute_private_stride==native_sizes[i]*4 &&
+            !checked.metadata.scratch_valid && !checked.metadata.scratch_bytes_per_wave);
+        printf("Opt-in native candidate host compile: stride=%u code=%zu PASS\n",
+            checked.metadata.compute_private_stride,checked.machine_code_size);
+        psbc_free_output(&checked); ralloc_free(native.shader);
+    }
+    nir_builder b=private_array_fixture_shape(32,shape);
+    PsbcShaderOutput out={0};
+    assert(psbc_compile_nir(b.shader,&options,&out)==PSBC_RESULT_OK);
+    assert(out.metadata.compute_private_stride==128 && !out.metadata.scratch_valid &&
+        !out.metadata.scratch_size_per_thread && !out.metadata.scratch_bytes_per_wave);
+    assert(b.shader->scratch_size==128); /* Compiler must not mutate caller NIR. */
+    submission_contract(&out);
+    uint8_t *package=NULL; size_t size=0;
+    for(unsigned bad=0;bad<3;++bad) {
+        PsbcShaderMetadata saved=out.metadata;
+        if(bad==0) out.metadata.compute_private_stride=4097;
+        if(bad==1) out.metadata.compute_private_stride=2;
+        if(bad==2) out.metadata.compute_grid_size_valid=false;
+        assert(ps5_agc_package_build(&out,0,&package,&size)<0 && !package && !size);
+        out.metadata=saved;
+    }
+    psbc_free_output(&out); ralloc_free(b.shader);
+    /* Valid NIR with unsupported private size/stage must fail without outputs. */
+    for(unsigned bad=0;bad<3;++bad) {
+        nir_builder rejected=private_array_fixture_shape(32,shape);
+        PsbcCompileOptions invalid=options;
+        if(bad==0) rejected.shader->scratch_size=8192;
+        if(bad==1) rejected.shader->scratch_size=129;
+        if(bad==2) invalid.target=PSBC_TARGET_PS4_BASE;
+        assert(psbc_compile_nir(rejected.shader,&invalid,&out)!=PSBC_RESULT_OK);
+        assert(!out.data && !out.machine_code && !out.metadata.compute_private_stride);
+        ralloc_free(rejected.shader);
+    }
+    expect_private=false;
+    puts("Opt-in private compiler/runtime: stride metadata, ordinary binding, guards, allocation/map/emit cleanup PASS (mock GPU)");
+}
 static void private_buffer_contract(void) {
     const unsigned sizes[]={4,8,16,32,64,256,1024};
+    const uint16_t shapes[][3]={{16,1,1},{4,4,1},{2,2,4}};
+    for (unsigned shape=0;shape<3;++shape)
     for (unsigned test=0; test<sizeof(sizes)/sizeof(sizes[0]); ++test) {
         const unsigned words=sizes[test];
-        nir_builder b=private_array_fixture(words);
+        nir_builder b=private_array_fixture_shape(words,shapes[shape]);
         assert(b.shader->scratch_size==words*4);
         private_buffer_lower(b.shader);
         PsbcShaderOutput out={0};
         assert(psbc_compile_nir(b.shader,&opts,&out)==PSBC_RESULT_OK);
         assert(!out.metadata.scratch_valid && !out.metadata.scratch_bytes_per_wave);
+        assert(out.metadata.compute_grid_size_valid);
+        for (unsigned axis=0;axis<3;++axis)
+            assert(out.metadata.compute_workgroup_size[axis]==shapes[shape][axis]);
         uint8_t *package=NULL; size_t size=0;
         assert(!ps5_agc_package_build(&out,0,&package,&size) && package && size);
-        printf("Private buffer host-only: words=%u code=%zu package=PASS native=NOT-RUN\n",
-            words,out.machine_code_size);
+        printf("Private buffer host-only: words=%u local=%ux%ux%u code=%zu package=PASS native=NOT-RUN\n",
+            words,shapes[shape][0],shapes[shape][1],shapes[shape][2],out.machine_code_size);
         free(package); psbc_free_output(&out); ralloc_free(b.shader);
     }
 }
@@ -682,12 +826,15 @@ static void spill_contract(void) {
     nir_validate_shader(b.shader,"forced-register-spill input");
     assert(!b.shader->scratch_size);
     PsbcShaderOutput out={0};
-    assert(psbc_compile_nir(b.shader,&opts,&out)==PSBC_RESULT_OK);
+    PsbcCompileOptions spill_options=opts;
+    spill_options.compute_private_buffer=true;
+    assert(psbc_compile_nir(b.shader,&spill_options,&out)==PSBC_RESULT_OK);
     printf("Register spill host-only: source-private=%u final-wave-bytes=%u code=%zu\n",
         b.shader->scratch_size,out.metadata.scratch_bytes_per_wave,out.machine_code_size);
     fflush(stdout);
     assert(out.metadata.scratch_valid && out.metadata.scratch_bytes_per_wave);
     assert(!out.metadata.scratch_size_per_thread); /* NIR private bytes exclude ACO spills. */
+    assert(!out.metadata.compute_private_stride); /* Opt-in must not disguise ACO spills. */
     scratch_machine_code("register-spill",&out);
     submission_contract(&out); /* Must reject before native allocation/submission. */
     psbc_free_output(&out); ralloc_free(b.shader);
@@ -725,8 +872,9 @@ static void scratch_contract(void) {
 }
 int main(void) {
     psbc_init();
+    private_memory_plan_contract();
     for (unsigned i=0; i<4; ++i) compiled(i&1, i&2);
-    shapes(); native_cases(); atomic_counter_lowering(); atomic_alignment_lowering(); scratch_contract(); private_array_lowering(); private_buffer_contract(); spill_contract(); compiled(false, false); psbc_shutdown();
+    shapes(); native_cases(); atomic_counter_lowering(); atomic_alignment_lowering(); scratch_contract(); private_array_lowering(); private_buffer_contract(); private_internal_contract(); private_compiler_runtime_contract(); spill_contract(); compiled(false, false); psbc_shutdown();
 }
 '''
 with tempfile.TemporaryDirectory() as directory:
@@ -753,7 +901,30 @@ with tempfile.TemporaryDirectory() as directory:
             continue
         run = subprocess.run([executable], check=True, timeout=30, text=True, capture_output=True)
         decoded = set()
+        internal_decoded = False
         for line in run.stdout.splitlines():
+            if line.startswith("PRIVATE_INTERNAL_BYTES "):
+                machine_code = bytes.fromhex(line.split()[1])
+                # ACO emit_vop3_instruction fills unused RDNA sources with
+                # inline zero (0x80); LLVM 18/21 reject that unused src2 on
+                # this v_mul_lo_u32. Normalize ONLY this exact known encoding
+                # in a decoder copy; never change the compiled shader bytes.
+                padded_mul = bytes.fromhex("000069d58c040202")
+                assert machine_code.count(padded_mul) == 1
+                at = machine_code.index(padded_mul)
+                assert at % 4 == 0
+                decode_copy = machine_code[:at] + bytes.fromhex("000069d58c040200") + machine_code[at+8:]
+                disasm = subprocess.run(["llvm-mc-18", "--disassemble", "--triple=amdgcn",
+                    "--mcpu=gfx1030"], input=" ".join(f"0x{b:02x}" for b in decode_copy),
+                    text=True, capture_output=True, check=True, timeout=30)
+                assert not disasm.stderr.strip(), disasm.stderr
+                assert "global_load" in disasm.stdout and "global_store" in disasm.stdout
+                assert "scratch_" not in disasm.stdout and "s_setreg" not in disasm.stdout
+                assert "s[0:1]" in disasm.stdout
+                internal_decoded = True
+                print("LLVM decode (one unused operand normalized in decoder copy): "
+                      "internal private global loads/stores, no hardware scratch PASS")
+                continue
             if not line.startswith("SCRATCH_BYTES "):
                 print(line)
                 continue
@@ -770,5 +941,6 @@ with tempfile.TemporaryDirectory() as directory:
                   f"sha256={hashlib.sha256(machine_code).hexdigest()} PASS")
             print("\n".join(disasm.stdout.splitlines()[:12]))
         assert decoded == {"private-array", "register-spill"}
+        assert internal_decoded
 print("PASS: compute package, grid/LDS metadata, malformed inputs; mocked submission lock/bounds/cleanup")
 print("PASS: allocated-span pre/post flush and acquire; logical SSBO/UBO ownership retained; invalid allocation extents rejected")

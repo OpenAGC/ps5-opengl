@@ -7,16 +7,29 @@
 #include "psbc_compile.h"
 
 /* Test-only bounded register lowering; production compiler unchanged. */
-static nir_builder private_array_fixture(unsigned words) {
+static nir_def *private_invocation_index(nir_builder *b) {
+    nir_def *local=nir_load_local_invocation_id(b);
+    nir_def *group=nir_load_workgroup_id(b);
+    nir_def *grid=nir_load_num_workgroups(b);
+    const uint16_t *size=b->shader->info.workgroup_size;
+    nir_def *local_index=nir_iadd(b,nir_channel(b,local,0),
+        nir_imul_imm(b,nir_iadd(b,nir_channel(b,local,1),
+            nir_imul_imm(b,nir_channel(b,local,2),size[1])),size[0]));
+    nir_def *group_index=nir_iadd(b,nir_channel(b,group,0),
+        nir_imul(b,nir_channel(b,grid,0),nir_iadd(b,nir_channel(b,group,1),
+            nir_imul(b,nir_channel(b,grid,1),nir_channel(b,group,2)))));
+    return nir_iadd(b,local_index,nir_imul_imm(b,group_index,size[0]*size[1]*size[2]));
+}
+static nir_builder private_array_fixture_shape(unsigned words, const uint16_t size[3]) {
     assert(words>=4 && words<=1024 && !(words&(words-1)));
+    assert(size[0] && size[1] && size[2] &&
+        (uint64_t)size[0]*size[1]*size[2]<=1024);
     nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
         psbc_get_nir_options(PSBC_STAGE_COMPUTE), "private-array-lowering");
-    b.shader->info.workgroup_size[0]=16;
-    b.shader->info.workgroup_size[1]=b.shader->info.workgroup_size[2]=1;
+    for (unsigned i=0;i<3;++i) b.shader->info.workgroup_size[i]=size[i];
     b.shader->info.num_ssbos=2;
     b.shader->scratch_size=words*4;
-    nir_def *id=nir_iadd(&b,nir_channel(&b,nir_load_local_invocation_id(&b),0),
-        nir_imul_imm(&b,nir_channel(&b,nir_load_workgroup_id(&b),0),16));
+    nir_def *id=private_invocation_index(&b);
     nir_def *input=nir_load_ssbo(&b,3,32,nir_imm_int(&b,1),
         nir_imul_imm(&b,id,12),.align_mul=4);
     nir_def *write_index=nir_iand_imm(&b,nir_channel(&b,input,0),words-1);
@@ -34,6 +47,10 @@ static nir_builder private_array_fixture(unsigned words) {
         .align_mul=4,.write_mask=1);
     nir_validate_shader(b.shader,"private array before lowering");
     return b;
+}
+static nir_builder private_array_fixture(unsigned words) {
+    const uint16_t size[3]={16,1,1};
+    return private_array_fixture_shape(words,size);
 }
 static void private_array_lower(nir_shader *nir) {
     assert(nir->scratch_size<=128);

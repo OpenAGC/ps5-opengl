@@ -11,6 +11,9 @@
 #ifndef PS5_PRIVATE_BUFFER_TEST
 #define PS5_PRIVATE_BUFFER_TEST 0
 #endif
+#ifndef PS5_PRIVATE_INTERNAL_TEST
+#define PS5_PRIVATE_INTERNAL_TEST 0
+#endif
 #if PS5_PRIVATE_BUFFER_TEST
 #include "private_buffer_fixture.h"
 #endif
@@ -38,6 +41,7 @@ int main(void) {
         if (!resources[i] || ps5_resource_info(resources[i],&memory[i],NULL,NULL)) goto done;
     }
     PsbcCompileOptions opts={.target=PSBC_TARGET_PS5,.stage=PSBC_STAGE_COMPUTE,
+        .compute_private_buffer=PS5_PRIVATE_INTERNAL_TEST,
         .optimise=true,.address32_hi=(uintptr_t)memory[0]>>32,.gallium_buffer_arrays=true,
         .descriptor_binding_count=1,.descriptor_bindings={{
             .binding=PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
@@ -50,9 +54,14 @@ int main(void) {
         table[slot*4]=address; table[slot*4+1]=address>>32;
         table[slot*4+2]=COUNT*4*(slot?3:1); table[slot*4+3]=UINT32_C(0x31016fac);
     }
-    const unsigned cases[]={4,8,16,32,
+    const unsigned cases[]={4,
+#if PS5_PRIVATE_INTERNAL_TEST
+        32,1024,
+#else
+        8,16,32,
 #if PS5_PRIVATE_BUFFER_TEST
         64,256,1024,
+#endif
 #endif
         0};
     for (unsigned test=0;test<sizeof(cases)/sizeof(cases[0]);++test) {
@@ -71,20 +80,29 @@ int main(void) {
         }
         nir_builder b;
         if (words) {
+#if PS5_PRIVATE_INTERNAL_TEST
+            const uint16_t shape[3]={2,2,4};
+            b=private_array_fixture_shape(words,shape);
+#else
             b=private_array_fixture(words);
 #if PS5_PRIVATE_BUFFER_TEST
             private_buffer_lower(b.shader);
 #else
             private_array_lower(b.shader);
 #endif
+#endif
         } else {
             b=nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
                 psbc_get_nir_options(PSBC_STAGE_COMPUTE),"private-array-post-control");
             b.shader->info.workgroup_size[0]=16;
             b.shader->info.workgroup_size[1]=b.shader->info.workgroup_size[2]=1;
+#if PS5_PRIVATE_INTERNAL_TEST
+            b.shader->info.workgroup_size[0]=2;
+            b.shader->info.workgroup_size[1]=2;
+            b.shader->info.workgroup_size[2]=4;
+#endif
             b.shader->info.num_ssbos=1;
-            nir_def *id=nir_iadd(&b,nir_channel(&b,nir_load_local_invocation_id(&b),0),
-                nir_imul_imm(&b,nir_channel(&b,nir_load_workgroup_id(&b),0),16));
+            nir_def *id=private_invocation_index(&b);
             nir_store_ssbo(&b,nir_iadd_imm(&b,nir_imul_imm(&b,id,3),17),
                 nir_imm_int(&b,0),nir_imul_imm(&b,id,4),.align_mul=4,.write_mask=1);
         }
@@ -95,7 +113,15 @@ int main(void) {
         fflush(stdout);
         if (rc || compiled.metadata.scratch_valid || compiled.metadata.scratch_bytes_per_wave ||
             compiled.metadata.scratch_size_per_thread) goto done;
+#if PS5_PRIVATE_INTERNAL_TEST
+        printf("[ps5-private-internal] stride=%u expected=%u grid=4x4x4 local=2x2x4\n",
+            compiled.metadata.compute_private_stride,words*4);
+        fflush(stdout);
+        if (compiled.metadata.compute_private_stride!=words*4) goto done;
+        const uint32_t groups[]={4,4,4};
+#else
         const uint32_t groups[]={COUNT/16,1,1};
+#endif
         rc=ps5_agc_compute_execute(screen,&compiled,resources[0],resources+1,
             2+PS5_PRIVATE_BUFFER_TEST,groups);
         unsigned correct=0, guards=0, unchanged=0;

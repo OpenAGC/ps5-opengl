@@ -681,11 +681,15 @@ psbc_nir_runtime.o: psbc_nir_runtime.c
 		-iquote$(PSBC)/src -I$(PSBC)/libpsbc -I$(PSBC)/src \
 		-c -o $@ $<
 
-egl_public_private_array.o: egl_public_private_array.c private_array_fixture.h $(PROJECT)/src/platform/ps5_agc_package.h
+egl_public_private_array.o: egl_public_private_array.c private_array_fixture.h $(PROJECT)/src/platform/ps5_agc_package.h $(PSBC)/libpsbc/psbc_compile.h
 	$(CC) $(CFLAGS) $(PSBC_CFLAGS) -I$(PROJECT)/src/platform \
 		-Wno-unreachable-code-generic-assoc -c -o $@ $<
 
-egl_public_private_buffer.o: egl_public_private_buffer.c egl_public_private_array.c private_buffer_fixture.h private_array_fixture.h $(PROJECT)/src/platform/ps5_agc_package.h
+egl_public_private_buffer.o: egl_public_private_buffer.c egl_public_private_array.c private_buffer_fixture.h private_array_fixture.h $(PROJECT)/src/platform/ps5_agc_package.h $(PSBC)/libpsbc/psbc_compile.h
+	$(CC) $(CFLAGS) $(PSBC_CFLAGS) -I$(PROJECT)/src/platform \
+		-Wno-unused-function -Wno-unreachable-code-generic-assoc -c -o $@ $<
+
+egl_public_private_internal.o: egl_public_private_internal.c egl_public_private_array.c private_array_fixture.h $(PROJECT)/src/platform/ps5_agc_package.h $(PSBC)/libpsbc/psbc_compile.h
 	$(CC) $(CFLAGS) $(PSBC_CFLAGS) -I$(PROJECT)/src/platform \
 		-Wno-unused-function -Wno-unreachable-code-generic-assoc -c -o $@ $<
 
