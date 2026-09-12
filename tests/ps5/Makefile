@@ -254,6 +254,7 @@ ps5_screen_core33.o: $(DRIVER)/ps5_screen.c $(DRIVER)/ps5_screen.h \
 		-DPS5_ENABLE_MSAA_ARRAY_CANDIDATE=1 \
 		-DPS5_ENABLE_SEAMLESS_CUBE_CANDIDATE=1 \
 		-DPS5_ENABLE_GEOMETRY_CANDIDATE=1 \
+		-DPS5_ENABLE_TESSELLATION_CANDIDATE=1 \
 		-DPS5_ENABLE_LAYERED_RENDER_TARGET_CANDIDATE=1 \
 		-DPS5_ENABLE_MRT_CANDIDATE=1 \
 		-DPS5_ENABLE_INDEPENDENT_BLEND_CANDIDATE=1 \
@@ -689,6 +690,17 @@ egl_public_tessellation_runtime.o: tessellation_runtime_gate.c \
 	$(PROJECT)/src/platform/ps5_agc_package.h \
 	$(PROJECT)/src/platform/ps5_scanout.h $(PSBC)/libpsbc/psbc_compile.h
 	$(CC) $(CFLAGS) $(PSBC_CFLAGS) -I$(PROJECT)/src/platform -c -o $@ $<
+
+egl_public_tessellation.o: egl_public_tessellation.c
+	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
+
+egl_public_tessellation.elf: egl_public_tessellation.o ps5_egl_core33.o \
+	gate2_backend.o ps5_screen_core33.o ps5_agc_package.o u_framebuffer.o \
+	$(PSBC)/libpsbc.ps5.a $(MESA_CONTEXT_LIBS) $(MESA_LIBGLAPI_BRIDGE)
+	$(CXX) -o $@ egl_public_tessellation.o ps5_egl_core33.o \
+		ps5_screen_core33.o ps5_agc_package.o u_framebuffer.o \
+		gate2_backend.o -Wl,--start-group $(MESA_LIBGLAPI_BRIDGE) \
+		$(PSBC)/libpsbc.ps5.a $(MESA_CONTEXT_LIBS) -Wl,--end-group $(LDFLAGS)
 
 tessellation_runtime_gate.elf: egl_public_tessellation_runtime.o \
 	gate2_empty_backend.o ps5_agc_package.o $(PSBC)/libpsbc.ps5.a

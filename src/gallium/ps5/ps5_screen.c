@@ -211,8 +211,20 @@ struct ps5_context {
    int last_draw_status;
    unsigned draw_calls;
    struct ps5_shader *vs;
+   struct ps5_shader *tcs;
+   struct ps5_shader *tes;
    struct ps5_shader *gs;
    struct ps5_shader *fs;
+   struct ps5_shader *tessellation_vs;
+   struct ps5_shader *tessellation_tcs;
+   struct ps5_shader *tessellation_tes;
+   struct ps5_vertex_layout *tessellation_layout;
+   PsbcTessellationOutput tessellation_output;
+   uint8_t *tessellation_hs_package;
+   size_t tessellation_hs_package_size;
+   uint8_t *tessellation_tes_package;
+   size_t tessellation_tes_package_size;
+   uint8_t patch_vertices;
    struct ps5_shader *geometry_vs;
    struct ps5_shader *geometry_gs;
    struct ps5_vertex_layout *geometry_layout;
@@ -412,6 +424,10 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
                              const struct ps5_vertex_layout *layout,
                              uint32_t primitive_type);
 static bool
+ps5_select_tessellation_pipeline(struct ps5_context *context,
+                                 uint32_t address32_hi,
+                                 const struct ps5_vertex_layout *layout);
+static bool
 ps5_render_condition_passes(const struct ps5_context *context);
 
 #define PS5_DIRECT_MEMORY_TYPE 12
@@ -565,6 +581,9 @@ ps5_render_condition_passes(const struct ps5_context *context);
 #endif
 #ifndef PS5_ENABLE_GEOMETRY_CANDIDATE
 #define PS5_ENABLE_GEOMETRY_CANDIDATE 0
+#endif
+#ifndef PS5_ENABLE_TESSELLATION_CANDIDATE
+#define PS5_ENABLE_TESSELLATION_CANDIDATE 0
 #endif
 #ifndef PS5_ENABLE_MRT_CANDIDATE
 #define PS5_ENABLE_MRT_CANDIDATE 0
@@ -2880,6 +2899,11 @@ int32_t sceKernelReleaseDirectMemory(int64_t physical_start, size_t length);
 int ps5_agc_gate2_run(void) __attribute__((weak));
 int ps5_agc_gate2_set_packages(const void *vs, size_t vs_size,
                                const void *ps, size_t ps_size)
+   __attribute__((weak));
+int ps5_agc_gate2_set_tessellation(const void *hs, size_t hs_size,
+                                   uint32_t hs_rsrc2,
+                                   uint32_t ls_hs_config,
+                                   uint32_t tf_param)
    __attribute__((weak));
 int ps5_agc_gate2_set_ngg_control(uint32_t valid, uint32_t ge_pc_alloc)
    __attribute__((weak));
@@ -5801,6 +5825,8 @@ ps5_blit_gpu_color(struct ps5_context *context, const struct pipe_blit_info *inf
    util_blitter_save_vertex_buffers(blitter, context->vertex_buffers, context->vertex_buffer_count);
    util_blitter_save_vertex_elements(blitter, context->vertex_elements);
    util_blitter_save_vertex_shader(blitter, context->vs);
+   util_blitter_save_tessctrl_shader(blitter, context->tcs);
+   util_blitter_save_tesseval_shader(blitter, context->tes);
    util_blitter_save_geometry_shader(blitter, context->gs);
    util_blitter_save_so_targets(blitter, 0, NULL, context->stream_output_primitive);
    util_blitter_save_rasterizer(blitter, context->rasterizer);
@@ -6824,6 +6850,9 @@ ps5_draw_primitive(unsigned mode, unsigned count, uint32_t *primitive_type)
    case MESA_PRIM_TRIANGLE_STRIP_ADJACENCY:
       *primitive_type = 13;
       return count >= 6;
+   case MESA_PRIM_PATCHES:
+      *primitive_type = 9;
+      return count >= 1;
    default:
       return false;
    }
@@ -6833,6 +6862,8 @@ static uint32_t
 ps5_fragment_primitive_type(const struct ps5_context *context,
                             uint32_t draw_primitive_type)
 {
+   if (context->tcs && context->tes)
+      return 4;
    if (!context->gs)
       return draw_primitive_type;
 
@@ -7118,6 +7149,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
    unsigned color_target_count;
    bool provoking_vtx_last;
    bool poly_line_smooth;
+   bool tessellation_active;
    uint32_t vs_out_control = 0;
    uint32_t vs_out_control_valid = 0;
 
@@ -7130,7 +7162,17 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       return;
    }
    draw = draws[0];
-   if (!indirect && !u_trim_pipe_prim(info->mode, &draw.count)) {
+   if (!indirect && info->mode == MESA_PRIM_PATCHES) {
+      if (!context->patch_vertices) {
+         context->last_draw_status = -2;
+         return;
+      }
+      draw.count -= draw.count % context->patch_vertices;
+   } else if (!indirect && !u_trim_pipe_prim(info->mode, &draw.count)) {
+      context->last_draw_status = 0;
+      return;
+   }
+   if (!draw.count) {
       context->last_draw_status = 0;
       return;
    }
@@ -7170,8 +7212,9 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       context->last_draw_status = -2;
       return;
    }
-   generated_primitives =
-      ps5_draw_primitive_count(primitive_type, draws[0].count) *
+   generated_primitives = (primitive_type == 9
+      ? draws[0].count / context->patch_vertices
+      : ps5_draw_primitive_count(primitive_type, draws[0].count)) *
       info->instance_count;
    base_vertex = info->index_size ? (uint32_t)draws[0].index_bias
                                   : draws[0].start;
@@ -7256,7 +7299,11 @@ ps5_draw_vbo_locked(struct pipe_context *base,
                 draws[0].index_bias, min_index, max_index,
                 (long long)effective_min, (long long)effective_end - 1);
    }
-   if (!context->vs || !context->fs || !context->framebuffer_valid) {
+   tessellation_active = context->tcs || context->tes;
+   if (!context->vs || !context->fs || !context->framebuffer_valid ||
+       (tessellation_active && (!context->tcs || !context->tes ||
+                                info->mode != MESA_PRIM_PATCHES)) ||
+       (!tessellation_active && info->mode == MESA_PRIM_PATCHES)) {
       context->last_draw_status = -3;
       return;
    }
@@ -7284,24 +7331,35 @@ ps5_draw_vbo_locked(struct pipe_context *base,
    if (!descriptor_resource ||
        !ps5_vertex_layout_from_state(context->vs,
                                      context->vertex_elements,
-                                     &vertex_layout) ||
-       !ps5_select_shader_variant(
-          context->vs, (uint32_t)((uintptr_t)descriptor_resource->data >> 32),
-          &vertex_layout, primitive_type,
-          context->rasterizer && !context->rasterizer->flatshade_first,
-          false, false,
-          !context->gs &&
-             !(context->fs->nir->info.inputs_read & VARYING_BIT_PRIMITIVE_ID) &&
-             !BITSET_TEST(context->fs->nir->info.system_values_read,
-                          SYSTEM_VALUE_PRIMITIVE_ID),
-          false, NULL)) {
+                                     &vertex_layout)) {
       context->last_draw_status = -14;
       return;
    }
-   if (!ps5_select_geometry_pipeline(
-          context,
-          (uint32_t)((uintptr_t)descriptor_resource->data >> 32),
-          &vertex_layout, primitive_type)) {
+   if (tessellation_active) {
+      if (!ps5_select_tessellation_pipeline(
+             context,
+             (uint32_t)((uintptr_t)descriptor_resource->data >> 32),
+             &vertex_layout)) {
+         context->last_draw_status = -19;
+         return;
+      }
+   } else if (!ps5_select_shader_variant(
+                 context->vs,
+                 (uint32_t)((uintptr_t)descriptor_resource->data >> 32),
+                 &vertex_layout, primitive_type,
+                 context->rasterizer &&
+                    !context->rasterizer->flatshade_first,
+                 false, false,
+                 !context->gs &&
+                    !(context->fs->nir->info.inputs_read &
+                      VARYING_BIT_PRIMITIVE_ID) &&
+                    !BITSET_TEST(context->fs->nir->info.system_values_read,
+                                 SYSTEM_VALUE_PRIMITIVE_ID),
+                 false, NULL) ||
+              !ps5_select_geometry_pipeline(
+                 context,
+                 (uint32_t)((uintptr_t)descriptor_resource->data >> 32),
+                 &vertex_layout, primitive_type)) {
       context->last_draw_status = -19;
       return;
    }
@@ -7334,7 +7392,11 @@ ps5_draw_vbo_locked(struct pipe_context *base,
    }
    streamout_active = PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDATE &&
                       context->stream_output_target_count != 0;
-   if (context->gs) {
+   if (tessellation_active) {
+      vertex_output = &context->tessellation_output.tes;
+      vertex_package = context->tessellation_tes_package;
+      vertex_package_size = context->tessellation_tes_package_size;
+   } else if (context->gs) {
       if (streamout_active) {
          if (!context->gs->stream_output.num_outputs ||
              !context->geometry_streamout_package) {
@@ -7648,7 +7710,9 @@ ps5_draw_vbo_locked(struct pipe_context *base,
          !ps5_agc_gate2_set_point_coord_input)) ||
        (PS5_ENABLE_BORDER_COLOR_CANDIDATE &&
         !ps5_agc_gate2_set_border_color_table) ||
-       (context->gs && !ps5_agc_gate2_set_ngg_control) ||
+       (tessellation_active && !ps5_agc_gate2_set_tessellation) ||
+       ((context->gs || tessellation_active) &&
+        !ps5_agc_gate2_set_ngg_control) ||
        (!PS5_ENABLE_MRT_CANDIDATE &&
         !ps5_agc_gate2_set_graphics_state)) {
       context->last_draw_status = -3;
@@ -7718,10 +7782,24 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       context->last_draw_status = -4;
       return;
    }
+   if (ps5_agc_gate2_set_tessellation &&
+       ps5_agc_gate2_set_tessellation(
+          tessellation_active ? context->tessellation_hs_package : NULL,
+          tessellation_active ? context->tessellation_hs_package_size : 0,
+          tessellation_active
+             ? context->tessellation_output.runtime.hs_rsrc2 : 0,
+          tessellation_active
+             ? context->tessellation_output.runtime.ls_hs_config : 0,
+          tessellation_active
+             ? context->tessellation_output.runtime.tf_param : 0) != 0) {
+      context->last_draw_status = -19;
+      return;
+   }
    if (ps5_agc_gate2_set_ngg_control &&
        ps5_agc_gate2_set_ngg_control(
-          context->gs != NULL,
-          context->gs ? UINT32_C(0x000007fe) : 0) != 0) {
+          context->gs != NULL || tessellation_active,
+          context->gs || tessellation_active
+             ? UINT32_C(0x000007fe) : 0) != 0) {
       context->last_draw_status = -19;
       return;
    }
@@ -8987,6 +9065,8 @@ ps5_clear_gpu_color(struct ps5_context *context, unsigned buffers,
    util_blitter_save_vertex_buffers(blitter, context->vertex_buffers, context->vertex_buffer_count);
    util_blitter_save_vertex_elements(blitter, context->vertex_elements);
    util_blitter_save_vertex_shader(blitter, context->vs);
+   util_blitter_save_tessctrl_shader(blitter, context->tcs);
+   util_blitter_save_tesseval_shader(blitter, context->tes);
    util_blitter_save_geometry_shader(blitter, context->gs);
    util_blitter_save_so_targets(blitter, 0, NULL, context->stream_output_primitive);
    util_blitter_save_rasterizer(blitter, context->rasterizer);
@@ -9086,6 +9166,8 @@ ps5_clear_gpu_depth_stencil(struct ps5_context *context, unsigned buffers,
    util_blitter_save_vertex_buffers(blitter, context->vertex_buffers, context->vertex_buffer_count);
    util_blitter_save_vertex_elements(blitter, context->vertex_elements);
    util_blitter_save_vertex_shader(blitter, context->vs);
+   util_blitter_save_tessctrl_shader(blitter, context->tcs);
+   util_blitter_save_tesseval_shader(blitter, context->tes);
    util_blitter_save_geometry_shader(blitter, context->gs);
    util_blitter_save_so_targets(blitter, 0, NULL, context->stream_output_primitive);
    util_blitter_save_rasterizer(blitter, context->rasterizer);
@@ -10184,6 +10266,91 @@ ps5_release_geometry_pipeline(struct ps5_context *context)
    context->geometry_gs = NULL;
 }
 
+static void
+ps5_release_tessellation_pipeline(struct ps5_context *context)
+{
+   free(context->tessellation_hs_package);
+   free(context->tessellation_tes_package);
+   free(context->tessellation_layout);
+   psbc_free_tessellation_output(&context->tessellation_output);
+   context->tessellation_hs_package = NULL;
+   context->tessellation_hs_package_size = 0;
+   context->tessellation_tes_package = NULL;
+   context->tessellation_tes_package_size = 0;
+   context->tessellation_layout = NULL;
+   context->tessellation_vs = NULL;
+   context->tessellation_tcs = NULL;
+   context->tessellation_tes = NULL;
+}
+
+static bool
+ps5_select_tessellation_pipeline(struct ps5_context *context,
+                                 uint32_t address32_hi,
+                                 const struct ps5_vertex_layout *layout)
+{
+   PsbcTessellationOutput output = {0};
+   PsbcTessellationCompileOptions options = {
+      .input_patch_vertices = context->patch_vertices,
+      .offchip_workgroup_capacity_dwords = 8192,
+      .address32_hi = address32_hi,
+   };
+   uint8_t *hs_package = NULL;
+   uint8_t *tes_package = NULL;
+   size_t hs_size = 0;
+   size_t tes_size = 0;
+   struct ps5_vertex_layout *saved_layout;
+   PsbcResult result;
+
+   if (!context->tcs && !context->tes)
+      return true;
+   if (!PS5_ENABLE_TESSELLATION_CANDIDATE || !context->tcs ||
+       !context->tes || context->gs || context->patch_vertices != 3 ||
+       layout->count || context->vs->stream_output.num_outputs ||
+       context->tcs->stream_output.num_outputs ||
+       context->tes->stream_output.num_outputs)
+      return false;
+   if (context->tessellation_vs == context->vs &&
+       context->tessellation_tcs == context->tcs &&
+       context->tessellation_tes == context->tes &&
+       context->tessellation_layout &&
+       !memcmp(context->tessellation_layout, layout, sizeof(*layout)))
+      return true;
+
+   result = psbc_compile_nir_tessellation_pipeline(
+      context->vs->nir, context->tcs->nir, context->tes->nir,
+      &options, &output);
+   printf("[ps5-gallium] compile-tessellation result=%d hs=%zu tes=%zu patches=%u\n",
+          result, output.hs.machine_code_size, output.tes.machine_code_size,
+          output.runtime.num_patches);
+   if (result != PSBC_RESULT_OK || !output.runtime.valid ||
+       ps5_agc_package_build(&output.hs, 0, &hs_package, &hs_size) ||
+       ps5_agc_package_build(&output.tes, 0, &tes_package, &tes_size)) {
+      free(hs_package);
+      free(tes_package);
+      psbc_free_tessellation_output(&output);
+      return false;
+   }
+   saved_layout = malloc(sizeof(*saved_layout));
+   if (!saved_layout) {
+      free(hs_package);
+      free(tes_package);
+      psbc_free_tessellation_output(&output);
+      return false;
+   }
+   *saved_layout = *layout;
+   ps5_release_tessellation_pipeline(context);
+   context->tessellation_vs = context->vs;
+   context->tessellation_tcs = context->tcs;
+   context->tessellation_tes = context->tes;
+   context->tessellation_layout = saved_layout;
+   context->tessellation_output = output;
+   context->tessellation_hs_package = hs_package;
+   context->tessellation_hs_package_size = hs_size;
+   context->tessellation_tes_package = tes_package;
+   context->tessellation_tes_package_size = tes_size;
+   return true;
+}
+
 static bool
 ps5_geometry_ring_itemsize(const PsbcShaderMetadata *metadata,
                            uint32_t *itemsize)
@@ -10976,7 +11143,8 @@ ps5_create_shader_state(struct pipe_screen *screen,
    } else {
       memset(&layout, 0, sizeof(layout));
    }
-   if (stage != PSBC_STAGE_GEOMETRY &&
+   if (stage != PSBC_STAGE_GEOMETRY && stage != PSBC_STAGE_TESS_CTRL &&
+       stage != PSBC_STAGE_TESS_EVAL &&
        !ps5_select_shader_variant(shader, address32_hi, &layout, 0, false,
                                   false, false, false, false, NULL)) {
       ralloc_free(shader->nir);
@@ -11037,6 +11205,34 @@ ps5_create_gs_state(struct pipe_context *context,
    return state;
 }
 
+static void *
+ps5_create_tcs_state(struct pipe_context *context,
+                     const struct pipe_shader_state *templ)
+{
+   struct ps5_context *ps5 = (struct ps5_context *)context;
+   struct ps5_resource *descriptors =
+      (struct ps5_resource *)ps5->vertex_descriptor_table;
+
+   return PS5_ENABLE_TESSELLATION_CANDIDATE && descriptors
+      ? ps5_create_shader_state(context->screen, templ, PSBC_STAGE_TESS_CTRL,
+            (uint32_t)((uintptr_t)descriptors->data >> 32))
+      : NULL;
+}
+
+static void *
+ps5_create_tes_state(struct pipe_context *context,
+                     const struct pipe_shader_state *templ)
+{
+   struct ps5_context *ps5 = (struct ps5_context *)context;
+   struct ps5_resource *descriptors =
+      (struct ps5_resource *)ps5->vertex_descriptor_table;
+
+   return PS5_ENABLE_TESSELLATION_CANDIDATE && descriptors
+      ? ps5_create_shader_state(context->screen, templ, PSBC_STAGE_TESS_EVAL,
+            (uint32_t)((uintptr_t)descriptors->data >> 32))
+      : NULL;
+}
+
 static void
 ps5_bind_vs_state(struct pipe_context *base, void *state)
 {
@@ -11055,6 +11251,24 @@ ps5_bind_gs_state(struct pipe_context *base, void *state)
    ((struct ps5_context *)base)->gs = state;
    printf("[ps5-gallium] bind-geometry state=%s\n",
           state ? "ready" : "null");
+}
+
+static void
+ps5_bind_tcs_state(struct pipe_context *base, void *state)
+{
+   ((struct ps5_context *)base)->tcs = state;
+}
+
+static void
+ps5_bind_tes_state(struct pipe_context *base, void *state)
+{
+   ((struct ps5_context *)base)->tes = state;
+}
+
+static void
+ps5_set_patch_vertices(struct pipe_context *base, uint8_t patch_vertices)
+{
+   ((struct ps5_context *)base)->patch_vertices = patch_vertices;
 }
 
 static void
@@ -11704,12 +11918,20 @@ ps5_delete_shader_state(struct pipe_context *base, void *state)
           shader->stage, (void *)shader);
    if (context->vs == shader)
       context->vs = NULL;
+   if (context->tcs == shader)
+      context->tcs = NULL;
+   if (context->tes == shader)
+      context->tes = NULL;
    if (context->gs == shader)
       context->gs = NULL;
    if (context->fs == shader)
       context->fs = NULL;
    if (context->geometry_vs == shader || context->geometry_gs == shader)
       ps5_release_geometry_pipeline(context);
+   if (context->tessellation_vs == shader ||
+       context->tessellation_tcs == shader ||
+       context->tessellation_tes == shader)
+      ps5_release_tessellation_pipeline(context);
    while ((variant = shader->variants)) {
       shader->variants = variant->next;
       free(variant->package);
@@ -11784,6 +12006,7 @@ ps5_context_destroy(struct pipe_context *base)
    if (context->blitter)
       util_blitter_destroy(context->blitter);
    ps5_release_geometry_pipeline(context);
+   ps5_release_tessellation_pipeline(context);
    util_unreference_framebuffer_state(&context->framebuffer);
    for (index = 0; index < context->vertex_buffer_count; ++index)
       pipe_resource_reference(
@@ -11873,6 +12096,7 @@ ps5_context_create(struct pipe_screen *screen, void *priv, unsigned flags)
    context->base.screen = screen;
    context->base.priv = priv;
    context->sample_mask = UINT32_C(0xffff);
+   context->patch_vertices = 3;
    context->queries_enabled = true;
    context->base.destroy = ps5_context_destroy;
 #ifdef PS5_NATIVE_TITLE_RUNTIME
@@ -11903,6 +12127,15 @@ ps5_context_create(struct pipe_screen *screen, void *priv, unsigned flags)
    context->base.create_gs_state = ps5_create_gs_state;
    context->base.bind_gs_state = ps5_bind_gs_state;
    context->base.delete_gs_state = ps5_delete_shader_state;
+   if (PS5_ENABLE_TESSELLATION_CANDIDATE) {
+      context->base.create_tcs_state = ps5_create_tcs_state;
+      context->base.bind_tcs_state = ps5_bind_tcs_state;
+      context->base.delete_tcs_state = ps5_delete_shader_state;
+      context->base.create_tes_state = ps5_create_tes_state;
+      context->base.bind_tes_state = ps5_bind_tes_state;
+      context->base.delete_tes_state = ps5_delete_shader_state;
+      context->base.set_patch_vertices = ps5_set_patch_vertices;
+   }
    context->base.create_blend_state = ps5_create_blend_state;
    context->base.bind_blend_state = ps5_bind_blend_state;
    context->base.delete_blend_state = ps5_delete_fixed_state;
@@ -11991,11 +12224,15 @@ ps5_screen_create(void)
 {
    struct ps5_screen *screen = calloc(1, sizeof(*screen));
    struct nir_shader_compiler_options *vs_options;
+   struct nir_shader_compiler_options *tcs_options;
+   struct nir_shader_compiler_options *tes_options;
    struct nir_shader_compiler_options *gs_options;
    struct nir_shader_compiler_options *fs_options;
    struct nir_shader_compiler_options *cs_options;
    struct pipe_caps *caps;
    struct pipe_shader_caps *vs_caps;
+   struct pipe_shader_caps *tcs_caps;
+   struct pipe_shader_caps *tes_caps;
    struct pipe_shader_caps *gs_caps;
    struct pipe_shader_caps *fs_caps;
 
@@ -12078,6 +12315,8 @@ ps5_screen_create(void)
                                      ? 0.125f : 1.0f;
    caps->max_viewports = 1;
    caps->max_varyings = 16;
+   caps->max_shader_patch_varyings =
+      PS5_ENABLE_TESSELLATION_CANDIDATE ? 1 : 0;
    caps->max_stream_output_buffers =
       PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDATE ? PIPE_MAX_SO_BUFFERS : 0;
    caps->max_stream_output_separate_components =
@@ -12100,6 +12339,8 @@ ps5_screen_create(void)
                                 (1u << MESA_PRIM_LINE_STRIP_ADJACENCY) |
                                 (1u << MESA_PRIM_TRIANGLES_ADJACENCY) |
                                 (1u << MESA_PRIM_TRIANGLE_STRIP_ADJACENCY);
+   if (PS5_ENABLE_TESSELLATION_CANDIDATE)
+      caps->supported_prim_modes |= 1u << MESA_PRIM_PATCHES;
    caps->primitive_restart = true;
    caps->supported_prim_modes_with_restart = caps->supported_prim_modes;
    caps->vs_instanceid = true;
@@ -12137,6 +12378,10 @@ ps5_screen_create(void)
    caps->min_map_buffer_alignment = 64;
    vs_caps = (struct pipe_shader_caps *)
       &screen->base.shader_caps[MESA_SHADER_VERTEX];
+   tcs_caps = (struct pipe_shader_caps *)
+      &screen->base.shader_caps[MESA_SHADER_TESS_CTRL];
+   tes_caps = (struct pipe_shader_caps *)
+      &screen->base.shader_caps[MESA_SHADER_TESS_EVAL];
    gs_caps = (struct pipe_shader_caps *)
       &screen->base.shader_caps[MESA_SHADER_GEOMETRY];
    fs_caps = (struct pipe_shader_caps *)
@@ -12175,6 +12420,18 @@ ps5_screen_create(void)
       gs_caps->max_outputs = 32;
       gs_caps->max_texture_samplers = PS5_MAX_TEXTURE_UNITS;
       gs_caps->max_sampler_views = PS5_MAX_TEXTURE_UNITS;
+   }
+   if (PS5_ENABLE_TESSELLATION_CANDIDATE) {
+      *tcs_caps = *vs_caps;
+      *tes_caps = *vs_caps;
+      tcs_caps->max_inputs = tcs_caps->max_outputs = 16;
+      tes_caps->max_inputs = tes_caps->max_outputs = 16;
+      tcs_caps->max_texture_samplers = tcs_caps->max_sampler_views = 0;
+      tes_caps->max_texture_samplers = tes_caps->max_sampler_views = 0;
+      /* Mesa's UBO capability is all-stage: fewer than 13 here would also
+       * remove UBOs from the already-qualified VS/FS core profile. */
+      tcs_caps->max_const_buffers = tes_caps->max_const_buffers =
+         PS5_MAX_CONSTANT_BUFFERS;
    }
 
    fs_caps->max_instructions = 16384;
@@ -12218,6 +12475,10 @@ ps5_screen_create(void)
 #endif
    vs_options = (struct nir_shader_compiler_options *)(uintptr_t)
       psbc_get_nir_options(PSBC_STAGE_VERTEX);
+   tcs_options = (struct nir_shader_compiler_options *)(uintptr_t)
+      psbc_get_nir_options(PSBC_STAGE_TESS_CTRL);
+   tes_options = (struct nir_shader_compiler_options *)(uintptr_t)
+      psbc_get_nir_options(PSBC_STAGE_TESS_EVAL);
    fs_options = (struct nir_shader_compiler_options *)(uintptr_t)
       psbc_get_nir_options(PSBC_STAGE_FRAGMENT);
    gs_options = (struct nir_shader_compiler_options *)(uintptr_t)
@@ -12225,10 +12486,14 @@ ps5_screen_create(void)
    cs_options = (struct nir_shader_compiler_options *)(uintptr_t)
       psbc_get_nir_options(PSBC_STAGE_COMPUTE);
    vs_options->io_options |= nir_io_has_intrinsics;
+   tcs_options->io_options |= nir_io_has_intrinsics;
+   tes_options->io_options |= nir_io_has_intrinsics;
    gs_options->io_options |= nir_io_has_intrinsics;
    fs_options->io_options |= nir_io_has_intrinsics;
    cs_options->io_options |= nir_io_has_intrinsics;
    screen->base.nir_options[MESA_SHADER_VERTEX] = vs_options;
+   screen->base.nir_options[MESA_SHADER_TESS_CTRL] = tcs_options;
+   screen->base.nir_options[MESA_SHADER_TESS_EVAL] = tes_options;
    screen->base.nir_options[MESA_SHADER_GEOMETRY] = gs_options;
    screen->base.nir_options[MESA_SHADER_FRAGMENT] = fs_options;
    screen->base.nir_options[MESA_SHADER_COMPUTE] = cs_options;

@@ -72,7 +72,8 @@ static nir_shader *build(mesa_shader_stage stage, bool cross,
                         const struct radv_compiler_info *ci) {
     nir_builder b=nir_builder_init_simple_shader(stage,&ci->nir_options[stage],"linked-tess-host");
     if(stage==MESA_SHADER_VERTEX) {
-        nir_def *id=nir_u2f32(&b,nir_load_vertex_id_zero_base(&b));
+        nir_def *id=nir_u2f32(&b,nir_iadd(&b,nir_load_vertex_id_zero_base(&b),
+                                         nir_load_first_vertex(&b)));
         nir_def *p=nir_vec4(&b,id,nir_fmul(&b,id,id),nir_fsin(&b,id),nir_imm_float(&b,1));
         nir_store_var(&b,varying(&b,nir_var_shader_out,glsl_vec4_type(),VARYING_SLOT_POS,false),p,15);
     } else {
@@ -190,6 +191,9 @@ static void expect_empty(const PsbcTessellationOutput* out) {
     const PsbcTessellationOutput empty={0};
     assert(!memcmp(out,&empty,sizeof(empty)));
 }
+static int type_size_vec4(const struct glsl_type* type,bool bindless) {
+    return glsl_count_attribute_slots(type,false);
+}
 static void api_tests(const struct radv_compiler_info* ci,bool cross,
                       PsbcTessellationOutput* reference) {
     nir_shader* inputs[]={build(MESA_SHADER_VERTEX,cross,ci),
@@ -253,6 +257,25 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
     attr->data.location=VERT_ATTRIB_GENERIC0;
     assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
     expect_empty(&out); exec_node_remove(&attr->node);
+
+    /* Mesa hands Gallium lowered I/O; the compiler accepts the exact
+     * tessellation intrinsics rather than attempting a lossy round-trip. */
+    nir_shader* lowered[3];
+    for (unsigned i=0;i<3;++i) {
+        lowered[i]=nir_shader_clone(NULL,inputs[i]); assert(lowered[i]);
+        nir_lower_io(lowered[i],nir_var_shader_in|nir_var_shader_out,type_size_vec4,0);
+        nir_lower_io_to_scalar(lowered[i],nir_var_shader_in|nir_var_shader_out,NULL,NULL);
+        nir_opt_dce(lowered[i]);
+        nir_opt_vectorize_io(lowered[i],nir_var_shader_in|nir_var_shader_out,false);
+        nir_remove_dead_variables(lowered[i],nir_var_shader_in|nir_var_shader_out,NULL);
+        lowered[i]->info.io_lowered=true;
+        nir_shader_gather_info(lowered[i],nir_shader_get_entrypoint(lowered[i]));
+    }
+    PsbcResult lowered_result=checked_compile(lowered,&options,&out);
+    printf("lowered result=%d\n",lowered_result);
+    assert(lowered_result==PSBC_RESULT_OK);
+    psbc_free_tessellation_output(&out); expect_empty(&out);
+    for (unsigned i=0;i<3;++i) ralloc_free(lowered[i]);
 
     /* Actual merge rules: TCS-only and TES-only mode declarations both work.
      * OutputVertices may also arrive only in TES. The borrowed shader retains
