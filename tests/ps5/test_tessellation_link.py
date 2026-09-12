@@ -128,6 +128,12 @@ static unsigned count(nir_shader *nir,nir_intrinsic_op op) {
         if(instr->type==nir_instr_type_intrinsic && nir_instr_as_intrinsic(instr)->intrinsic==op) ++n;
     return n;
 }
+static uint32_t context_value(const PsbcShaderMetadata *metadata, uint16_t offset) {
+    for(unsigned i=0;i<metadata->context_register_count;++i)
+        if(metadata->context_registers[i].offset==offset)
+            return metadata->context_registers[i].value;
+    assert(!"missing context register"); return 0;
+}
 static unsigned ring_access(nir_shader *nir, nir_intrinsic_op access, nir_intrinsic_op ring) {
     unsigned n=0;
     nir_foreach_function_impl(impl,nir) nir_foreach_block(block,impl) nir_foreach_instr(instr,block) {
@@ -245,6 +251,11 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
     inputs[1]->info.tess._primitive_mode=inputs[2]->info.tess._primitive_mode=TESS_PRIMITIVE_QUADS;
     assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_OK);
     assert(G_028B6C_TYPE(out.runtime.tf_param)==V_028B6C_TESS_QUAD);
+    psbc_free_tessellation_output(&out); inputs[1]->info=tcs_info; inputs[2]->info=tes_info;
+    inputs[1]->info.tess._primitive_mode=inputs[2]->info.tess._primitive_mode=TESS_PRIMITIVE_ISOLINES;
+    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_OK);
+    assert(G_028B6C_TYPE(out.runtime.tf_param)==V_028B6C_TESS_ISOLINE);
+    assert(G_028A6C_OUTPRIM_TYPE(context_value(&out.tes.metadata,0x29b))==V_028A6C_LINESTRIP);
     psbc_free_tessellation_output(&out); inputs[1]->info=tcs_info; inputs[2]->info=tes_info;
     inputs[1]->info.tess.ccw=inputs[2]->info.tess.ccw=false;
     assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_OK);
