@@ -206,7 +206,7 @@ main(void)
    int draw_indirect = 0, gpu_shader5 = 0;
 #ifdef PS5_FP64_VERTEX_TEST
    GLint max_texture = 0, max_renderbuffer = 0, max_cube = 0;
-   GLint max_3d = 0, max_layers = 0;
+   GLint max_3d = 0, max_layers = 0, max_vertex_ubos = 0;
 #endif
 #ifdef PS5_VIEWPORT_ARRAY_TEST
    int viewport_array = 0;
@@ -232,6 +232,7 @@ main(void)
    glGetIntegerv(GL_MAX_CUBE_MAP_TEXTURE_SIZE, &max_cube);
    glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &max_3d);
    glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &max_layers);
+   glGetIntegerv(GL_MAX_VERTEX_UNIFORM_BLOCKS, &max_vertex_ubos);
    printf("[%s] limits texture=%d renderbuffer=%d cube=%d 3d=%d layers=%d\n",
           TEST_NAME, max_texture, max_renderbuffer, max_cube, max_3d,
           max_layers);
@@ -246,6 +247,25 @@ main(void)
           has_extension("GL_ARB_shading_language_packing"),
           has_extension("GL_ARB_texture_compression_bptc"),
           has_extension("GL_ARB_transform_feedback_instanced"));
+   printf("[%s] gl43-prereqs ubos=%d es3=%d arrays=%d compute=%d copy=%d "
+          "explicit=%d layer=%d fbo0=%d ifq2=%d robust=%d image-size=%d "
+          "ssbo=%d stencil=%d tbo-range=%d query-levels=%d view=%d\n",
+          TEST_NAME, max_vertex_ubos,
+          has_extension("GL_ARB_ES3_compatibility"),
+          has_extension("GL_ARB_arrays_of_arrays"),
+          has_extension("GL_ARB_compute_shader"),
+          has_extension("GL_ARB_copy_image"),
+          has_extension("GL_ARB_explicit_uniform_location"),
+          has_extension("GL_ARB_fragment_layer_viewport"),
+          has_extension("GL_ARB_framebuffer_no_attachments"),
+          has_extension("GL_ARB_internalformat_query2"),
+          has_extension("GL_ARB_robust_buffer_access_behavior"),
+          has_extension("GL_ARB_shader_image_size"),
+          has_extension("GL_ARB_shader_storage_buffer_object"),
+          has_extension("GL_ARB_stencil_texturing"),
+          has_extension("GL_ARB_texture_buffer_range"),
+          has_extension("GL_ARB_texture_query_levels"),
+          has_extension("GL_ARB_texture_view"));
 #endif
 #ifdef PS5_VIEWPORT_ARRAY_TEST
    viewport_array = has_extension("GL_ARB_viewport_array");
