@@ -751,6 +751,7 @@ require("PS5_ENABLE_TEXTURE_SNORM_CANDIDATE" in SCREEN and
         "texture-SNORM candidate format route regressed")
 require("PS5_ENABLE_COMPRESSED_FALLBACK_CANDIDATE" in EGL and
         "options.allow_compressed_fallback" in EGL and
+        "PIPE_FORMAT_R16G16B16X16_FLOAT" in SCREEN and
         "GL_COMPRESSED_RED_RGTC1" in RG and
         "GL_COMPRESSED_SIGNED_RG_RGTC2" in RG and
         "GL_ARB_texture_compression_rgtc" in RG,

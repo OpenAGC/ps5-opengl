@@ -1008,6 +1008,7 @@ ps5_core_sampled_texture_format(enum pipe_format format)
    case PIPE_FORMAT_R16G16B16A16_SNORM:
    case PIPE_FORMAT_R16_FLOAT:
    case PIPE_FORMAT_R16G16_FLOAT:
+   case PIPE_FORMAT_R16G16B16X16_FLOAT:
    case PIPE_FORMAT_R32_FLOAT:
    case PIPE_FORMAT_R32G32_FLOAT:
    case PIPE_FORMAT_R8_UINT:
