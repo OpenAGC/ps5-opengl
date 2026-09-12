@@ -15,7 +15,7 @@ PSBC = ROOT / "third_party/opengnm-psbc"
 runtime = (ROOT / "src/platform/ps5_agc_native_runtime.c").read_text()
 backend = (ROOT / "src/platform/ps5_agc_runtime_backend.c").read_text()
 probe = (ROOT / "tests/ps5/egl_public_compute_probe.c").read_text()
-probe = probe[probe.index("#define OUTPUT_WORDS"):probe.index("int main(void)")]
+probe = probe[probe.index("#ifdef PS5_COMPUTE_BUFFER_SPILL_PROBE"):probe.index("int main(void)")]
 compute_at = backend.index("int\nps5_agc_compute_execute(")
 compute = backend[compute_at:backend.index("\n#endif", compute_at)]
 parser_at = runtime.index("static int shader_sections(")
@@ -49,7 +49,8 @@ static void *mapped_memory;
 static size_t mapped_size;
 static uint32_t saved_userdata[16], saved_groups[3];
 static uint32_t saved_tmpring;
-static bool expect_private;
+static bool expect_private, expect_scratch;
+static uint32_t expected_tmpring;
 static volatile uint32_t *saved_marker;
 static uint32_t saved_expected;
 #define DIRECT_MEMORY_TYPE 12
@@ -133,8 +134,8 @@ static uint32_t *release(void *p, uint8_t a, int16_t g, uint64_t s, int8_t d, vo
 static int submit(void *p) {
     agc_submit_description_t *s=p;
     assert(locked && s->words && s->word_count && saved_marker && !*saved_marker && flushes>=3);
-    assert(!saved_tmpring);
-    if (expect_private) {
+    assert(saved_tmpring==expected_tmpring);
+    if (expect_private || expect_scratch) {
         uintptr_t address=saved_userdata[0] | ((uint64_t)saved_userdata[1]<<32);
         assert(address==(uintptr_t)mapped_memory+0xc000);
         assert(mapped_size>0x10000);
@@ -142,7 +143,7 @@ static int submit(void *p) {
         const uint32_t *before=(const uint32_t *)(address-0x4000);
         const uint32_t *after=(const uint32_t *)(address+size);
         for(unsigned i=0;i<0x4000/4;++i) assert(before[i]==0xa5a5a5a5 && after[i]==0xa5a5a5a5);
-        memset((void *)address,0x37,size);
+        if (expect_private) memset((void *)address,0x37,size);
     } else assert(!saved_userdata[0] && !saved_userdata[1]);
     *saved_marker=saved_expected; ++submissions; return 0;
 }
@@ -164,6 +165,9 @@ code = r'''
 ''' + types + mock + parsers + compute + "\n" + probe + r'''
 static void submission_contract(PsbcShaderOutput *out) {
     expect_private=out->metadata.compute_private_stride!=0;
+    expect_scratch=out->metadata.scratch_buffer_backed;
+    expected_tmpring=expect_scratch ? PS5_AGC_COMPUTE_SCRATCH_WAVES |
+        (out->metadata.scratch_bytes_per_wave/1024u<<12) : 0;
     _Alignas(16) uint32_t table_data[31*4+8*8+8*12]={0}, output[32]={0};
     const size_t logical_output=64;
     table_data[0]=(uintptr_t)output; table_data[1]=(uintptr_t)output>>32;
@@ -176,7 +180,7 @@ static void submission_contract(PsbcShaderOutput *out) {
     uint32_t groups[3]={2,3,4};
     out->metadata.address32_hi=(uintptr_t)table_data>>32;
     const unsigned old_submits=submissions;
-    if (out->metadata.scratch_valid) {
+    if (out->metadata.scratch_valid && !expect_scratch) {
         const unsigned old_dispatches=dispatches, old_flushes=flushes;
         assert(ps5_agc_compute_execute(&screen, out, &table, buffers, 1, groups)<0);
         assert(!locked && !allocations && !mapped_memory && submissions==old_submits);
@@ -185,14 +189,19 @@ static void submission_contract(PsbcShaderOutput *out) {
     }
     watched_resource=output; watched_allocation=sizeof(output);
     watched_flushes=watched_acquires=0;
+    if (expect_scratch) direct_size=64*1024*1024;
     assert(ps5_agc_compute_execute(&screen, out, &table, buffers, 1, groups)==0);
     assert(watched_flushes==2 && watched_acquires==1);
     watched_resource=NULL;
     assert(!locked && !allocations && submissions==old_submits+1);
     assert(userdata_count==out->metadata.user_sgpr_count);
-    assert(!saved_tmpring);
+    assert(saved_tmpring==expected_tmpring);
     assert(saved_userdata[2]==(uint32_t)(uintptr_t)table_data && !memcmp(saved_groups, groups, 12));
     if (out->metadata.compute_grid_size_valid) assert(!memcmp(saved_userdata+3, groups, 12));
+    if (expect_scratch) {
+        direct_size=1024*1024; expect_scratch=false; expected_tmpring=0;
+        return;
+    }
     const unsigned old_dispatches=dispatches;
     for (unsigned fault=0; fault<21; ++fault) {
         if (fault==0) groups[0]=0;
@@ -386,7 +395,7 @@ static void shapes(void) {
     }
 }
 static void native_cases(void) {
-    for (unsigned test=0; test<ARRAY_SIZE(cases); ++test) {
+    for (unsigned test=0; test<BUFFER_SPILL; ++test) {
         nir_shader *nir=create_probe_shader(test);
         PsbcShaderOutput out={0};
         assert(psbc_compile_nir(nir, &opts, &out)==PSBC_RESULT_OK);
@@ -609,18 +618,23 @@ static void atomic_alignment_lowering(void) {
 static void private_memory_plan_contract(void) {
     const uint32_t local[3]={2,2,4}, grid[3]={2,3,5};
     struct ps5_agc_compute_memory_layout plan;
-    assert(!ps5_agc_compute_plan_memory(676,0,local,grid,SIZE_MAX,&plan));
+    assert(!ps5_agc_compute_plan_memory(676,0,0,local,grid,SIZE_MAX,&plan));
     assert(plan.allocation_size==0x8000 && !plan.private_offset && !plan.private_size);
-    assert(!ps5_agc_compute_plan_memory(676,128,local,grid,SIZE_MAX,&plan));
+    assert(!ps5_agc_compute_plan_memory(676,128,0,local,grid,SIZE_MAX,&plan));
     assert(plan.private_offset==0xc000 && plan.private_size==0x10000 &&
         plan.allocation_size==0x20000);
+    assert(!ps5_agc_compute_plan_memory(676,0,1024,local,grid,SIZE_MAX,&plan));
+    assert(plan.scratch_offset==0xc000 && plan.scratch_size==0x120000 &&
+        plan.allocation_size==0x130000);
+    assert(ps5_agc_compute_plan_memory(676,128,1024,local,grid,SIZE_MAX,&plan)<0);
+    assert(ps5_agc_compute_plan_memory(676,0,1025,local,grid,SIZE_MAX,&plan)<0);
     for(unsigned stride=4;stride<=4096;stride*=2) {
-        assert(!ps5_agc_compute_plan_memory(676,stride,local,grid,SIZE_MAX,&plan));
+        assert(!ps5_agc_compute_plan_memory(676,stride,0,local,grid,SIZE_MAX,&plan));
         const size_t required=plan.allocation_size;
         assert(plan.private_size>=16u*30u*stride && !(plan.private_size&0x3fff));
         assert(plan.private_offset+plan.private_size+0x4000==required);
-        assert(!ps5_agc_compute_plan_memory(676,stride,local,grid,required,&plan));
-        assert(ps5_agc_compute_plan_memory(676,stride,local,grid,required-1,&plan)<0);
+        assert(!ps5_agc_compute_plan_memory(676,stride,0,local,grid,required,&plan));
+        assert(ps5_agc_compute_plan_memory(676,stride,0,local,grid,required-1,&plan)<0);
         assert(!plan.allocation_size && !plan.private_offset && !plan.private_size);
     }
     for(unsigned bad=0;bad<13;++bad) {
@@ -636,15 +650,15 @@ static void private_memory_plan_contract(void) {
         if(bad==11) code=16u*1024u*1024u+4;
         if(bad==12) budget=0;
         plan=(struct ps5_agc_compute_memory_layout){1,2,3};
-        assert(ps5_agc_compute_plan_memory(code,stride,l,g,budget,&plan)<0);
+        assert(ps5_agc_compute_plan_memory(code,stride,0,l,g,budget,&plan)<0);
         assert(!plan.allocation_size && !plan.private_offset && !plan.private_size);
     }
-    assert(ps5_agc_compute_plan_memory(0,128,local,grid,SIZE_MAX,&plan)<0);
-    assert(ps5_agc_compute_plan_memory(675,128,local,grid,SIZE_MAX,&plan)<0);
-    assert(ps5_agc_compute_plan_memory(676,128,NULL,grid,SIZE_MAX,&plan)<0);
-    assert(ps5_agc_compute_plan_memory(676,128,local,NULL,SIZE_MAX,&plan)<0);
-    assert(ps5_agc_compute_plan_memory(676,128,local,grid,SIZE_MAX,NULL)<0);
-    puts("Private arena planning: 3D sizes, alignment, guards, exact budgets, overflow/rejection PASS");
+    assert(ps5_agc_compute_plan_memory(0,128,0,local,grid,SIZE_MAX,&plan)<0);
+    assert(ps5_agc_compute_plan_memory(675,128,0,local,grid,SIZE_MAX,&plan)<0);
+    assert(ps5_agc_compute_plan_memory(676,128,0,NULL,grid,SIZE_MAX,&plan)<0);
+    assert(ps5_agc_compute_plan_memory(676,128,0,local,NULL,SIZE_MAX,&plan)<0);
+    assert(ps5_agc_compute_plan_memory(676,128,0,local,grid,SIZE_MAX,NULL)<0);
+    puts("Private/scratch arena planning: alignment, guards, exact budgets, overflow/rejection PASS");
 }
 /* Host-only ABI experiment. Never package or submit this shader: production
  * metadata and runtime allocation do not yet describe this private buffer. */
@@ -828,6 +842,7 @@ static void spill_contract(void) {
     PsbcShaderOutput out={0};
     PsbcCompileOptions spill_options=opts;
     spill_options.compute_private_buffer=true;
+    spill_options.compute_buffer_spills=true;
     assert(psbc_compile_nir(b.shader,&spill_options,&out)==PSBC_RESULT_OK);
     printf("Register spill host-only: source-private=%u final-wave-bytes=%u code=%zu\n",
         b.shader->scratch_size,out.metadata.scratch_bytes_per_wave,out.machine_code_size);
@@ -835,9 +850,23 @@ static void spill_contract(void) {
     assert(out.metadata.scratch_valid && out.metadata.scratch_bytes_per_wave);
     assert(!out.metadata.scratch_size_per_thread); /* NIR private bytes exclude ACO spills. */
     assert(!out.metadata.compute_private_stride); /* Opt-in must not disguise ACO spills. */
-    scratch_machine_code("register-spill",&out);
+    scratch_machine_code("buffer-register-spill",&out);
     submission_contract(&out); /* Must reject before native allocation/submission. */
     psbc_free_output(&out); ralloc_free(b.shader);
+
+    nir_builder rejected=nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
+        psbc_get_nir_options(PSBC_STAGE_COMPUTE),"buffer-spill-rejection");
+    rejected.shader->info.workgroup_size[0]=1;
+    rejected.shader->info.workgroup_size[1]=rejected.shader->info.workgroup_size[2]=1;
+    rejected.shader->scratch_size=16;
+    PsbcCompileOptions invalid=opts;
+    invalid.compute_buffer_spills=true;
+    assert(psbc_compile_nir(rejected.shader,&invalid,&out)==PSBC_RESULT_COMPILE_NIR);
+    assert(!out.data && !out.machine_code);
+    invalid.target=PSBC_TARGET_PS4_BASE;
+    assert(psbc_compile_nir(rejected.shader,&invalid,&out)==PSBC_RESULT_UNSUPPORTED_STAGE);
+    assert(!out.data && !out.machine_code);
+    ralloc_free(rejected.shader);
 }
 static void private_width_contract(void) {
     const struct { unsigned components, bits; } cases[]={{4,8},{4,16},{4,32},{2,64}};
@@ -974,13 +1003,17 @@ with tempfile.TemporaryDirectory() as directory:
                 "--mcpu=gfx1030"], input=" ".join(f"0x{b:02x}" for b in machine_code),
                 text=True, capture_output=True, check=True, timeout=30)
             assert not disasm.stderr.strip(), disasm.stderr
-            for operation in ("scratch_load", "scratch_store", "s_setreg_b32"):
-                assert operation in disasm.stdout, (name, operation)
+            if name == "buffer-register-spill":
+                assert "buffer_load_dword" in disasm.stdout and "buffer_store_dword" in disasm.stdout
+                assert "scratch_" not in disasm.stdout and "s_setreg_b32" not in disasm.stdout
+            else:
+                for operation in ("scratch_load", "scratch_store", "s_setreg_b32"):
+                    assert operation in disasm.stdout, (name, operation)
             decoded.add(name)
             print(f"Independent LLVM decode: {name} bytes={len(machine_code)} "
                   f"sha256={hashlib.sha256(machine_code).hexdigest()} PASS")
             print("\n".join(disasm.stdout.splitlines()[:12]))
-        assert decoded == {"private-array", "register-spill"}
+        assert decoded == {"private-array", "buffer-register-spill"}
         assert internal_decoded
 print("PASS: compute package, grid/LDS metadata, malformed inputs; mocked submission lock/bounds/cleanup")
 print("PASS: allocated-span pre/post flush and acquire; logical SSBO/UBO ownership retained; invalid allocation extents rejected")

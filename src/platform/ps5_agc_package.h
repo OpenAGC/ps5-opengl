@@ -10,7 +10,7 @@
 
 #include "psbc_compile.h"
 
-/* Returns -7 for scratch: native addressing must be validated before execution. */
+/* Returns -7 for unqualified flat scratch. */
 int ps5_agc_package_build(const PsbcShaderOutput *shader,
                           uint32_t esgs_ring_itemsize,
                           uint8_t **package, size_t *package_size);
@@ -21,13 +21,17 @@ struct ps5_agc_compute_memory_layout {
    size_t allocation_size;
    size_t private_offset;
    size_t private_size;
+   size_t scratch_offset;
+   size_t scratch_size;
 };
-/* Checked arena plan only; does not enable private-storage execution.
- * Nonzero stride describes ordinary per-invocation storage, not ACO spills.
+/* Checked arena plan. Nonzero private stride describes ordinary
+ * per-invocation storage; nonzero scratch bytes describe MUBUF ACO spills.
  * budget includes code, commands, alignment and two 16 KiB outer guards. */
 int ps5_agc_compute_plan_memory(size_t code_size, uint32_t private_stride,
+                                uint32_t scratch_bytes_per_wave,
                                 const uint32_t local[3], const uint32_t groups[3],
                                 size_t budget, struct ps5_agc_compute_memory_layout *out);
+#define PS5_AGC_COMPUTE_SCRATCH_WAVES 1152u
 #define PS5_AGC_COMPUTE_MAX_TEXTURES 16u
 #define PS5_AGC_COMPUTE_MAX_RESOURCES (16u + 15u + 8u + PS5_AGC_COMPUTE_MAX_TEXTURES)
 /* Internal bring-up path, not a public GL compute capability. All resources

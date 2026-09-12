@@ -13,8 +13,17 @@
 #include "ps5_screen.h"
 #include "ps5_agc_package.h"
 
+#ifdef PS5_COMPUTE_BUFFER_SPILL_PROBE
+#define OUTPUT_WORDS (64 * 128 * 4)
+#define INPUT_WORDS OUTPUT_WORDS
+#define FIRST_NATIVE_TEST BUFFER_SPILL
+#define END_NATIVE_TEST (BUFFER_SPILL + 1)
+#else
 #define OUTPUT_WORDS 2048
 #define INPUT_WORDS (15 * 16)
+#define FIRST_NATIVE_TEST CONTROL
+#define END_NATIVE_TEST SCRATCH
+#endif
 #define IMAGE_WORDS (64 * 3) /* 17x3 R32_UINT with a 256-byte linear row. */
 #define GUARD_WORD UINT32_C(0xcdcdcdcd)
 #ifdef PS5_COMPUTE_PIPE_PROBE
@@ -32,7 +41,7 @@ enum { CONTROL, GRID, SHARED, ATOMIC, FP32, FP64, BUFFER_RANGES, BUFFER_ALIAS,
        IMAGE_FLOAT_STORE, IMAGE_FLOAT_LOAD, POST_FLOAT,
        LIMIT_X, LIMIT_Y, LIMIT_3D, LIMIT_Z, LIMIT_SHARED, POST_LIMITS,
        COUNTER_SEQUENCE, POST_COUNTER,
-       SCRATCH, SCRATCH_GRID, POST_SCRATCH };
+       SCRATCH, SCRATCH_GRID, POST_SCRATCH, BUFFER_SPILL };
 static const struct {
    const char *name;
    uint32_t local[3], groups[3];
@@ -79,6 +88,7 @@ static const struct {
    {"scratch-private-16", {16, 1, 1}, {1, 1, 1}, 16},
    {"scratch-private-128-grid", {64, 1, 1}, {4, 1, 1}, 256},
    {"post-scratch-control", {16, 1, 1}, {1, 1, 1}, 16},
+   {"buffer-register-spill", {64, 1, 1}, {1, 1, 1}, OUTPUT_WORDS},
 };
 
 static nir_shader *create_probe_shader(unsigned test)
@@ -88,6 +98,24 @@ static nir_shader *create_probe_shader(unsigned test)
    for (unsigned axis = 0; axis < 3; ++axis)
       b.shader->info.workgroup_size[axis] = cases[test].local[axis];
    b.shader->info.num_ssbos = 16;
+   if (test == BUFFER_SPILL) {
+      nir_def *id = nir_channel(&b, nir_load_local_invocation_id(&b), 0);
+      nir_def *base = nir_imul_imm(&b, id, 128 * 16);
+      nir_def *values[128];
+      for (unsigned i = 0; i < ARRAY_SIZE(values); ++i)
+         values[i] = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 1),
+            nir_iadd_imm(&b, base, i * 16), .align_mul = 16,
+            .access = ACCESS_VOLATILE);
+      nir_barrier(&b, .execution_scope = SCOPE_WORKGROUP,
+         .memory_scope = SCOPE_DEVICE, .memory_semantics = NIR_MEMORY_ACQ_REL,
+         .memory_modes = nir_var_mem_ssbo);
+      for (unsigned i = 0; i < ARRAY_SIZE(values); ++i)
+         nir_store_ssbo(&b, values[i], nir_imm_int(&b, OUTPUT_BINDING),
+            nir_iadd_imm(&b, base, i * 16), .align_mul = 16, .write_mask = 15,
+            .access = ACCESS_VOLATILE);
+      nir_validate_shader(b.shader, "native buffer-register spill");
+      return b.shader;
+   }
    if (test == COUNTER_SEQUENCE) {
       b.shader->info.num_ssbos = 8;
       b.shader->info.num_abos = 1;
@@ -287,6 +315,8 @@ static unsigned count_correct(unsigned test, const uint32_t *output)
          }
       } else {
          uint32_t expected = 17 + 3 * (test == SHARED ? (i ^ 32) : i);
+         if (test == BUFFER_SPILL)
+            expected = 17 + 3 * i;
          if (test == COUNTER_SEQUENCE) {
             const uint32_t values[] = {100, 100, 100, 99, 99, 103, 50, 200, 8, 24, 27, 7, 42};
             expected = values[i];
@@ -414,12 +444,19 @@ int main(void)
    uint32_t *input = input_data;
    memset(input + INPUT_WORDS, 0, 16 * sizeof(uint32_t));
    for (unsigned i = 0; i < INPUT_WORDS; ++i)
+#ifdef PS5_COMPUTE_BUFFER_SPILL_PROBE
+      input[i] = 17 + 3 * i;
+#else
       input[i] = i % 16 >= 4 && i % 16 < 8 ?
          1000 + 101 * (i / 16) + 7 * (i % 16 - 4) : GUARD_WORD;
+#endif
 #ifndef PS5_COMPUTE_PIPE_PROBE
    PsbcCompileOptions opts = {
       .target = PSBC_TARGET_PS5, .stage = PSBC_STAGE_COMPUTE,
       .optimise = true, .address32_hi = (uintptr_t)table >> 32,
+#ifdef PS5_COMPUTE_BUFFER_SPILL_PROBE
+      .compute_buffer_spills = true,
+#endif
       .gallium_buffer_arrays = true, .descriptor_binding_count = 3,
       .descriptor_bindings = {{
          .binding = PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
@@ -437,7 +474,7 @@ int main(void)
 #endif
    /* Scratch cases remain in the host compile/rejection checks, never this
     * native batch. The shared package guard must stay enabled until fixed. */
-   for (unsigned test = 0; test < SCRATCH; ++test) {
+   for (unsigned test = FIRST_NATIVE_TEST; test < END_NATIVE_TEST; ++test) {
       status = 1;
       if (test != BUFFER_ALIAS && test != INDIRECT) /* Keep the GPU producer's result. */
          memset(prefix, 0xcd, (OUTPUT_WORDS + PREFIX_WORDS) * sizeof(uint32_t));
@@ -452,6 +489,8 @@ int main(void)
       bindings[OUTPUT_BINDING] = (struct pipe_shader_buffer){
          output_buffer, PREFIX_WORDS * sizeof(uint32_t), cases[test].words * sizeof(uint32_t)
       };
+      if (test == BUFFER_SPILL)
+         bindings[1] = (struct pipe_shader_buffer){buffers[2], 0, INPUT_WORDS * sizeof(uint32_t)};
       if (test == COUNTER_SEQUENCE)
          bindings[15] = bindings[OUTPUT_BINDING]; /* Mesa reserves SSBO8..15 for counters. */
       if (test == BUFFER_RANGES || test == UBO_RANGES) {
@@ -558,7 +597,7 @@ int main(void)
       memcpy(input + INPUT_WORDS, user_constants, sizeof(user_constants));
       memset(user_constants, 0, sizeof(user_constants));
       memset(table, 0, 31 * 16 + 8 * 32);
-      if (test >= IMAGE_SINT_STORE) {
+      if (test != BUFFER_SPILL && test >= IMAGE_SINT_STORE) {
          if (ps5_resource_storage_image_descriptor(images[test >= IMAGE_FLOAT_STORE ? 9 : 8], 0,
                (uint32_t *)table + 31 * 4))
             goto cleanup;
@@ -589,6 +628,11 @@ int main(void)
       fflush(stdout);
       if (compile_rc != PSBC_RESULT_OK || (test == SHARED && compiled.metadata.compute_wave_size != 32))
          goto cleanup;
+      if (test == BUFFER_SPILL &&
+          (!compiled.metadata.scratch_buffer_backed ||
+           !compiled.metadata.scratch_bytes_per_wave ||
+           compiled.metadata.scratch_size_per_thread))
+         goto cleanup;
       uint32_t direct_groups[3];
       memcpy(direct_groups, test == INDIRECT ? output : cases[test].groups, sizeof(direct_groups));
       int rc = ps5_agc_compute_execute(screen, &compiled, buffers[0], buffers + 1, 12, direct_groups);
@@ -603,12 +647,16 @@ int main(void)
       status |= prefix_correct != PREFIX_WORDS;
       unsigned input_correct = 0;
       for (unsigned i = 0; i < INPUT_WORDS; ++i) {
+#ifdef PS5_COMPUTE_BUFFER_SPILL_PROBE
+         const uint32_t expected = 17 + 3 * i;
+#else
          const uint32_t expected = i % 16 >= 4 && i % 16 < 8 ?
             1000 + 101 * (i / 16) + 7 * (i % 16 - 4) : GUARD_WORD;
+#endif
          input_correct += input[i] == expected;
       }
       status |= input_correct != INPUT_WORDS;
-      if (test >= IMAGE_STORE) {
+      if (test != BUFFER_SPILL && test >= IMAGE_STORE) {
          const unsigned first = test >= IMAGE_FLOAT_STORE ? 9 : test >= IMAGE_SINT_STORE ? 8 :
                                 test >= IMAGE_BANK_STORE ? 0 : 7;
          const unsigned end = first >= 8 ? first + 1 : 8;
@@ -655,6 +703,10 @@ cleanup:
    for (unsigned i = 0; i < ARRAY_SIZE(buffers); ++i)
       pipe_resource_reference(&buffers[i], NULL);
    screen->destroy(screen);
+#ifdef PS5_COMPUTE_BUFFER_SPILL_PROBE
+   printf("[ps5-compute] completed status=%d (internal buffer-spill probe; GL caps unchanged)\n", status);
+#else
    printf("[ps5-compute] completed status=%d (internal probe; GL caps unchanged; scratch excluded)\n", status);
+#endif
    return status;
 }

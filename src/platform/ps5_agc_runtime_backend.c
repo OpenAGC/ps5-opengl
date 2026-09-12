@@ -791,8 +791,8 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
    /* Bounded command area, separate cache line for completion, then header/code. */
    const int64_t direct_size = sceKernelGetDirectMemorySize();
    struct ps5_agc_compute_memory_layout layout;
-   /* Ordinary per-invocation storage only; hardware scratch is rejected above. */
    if (direct_size <= 0 || ps5_agc_compute_plan_memory(code_size, m->compute_private_stride,
+         m->scratch_buffer_backed ? m->scratch_bytes_per_wave : 0,
          m->compute_workgroup_size, groups, (size_t)direct_size, &layout))
       goto cleanup;
    memory_size = layout.allocation_size;
@@ -807,13 +807,18 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
    memset(memory, 0, memory_size);
    memcpy(memory + 0x4000, header, header_size);
    memcpy(memory + 0x5000, code, code_size);
-   if (layout.private_size) {
-      memset(memory + layout.private_offset - 0x4000u, 0xa5, 0x4000u);
-      memset(memory + layout.private_offset + layout.private_size, 0xa5, 0x4000u);
-      const uintptr_t address = (uintptr_t)memory + layout.private_offset;
+   const size_t auxiliary_offset = layout.private_size ? layout.private_offset : layout.scratch_offset;
+   const size_t auxiliary_size = layout.private_size ? layout.private_size : layout.scratch_size;
+   if (auxiliary_size) {
+      memset(memory + auxiliary_offset - 0x4000u, 0xa5, 0x4000u);
+      memset(memory + auxiliary_offset + auxiliary_size, 0xa5, 0x4000u);
+      const uintptr_t address = (uintptr_t)memory + auxiliary_offset;
       user_data[0] = (uint32_t)address;
       user_data[1] = (uint32_t)(address >> 32);
    }
+   if (layout.scratch_size)
+      tmpring_size = PS5_AGC_COMPUTE_SCRATCH_WAVES |
+                    (m->scratch_bytes_per_wave / 1024u << 12);
    if (agc.create_shader(&program, memory + 0x4000, memory + 0x5000) ||
        program != memory + 0x4000)
       goto cleanup;
@@ -847,8 +852,8 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
                              (uintptr_t)addresses[i], allocation_sizes[i], 0xa0))
          goto cleanup;
    }
-   if (layout.private_size && !sceAgcDcbAcquireMem(&command, 0, 0, 0x4380,
-         (uintptr_t)memory + layout.private_offset, layout.private_size, 0xa0))
+   if (auxiliary_size && !sceAgcDcbAcquireMem(&command, 0, 0, 0x4380,
+         (uintptr_t)memory + auxiliary_offset, auxiliary_size, 0xa0))
       goto cleanup;
    if (!sceAgcCbDispatch(&command, groups[0], groups[1], groups[2],
                          m->compute_wave_size == 32 ? 0x8000 : 0) ||
@@ -867,10 +872,10 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
       sceKernelUsleep(1000);
    }
    runtime_require_retirement(submit_rc == 0 && suspend_rc == 0 && polls < 2000);
-   if (layout.private_size) {
-      flush_gpu_data(memory + layout.private_offset - 0x4000u, layout.private_size + 0x8000u);
-      const uint32_t *before = (const uint32_t *)(memory + layout.private_offset - 0x4000u);
-      const uint32_t *after = (const uint32_t *)(memory + layout.private_offset + layout.private_size);
+   if (auxiliary_size) {
+      flush_gpu_data(memory + auxiliary_offset - 0x4000u, auxiliary_size + 0x8000u);
+      const uint32_t *before = (const uint32_t *)(memory + auxiliary_offset - 0x4000u);
+      const uint32_t *after = (const uint32_t *)(memory + auxiliary_offset + auxiliary_size);
       for (unsigned i=0; i<0x4000u/4; ++i)
          runtime_require_retirement(before[i] == UINT32_C(0xa5a5a5a5) &&
                                     after[i] == UINT32_C(0xa5a5a5a5));

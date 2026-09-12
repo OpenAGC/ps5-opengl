@@ -23,6 +23,7 @@ align_to(size_t value, size_t alignment)
 
 int
 ps5_agc_compute_plan_memory(size_t code_size, uint32_t private_stride,
+                            uint32_t scratch_bytes_per_wave,
                             const uint32_t local[3], const uint32_t groups[3],
                             size_t budget, struct ps5_agc_compute_memory_layout *out)
 {
@@ -31,7 +32,9 @@ ps5_agc_compute_plan_memory(size_t code_size, uint32_t private_stride,
    memset(out, 0, sizeof(*out));
    if (!local || !groups || !code_size || (code_size & 3u) ||
        code_size > 16u * 1024u * 1024u || (private_stride & 3u) ||
-       private_stride > 4096u)
+       private_stride > 4096u || (private_stride && scratch_bytes_per_wave) ||
+       (scratch_bytes_per_wave && ((scratch_bytes_per_wave & 1023u) ||
+        scratch_bytes_per_wave / 1024u > 0x3ffffu)))
       return -1;
    uint32_t invocations = 1;
    for (unsigned i = 0; i < 3; ++i) {
@@ -43,21 +46,28 @@ ps5_agc_compute_plan_memory(size_t code_size, uint32_t private_stride,
    struct ps5_agc_compute_memory_layout plan = {
       .allocation_size = align_to(0x5000u + code_size, 0x4000u)
    };
-   if (private_stride) {
+   if (private_stride || scratch_bytes_per_wave) {
       /* ponytail: retain the qualified 4 KiB/invocation ceiling and 32-bit
        * byte indexing; wider regions need compiler/addressing qualification. */
-      uint64_t bytes = (uint64_t)invocations * private_stride;
-      for (unsigned i = 0; i < 3; ++i) {
-         if (bytes > UINT32_MAX / groups[i])
-            return -1;
-         bytes *= groups[i];
+      uint64_t bytes;
+      if (private_stride) {
+         bytes = (uint64_t)invocations * private_stride;
+         for (unsigned i = 0; i < 3; ++i) {
+            if (bytes > UINT32_MAX / groups[i])
+               return -1;
+            bytes *= groups[i];
+         }
+      } else {
+         bytes = (uint64_t)scratch_bytes_per_wave * PS5_AGC_COMPUTE_SCRATCH_WAVES;
       }
       const uint64_t padded = (bytes + 0x3fffu) & ~UINT64_C(0x3fff);
       const uint64_t total = plan.allocation_size + padded + 0x8000u;
       if (total > SIZE_MAX || total > budget)
          return -1;
-      plan.private_offset = plan.allocation_size + 0x4000u;
-      plan.private_size = (size_t)padded;
+      size_t *offset = private_stride ? &plan.private_offset : &plan.scratch_offset;
+      size_t *size = private_stride ? &plan.private_size : &plan.scratch_size;
+      *offset = plan.allocation_size + 0x4000u;
+      *size = (size_t)padded;
       plan.allocation_size = (size_t)total;
    }
    if (plan.allocation_size > budget)
@@ -179,9 +189,11 @@ compute_metadata_valid(const PsbcShaderMetadata *m)
       if (!m->scratch_bytes_per_wave || (m->scratch_bytes_per_wave & 1023u) ||
           m->scratch_bytes_per_wave / 1024u > 0x3ffffu ||
           m->scratch_size_per_thread > m->scratch_bytes_per_wave / m->compute_wave_size ||
+          (m->scratch_buffer_backed && m->scratch_size_per_thread) ||
           m->scratch_buffer_table_user_data_dword != 0)
          return false;
-   } else if (m->scratch_bytes_per_wave || m->scratch_size_per_thread) {
+   } else if (m->scratch_buffer_backed || m->scratch_bytes_per_wave ||
+              m->scratch_size_per_thread) {
       return false;
    }
    if (m->descriptor_set0_valid) {
@@ -267,11 +279,10 @@ ps5_agc_package_build(const PsbcShaderOutput *shader,
    metadata = &shader->metadata;
    if (metadata->compute_private_stride && metadata->hardware_stage != PSBC_HW_STAGE_COMPUTE)
       return -1;
-   /* Native flat-scratch addressing is not validated. The initial CS probe
-    * hit MEMVIOL despite passing host allocation/binding checks. Reject here
-    * so every package consumer stops before allocation or GPU submission. */
-   if (metadata->scratch_valid || metadata->scratch_bytes_per_wave ||
-       metadata->scratch_size_per_thread)
+   /* The initial flat-scratch CS probe hit MEMVIOL. Only the separately
+    * identified MUBUF spill contract may reach native submission. */
+   if ((metadata->scratch_valid || metadata->scratch_bytes_per_wave ||
+        metadata->scratch_size_per_thread) && !metadata->scratch_buffer_backed)
       return -7;
    context = metadata->context_registers;
    shader_registers = metadata->shader_registers;

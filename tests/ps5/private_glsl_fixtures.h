@@ -86,7 +86,7 @@
     "nir_intrinsics.h": "2d6f9e713863ce5a5fa51d4ed684896ce62fd347f289ae7a6c458d4b0069c8ee",
     "nir_opcodes.h": "c0614e3a5d421c17720e449d82f24087c9c855a9b3c0a7eec3a72dd193063922"
   },
-  "metadata_version": 12,
+  "metadata_version": 13,
   "options_values": {
     "avoid_ternary_with_fabs": 0,
     "avoid_ternary_with_two_constants": 0,
@@ -316,7 +316,7 @@ PS5_GLSL_RECEIPT_END */
 #define PS5_GLSL_DEFAULT_BYTES 0u
 #define PS5_GLSL_ADDEND_OFFSET 0u
 _Static_assert(PS5_GLSL_DEFAULT_BYTES == 0, "private GLSL has no defaults");
-_Static_assert(PSBC_SHADER_METADATA_VERSION == 12u, "regenerate GLSL fixtures");
+_Static_assert(PSBC_SHADER_METADATA_VERSION == 13u, "regenerate GLSL fixtures");
 _Static_assert(sizeof(nir_shader) == 584u, "GLSL fixture ABI: sizeof(nir_shader)");
 _Static_assert(sizeof(nir_shader_compiler_options) == 320u, "GLSL fixture ABI: sizeof(nir_shader_compiler_options)");
 _Static_assert(sizeof(struct shader_info) == 424u, "GLSL fixture ABI: sizeof(struct shader_info)");
