@@ -4,6 +4,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -15,6 +16,19 @@ pixel_is(const uint8_t *pixel, uint8_t r, uint8_t g, uint8_t b, uint8_t a)
 {
    return pixel[0] == r && pixel[1] == g && pixel[2] == b && pixel[3] == a;
 }
+
+#ifdef PS5_GL43_COPY_IMAGE_TEST
+static int
+has_extension(const char *wanted)
+{
+   GLint count = 0;
+   glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+   for (GLint i = 0; i < count; ++i)
+      if (!strcmp((const char *)glGetStringi(GL_EXTENSIONS, (GLuint)i), wanted))
+         return 1;
+   return 0;
+}
+#endif
 
 int
 main(void)
@@ -47,7 +61,7 @@ main(void)
    EGLContext context = EGL_NO_CONTEXT;
    EGLint major = 0, minor = 0, count = 0;
    GLuint framebuffer = 0, renderbuffer = 0;
-   GLuint textures[3] = {0};
+   GLuint textures[4] = {0};
    GLenum status = 0, status_3d = 0, error = GL_NO_ERROR;
    int made_current = 0, passed = 0;
    EGLBoolean cleanup_ok = EGL_TRUE;
@@ -79,7 +93,7 @@ main(void)
    if (status != GL_FRAMEBUFFER_COMPLETE)
       goto cleanup;
 
-   glGenTextures(3, textures);
+   glGenTextures(4, textures);
    glClearBufferfv(GL_COLOR, 0, red);
    glBindTexture(GL_TEXTURE_2D, textures[0]);
    glCopyTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 0, 0, 4, 4, 0);
@@ -132,14 +146,34 @@ main(void)
    for (unsigned i = 5; i < 8; ++i)
       passed &= pixel_is(pixels_3d + i * 4u, 0, 0, 255, 255);
 
+#ifdef PS5_GL43_COPY_IMAGE_TEST
+   PFNGLCOPYIMAGESUBDATAPROC copy_image =
+      (PFNGLCOPYIMAGESUBDATAPROC)eglGetProcAddress("glCopyImageSubData");
+   glBindTexture(GL_TEXTURE_2D, textures[3]);
+   glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 4, 4, 0,
+                GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+   if (!copy_image || !has_extension("GL_ARB_copy_image"))
+      passed = 0;
+   else
+      copy_image(textures[0], GL_TEXTURE_2D, 0, 0, 0, 0,
+                 textures[3], GL_TEXTURE_2D, 0, 0, 0, 0, 4, 4, 1);
+   glGetTexImage(GL_TEXTURE_2D, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels_2d);
+   for (unsigned y = 0; y < 4; ++y)
+      for (unsigned x = 0; x < 4; ++x)
+         passed &= pixel_is(pixels_2d + (y * 4u + x) * 4u,
+                            x >= 1 && x <= 2 && y >= 1 && y <= 2 ? 0 : 255,
+                            x >= 1 && x <= 2 && y >= 1 && y <= 2 ? 255 : 0,
+                            0, 255);
+#endif
+
    error = glGetError();
    passed &= status_3d == GL_FRAMEBUFFER_COMPLETE && error == GL_NO_ERROR;
    printf("[ps5-egl-core33-texture-copy] fbo=0x%x/0x%x error=0x%x "
           "result=%d\n", status, status_3d, error, passed ? 0 : 1);
 
 cleanup:
-   if (textures[0] || textures[1] || textures[2])
-      glDeleteTextures(3, textures);
+   if (textures[0] || textures[1] || textures[2] || textures[3])
+      glDeleteTextures(4, textures);
    if (renderbuffer)
       glDeleteRenderbuffers(1, &renderbuffer);
    if (framebuffer)

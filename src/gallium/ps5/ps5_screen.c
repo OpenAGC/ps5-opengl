@@ -12536,6 +12536,8 @@ ps5_screen_create(void)
    caps->seamless_cube_map_per_texture =
       PS5_ENABLE_SEAMLESS_CUBE_CANDIDATE;
    caps->cube_map_array = PS5_ENABLE_TEXTURE_CUBE_ARRAY_CANDIDATE;
+   caps->copy_between_compressed_and_plain_formats =
+      PS5_ENABLE_GLSL_430_CANDIDATE;
    caps->gl_begin_end_buffer_size = 512 * 1024;
    caps->min_map_buffer_alignment = 64;
    vs_caps = (struct pipe_shader_caps *)
