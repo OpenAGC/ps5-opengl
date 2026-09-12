@@ -255,6 +255,7 @@ ps5_screen_core33.o: $(DRIVER)/ps5_screen.c $(DRIVER)/ps5_screen.h \
 		-DPS5_ENABLE_SEAMLESS_CUBE_CANDIDATE=1 \
 		-DPS5_ENABLE_GEOMETRY_CANDIDATE=1 \
 		-DPS5_ENABLE_TESSELLATION_CANDIDATE=1 \
+		-DPS5_ENABLE_DRAW_INDIRECT_CANDIDATE=1 \
 		-DPS5_ENABLE_LAYERED_RENDER_TARGET_CANDIDATE=1 \
 		-DPS5_ENABLE_MRT_CANDIDATE=1 \
 		-DPS5_ENABLE_INDEPENDENT_BLEND_CANDIDATE=1 \
@@ -692,6 +693,9 @@ egl_public_tessellation_runtime.o: tessellation_runtime_gate.c \
 	$(CC) $(CFLAGS) $(PSBC_CFLAGS) -I$(PROJECT)/src/platform -c -o $@ $<
 
 egl_public_tessellation.o: egl_public_tessellation.c
+	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
+
+egl_public_draw_indirect.o: egl_public_draw_indirect.c
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
 
 egl_public_tessellation.elf: egl_public_tessellation.o ps5_egl_core33.o \

@@ -585,6 +585,9 @@ ps5_render_condition_passes(const struct ps5_context *context);
 #ifndef PS5_ENABLE_TESSELLATION_CANDIDATE
 #define PS5_ENABLE_TESSELLATION_CANDIDATE 0
 #endif
+#ifndef PS5_ENABLE_DRAW_INDIRECT_CANDIDATE
+#define PS5_ENABLE_DRAW_INDIRECT_CANDIDATE 0
+#endif
 #ifndef PS5_ENABLE_MRT_CANDIDATE
 #define PS5_ENABLE_MRT_CANDIDATE 0
 #endif
@@ -8738,6 +8741,16 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
    struct pipe_draw_start_count_bias uploaded_draw;
    unsigned uploaded_offset;
 
+   if (indirect) {
+      if (!PS5_ENABLE_DRAW_INDIRECT_CANDIDATE || !info ||
+          indirect->count_from_stream_output) {
+         context->last_draw_status = -2;
+         return;
+      }
+      util_draw_indirect(base, info, drawid_offset, indirect);
+      return;
+   }
+
 #ifdef PS5_DEFERRED_DRAW_BATCH
    if (ps5_try_deferred_draw(base, info, drawid_offset, indirect, draws, num_draws))
       return;
@@ -12385,6 +12398,7 @@ ps5_screen_create(void)
    caps->conditional_render = PS5_ENABLE_OCCLUSION_QUERY_CANDIDATE;
    caps->conditional_render_inverted =
       PS5_ENABLE_OCCLUSION_QUERY_CANDIDATE;
+   caps->draw_indirect = PS5_ENABLE_DRAW_INDIRECT_CANDIDATE;
    caps->depth_clip_disable = PS5_ENABLE_DEPTH_CLAMP_CANDIDATE;
    caps->texture_multisample = PS5_ENABLE_MSAA4_CANDIDATE;
    caps->sample_shading = PS5_ENABLE_MSAA4_CANDIDATE;
