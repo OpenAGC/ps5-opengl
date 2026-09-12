@@ -269,11 +269,11 @@
   "source_sha256": {
     "src/gallium/ps5/ps5_screen.c": "a7cef2d7db55e5516b34644610876df826c2abc4091d706a6ac1a97ca0752913",
     "tests/ps5/glsl_handoff/abi.c": "f97e326a3d612d72dfc7348c46bafc40f5da203c8c97479c9e5762d06bfff4cf",
-    "tests/ps5/glsl_handoff/backend.c": "121d70626ded447b7ce39d992476cbec3b8d6188d1923e6df69542e7d0ba2e96",
+    "tests/ps5/glsl_handoff/backend.c": "de5e77a4e1105535bd4d3d5bcb2c3c25b506300beccd8c87588f1399fffe1f7a",
     "tests/ps5/glsl_handoff/check_target_abi.py": "df9d77a410bf3443f3bb752bf36ba69068d4ff1cf3f1cf503172823df8d28e86",
     "tests/ps5/glsl_handoff/configure.sh": "aeeb7566d64152015fcc560481862f4192a5af5e7f13bc5c62a653fd56c7914e",
     "tests/ps5/glsl_handoff/handoff.cpp": "407f62a98a51dc4d1de2bc2f3c012d5acac5d864b5cc86a77d55982a0e160781",
-    "tests/ps5/glsl_handoff/run.py": "1206fb673b8a6c892b3132b7796f4d92c718ce61ae9ef23b3c3087d375c79afc",
+    "tests/ps5/glsl_handoff/run.py": "378e5ca00adfb7aa9ac2f8c45aaea2237e3681c4207429bfad0991b782314b8e",
     "third_party/mesa-26.2.0/src/compiler/glsl/gl_nir_linker.c": "ee29a3168980ad233e3ece7b93b87e5e9a56275b07e4a0ddb146594afc05be81",
     "third_party/mesa-26.2.0/src/compiler/glsl/standalone.cpp": "23e3f7aa805f2d13b0ca77afd169277d31bde3f9e7ef9bbb13bceadbbe3f21c7",
     "third_party/mesa-26.2.0/src/compiler/glsl/standalone_scaffolding.cpp": "075f5d7c019fcef79c8aca5cc234d1d3d46cc182b335f1103d37ffc01f0d9c31",
@@ -300,7 +300,7 @@
   }
 }
 PS5_GLSL_RECEIPT_END */
-#define PS5_GLSL_RECEIPT_SHA256 "77cc1d2befbdcfc7b2df395904cfb87cb5bb8a4fbef39dff8fee063348a0c822"
+#define PS5_GLSL_RECEIPT_SHA256 "b5ff1b05b4cf723a410bfdbb142a4681c097673c096c79ec9684ef36147d7dfe"
 #define PS5_GLSL_DEFAULT_BYTES 16u
 #define PS5_GLSL_ADDEND_OFFSET 0u
 _Static_assert(PS5_GLSL_DEFAULT_BYTES > 0 && PS5_GLSL_DEFAULT_BYTES <= 64 &&

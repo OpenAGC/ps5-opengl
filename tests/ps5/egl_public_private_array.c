@@ -14,6 +14,33 @@
 #ifndef PS5_PRIVATE_INTERNAL_TEST
 #define PS5_PRIVATE_INTERNAL_TEST 0
 #endif
+#ifndef PS5_PRIVATE_GLSL_TEST
+#define PS5_PRIVATE_GLSL_TEST 0
+#endif
+#if PS5_PRIVATE_GLSL_TEST
+#include "private_glsl_fixtures.h"
+#include "compiler/nir/nir_serialize.h"
+#include "util/blob.h"
+
+static nir_shader *load_private_glsl(unsigned fixture, const nir_shader_compiler_options *options) {
+    if (fixture >= ARRAY_SIZE(ps5_glsl_fixtures) || !ps5_glsl_options_match(options)) return NULL;
+    const size_t size=ps5_glsl_fixtures[fixture].size;
+    if (!size || size>1048576) return NULL;
+    struct blob_reader reader;
+    blob_reader_init(&reader,ps5_glsl_fixtures[fixture].data,size);
+    nir_shader *nir=nir_deserialize(NULL,options,&reader);
+    if (!nir || reader.overrun || reader.current!=reader.end ||
+        nir->info.stage!=MESA_SHADER_COMPUTE || nir->info.spec ||
+        nir->info.workgroup_size_variable || nir->info.shared_size ||
+        nir->info.workgroup_size[0]!=2 || nir->info.workgroup_size[1]!=2 ||
+        nir->info.workgroup_size[2]!=4) {
+        ralloc_free(nir);
+        return NULL;
+    }
+    nir_validate_shader(nir,"prepared private GLSL fixture");
+    return nir;
+}
+#endif
 #if PS5_PRIVATE_BUFFER_TEST
 #include "private_buffer_fixture.h"
 #endif
@@ -54,7 +81,11 @@ int main(void) {
         table[slot*4]=address; table[slot*4+1]=address>>32;
         table[slot*4+2]=COUNT*4*(slot?3:1); table[slot*4+3]=UINT32_C(0x31016fac);
     }
-    const unsigned cases[]={4,
+    const unsigned cases[]={
+#if PS5_PRIVATE_GLSL_TEST
+        64,256,1024,
+#else
+        4,
 #if PS5_PRIVATE_INTERNAL_TEST
         32,1024,
 #else
@@ -63,7 +94,11 @@ int main(void) {
         64,256,1024,
 #endif
 #endif
+#endif
         0};
+#if PS5_PRIVATE_GLSL_TEST
+    printf("[ps5-private-glsl] receipt=%s\n",PS5_GLSL_RECEIPT_SHA256);
+#endif
     for (unsigned test=0;test<sizeof(cases)/sizeof(cases[0]);++test) {
         const unsigned words=cases[test];
         memset(memory[1],0xcd,sizes[1]); memset(memory[2],0xcd,sizes[2]);
@@ -80,7 +115,11 @@ int main(void) {
         }
         nir_builder b;
         if (words) {
-#if PS5_PRIVATE_INTERNAL_TEST
+#if PS5_PRIVATE_GLSL_TEST
+            memset(&b,0,sizeof(b));
+            b.shader=load_private_glsl(test,screen->nir_options[MESA_SHADER_COMPUTE]);
+            if (!b.shader) goto done;
+#elif PS5_PRIVATE_INTERNAL_TEST
             const uint16_t shape[3]={2,2,4};
             b=private_array_fixture_shape(words,shape);
 #else
@@ -114,10 +153,11 @@ int main(void) {
         if (rc || compiled.metadata.scratch_valid || compiled.metadata.scratch_bytes_per_wave ||
             compiled.metadata.scratch_size_per_thread) goto done;
 #if PS5_PRIVATE_INTERNAL_TEST
+        const unsigned expected_stride=PS5_PRIVATE_GLSL_TEST && words<=64 ? 0 : words*4;
         printf("[ps5-private-internal] stride=%u expected=%u grid=4x4x4 local=2x2x4\n",
-            compiled.metadata.compute_private_stride,words*4);
+            compiled.metadata.compute_private_stride,expected_stride);
         fflush(stdout);
-        if (compiled.metadata.compute_private_stride!=words*4) goto done;
+        if (compiled.metadata.compute_private_stride!=expected_stride) goto done;
         const uint32_t groups[]={4,4,4};
 #else
         const uint32_t groups[]={COUNT/16,1,1};

@@ -27,6 +27,17 @@ void handoff_compile(nir_shader *nir, unsigned fixture) {
    unsigned ubos = nir->info.num_ubos;
    assert(handoff_prepare(nir) && nir->info.num_ubos == ubos);
    nir_opt_constant_folding(nir);
+   if (PS5_GLSL_PRIVATE_TEST) {
+      struct blob prepared;
+      blob_init(&prepared);
+      nir_serialize(&prepared, nir, false);
+      char name[48];
+      snprintf(name, sizeof(name), "fixture-%u-prepared.nir", fixture);
+      FILE *file = fopen(name, "wb"); assert(file);
+      assert(fwrite(prepared.data, prepared.size, 1, file) == 1);
+      assert(fclose(file) == 0);
+      blob_finish(&prepared);
+   }
    unsigned ubo_mask=0, tex_count=0;
    nir_foreach_function_impl(impl,nir) nir_foreach_block(block,impl) nir_foreach_instr(instr,block) {
       if (instr->type==nir_instr_type_intrinsic) {

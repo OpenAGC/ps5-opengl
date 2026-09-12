@@ -24,12 +24,10 @@ ROOT = Path(__file__).resolve().parents[3]
 assert (ROOT / "tests/ps5/glsl_handoff").resolve() == HERE
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--export-header', action='store_true',
-                    help='After all host checks pass, regenerate tests/ps5/compute_glsl_fixtures.h')
+                    help='After all host checks pass, regenerate the selected native fixture header')
 parser.add_argument('--private-arrays', action='store_true',
-                    help='Host-only parsed private-array checks in an isolated output directory')
+                    help='Parsed private-array checks in an isolated output directory')
 cli_args = parser.parse_args()
-if cli_args.private_arrays and cli_args.export_header:
-    parser.error('Private-array fixtures are not qualified for native header export yet')
 private_defines = ['-DPS5_GLSL_PRIVATE_TEST=1'] if cli_args.private_arrays else []
 BUILD = ROOT / 'build/mesa-host-frontend'
 MESA = ROOT / 'third_party/mesa-26.2.0'
@@ -196,9 +194,13 @@ def export_header(target_abi):
     values = {k: int(v) for k, v in values.items()}
     layout = [list(map(int, line.split())) for line in (OUT/'fixtures.txt').read_text().splitlines()]
     assert len(layout) == 3 and [row[0] for row in layout] == [0, 1, 2]
-    assert 0 <= layout[0][1] < layout[0][2] <= 64
+    if cli_args.private_arrays:
+        assert layout[0][1:] == [0, 0]
+    else:
+        assert 0 <= layout[0][1] < layout[0][2] <= 64
     assert layout[1][1:] == layout[2][1:] == [0, 0]
-    blobs = [(OUT/f'fixture-{i}.nir').read_bytes() for i in range(3)]
+    suffix = '-prepared' if cli_args.private_arrays else ''
+    blobs = [(OUT/f'fixture-{i}{suffix}.nir').read_bytes() for i in range(3)]
     literals = [(OUT/f'fixture-{i}.comp').read_text() for i in range(3)]
     assert all(0 < len(blob) <= 1048576 for blob in blobs)
     metadata_version = int(re.search(r'#define PSBC_SHADER_METADATA_VERSION (\d+)u',
@@ -220,7 +222,9 @@ def export_header(target_abi):
     paths += [PSBC/'src/compiler/nir'/name for name in ('nir_intrinsics.h', 'nir_opcodes.h')]
     receipt = {
         'schema': 1, 'encoding': 'source hashes use UTF-8 normalized LF; blobs use raw bytes',
-        'scope': 'parsed GLSL + selected ST passes; not st_link_shader or a stable NIR format',
+        'scope': ('parsed GLSL + selected ST passes' +
+                  (' + extracted driver preparation' if cli_args.private_arrays else '') +
+                  '; not st_link_shader or a stable NIR format'),
         'metadata_version': metadata_version,
         'target_abi': target_abi,
         'source_sha256': {p.relative_to(ROOT).as_posix(): sha(p.read_text().encode()) for p in paths},
@@ -245,13 +249,14 @@ def export_header(target_abi):
         ' * Regenerate explicitly from repository root (WSL):',
         ' * bash tests/ps5/glsl_handoff/configure.sh  # only if not configured',
         ' * ninja -C build/mesa-host-frontend -j6 src/compiler/glsl/glsl_compiler',
-        ' * python3 tests/ps5/glsl_handoff/run.py --export-header',
+        ' * python3 tests/ps5/glsl_handoff/run.py --export-header' +
+        (' --private-arrays' if cli_args.private_arrays else ''),
         ' * Normal builds consume this checked-in header, never the exporter.',
         ' * Source/options/serializer audit: receipt below. ABI static assertions',
         ' * do not replace the independent target-vs-host bitfield/layout probe.',
         ' */',
-        '#ifndef PS5_COMPUTE_GLSL_FIXTURES_H',
-        '#define PS5_COMPUTE_GLSL_FIXTURES_H',
+        '#ifndef PS5_' + ('PRIVATE' if cli_args.private_arrays else 'COMPUTE') + '_GLSL_FIXTURES_H',
+        '#define PS5_' + ('PRIVATE' if cli_args.private_arrays else 'COMPUTE') + '_GLSL_FIXTURES_H',
         '#include <stddef.h>',
         '#include <stdint.h>',
         '#include <stdbool.h>',
@@ -263,9 +268,11 @@ def export_header(target_abi):
         f'#define PS5_GLSL_RECEIPT_SHA256 "{receipt_hash}"',
         f'#define PS5_GLSL_DEFAULT_BYTES {layout[0][2]}u',
         f'#define PS5_GLSL_ADDEND_OFFSET {layout[0][1]}u',
+        *(['_Static_assert(PS5_GLSL_DEFAULT_BYTES == 0, "private GLSL has no defaults");']
+          if cli_args.private_arrays else [
         '_Static_assert(PS5_GLSL_DEFAULT_BYTES > 0 && PS5_GLSL_DEFAULT_BYTES <= 64 &&',
         '               !(PS5_GLSL_DEFAULT_BYTES % 4) && !(PS5_GLSL_ADDEND_OFFSET % 4) &&',
-        '               PS5_GLSL_ADDEND_OFFSET + 4 <= PS5_GLSL_DEFAULT_BYTES, "GLSL default layout");',
+        '               PS5_GLSL_ADDEND_OFFSET + 4 <= PS5_GLSL_DEFAULT_BYTES, "GLSL default layout");']),
         f'_Static_assert(PSBC_SHADER_METADATA_VERSION == {metadata_version}u, "regenerate GLSL fixtures");',
     ]
     for expression, value in zip(abi_exprs, abi_values):
@@ -292,7 +299,7 @@ def export_header(target_abi):
         *[f'   {{ps5_glsl_blob_{i}, sizeof(ps5_glsl_blob_{i})}},' for i in range(3)],
         '};', '#endif', ''
     ]
-    destination = ROOT/'tests/ps5/compute_glsl_fixtures.h'
+    destination = ROOT/'tests/ps5'/('private_glsl_fixtures.h' if cli_args.private_arrays else 'compute_glsl_fixtures.h')
     destination.write_text('\n'.join(lines))
     print(f'Exported {destination.relative_to(ROOT)}; receipt sha256={receipt_hash}')
 
