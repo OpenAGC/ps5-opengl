@@ -548,6 +548,9 @@ ps5_render_condition_passes(const struct ps5_context *context);
 #ifndef PS5_ENABLE_GLSL_430_CANDIDATE
 #define PS5_ENABLE_GLSL_430_CANDIDATE 0
 #endif
+#ifndef PS5_ENABLE_GLSL_440_CANDIDATE
+#define PS5_ENABLE_GLSL_440_CANDIDATE 0
+#endif
 #ifndef PS5_ENABLE_FP64_CANDIDATE
 #define PS5_ENABLE_FP64_CANDIDATE 0
 #endif
@@ -6865,6 +6868,38 @@ ps5_get_query_result(struct pipe_context *base,
 }
 
 static void
+ps5_get_query_result_resource(struct pipe_context *base,
+                              struct pipe_query *pipe_query,
+                              enum pipe_query_flags flags,
+                              enum pipe_query_value_type result_type,
+                              int index, struct pipe_resource *resource,
+                              unsigned offset)
+{
+   union pipe_query_result result = {0};
+   uint64_t value;
+
+   if (index < 0) {
+      const struct ps5_query *query = (const struct ps5_query *)pipe_query;
+      value = query && query->ready;
+   } else {
+      if (!ps5_get_query_result(base, pipe_query,
+                                flags & PIPE_QUERY_WAIT, &result))
+         return;
+      value = result.u64;
+   }
+
+   if (result_type == PIPE_QUERY_TYPE_I32) {
+      int32_t out = value > INT32_MAX ? INT32_MAX : (int32_t)value;
+      pipe_buffer_write(base, resource, offset, sizeof(out), &out);
+   } else if (result_type == PIPE_QUERY_TYPE_U32) {
+      uint32_t out = value > UINT32_MAX ? UINT32_MAX : (uint32_t)value;
+      pipe_buffer_write(base, resource, offset, sizeof(out), &out);
+   } else {
+      pipe_buffer_write(base, resource, offset, sizeof(value), &value);
+   }
+}
+
+static void
 ps5_set_active_query_state(struct pipe_context *base, bool enable)
 {
    ((struct ps5_context *)base)->queries_enabled = enable;
@@ -12344,6 +12379,7 @@ ps5_context_create(struct pipe_screen *screen, void *priv, unsigned flags)
    context->base.begin_query = ps5_begin_query;
    context->base.end_query = ps5_end_query;
    context->base.get_query_result = ps5_get_query_result;
+   context->base.get_query_result_resource = ps5_get_query_result_resource;
    context->base.set_active_query_state = ps5_set_active_query_state;
    if (PS5_ENABLE_OCCLUSION_QUERY_CANDIDATE)
       context->base.render_condition = ps5_render_condition;
@@ -12498,13 +12534,15 @@ ps5_screen_create(void)
       PS5_ENABLE_FRAMEBUFFER_SRGB_CANDIDATE;
    caps->blend_equation_separate = true;
    caps->doubles = PS5_ENABLE_FP64_CANDIDATE;
-   caps->glsl_feature_level = PS5_ENABLE_GLSL_430_CANDIDATE ? 430 :
+   caps->glsl_feature_level = PS5_ENABLE_GLSL_440_CANDIDATE ? 440 :
+                              PS5_ENABLE_GLSL_430_CANDIDATE ? 430 :
                               PS5_ENABLE_GLSL_420_CANDIDATE ? 420 :
                               PS5_ENABLE_GLSL_410_CANDIDATE ? 410 :
                               PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :
                               PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :
                               PS5_ENABLE_GEOMETRY_CANDIDATE ? 150 : 140;
    caps->glsl_feature_level_compatibility =
+      PS5_ENABLE_GLSL_440_CANDIDATE ? 440 :
       PS5_ENABLE_GLSL_430_CANDIDATE ? 430 :
       PS5_ENABLE_GLSL_420_CANDIDATE ? 420 :
       PS5_ENABLE_GLSL_410_CANDIDATE ? 410 :
@@ -12626,6 +12664,10 @@ ps5_screen_create(void)
    caps->framebuffer_no_attachment = PS5_ENABLE_GLSL_430_CANDIDATE;
    caps->robust_buffer_access_behavior = PS5_ENABLE_GLSL_430_CANDIDATE;
    caps->sampler_view_target = PS5_ENABLE_GLSL_430_CANDIDATE;
+   caps->buffer_map_persistent_coherent = PS5_ENABLE_GLSL_440_CANDIDATE;
+   caps->query_buffer_object = PS5_ENABLE_GLSL_440_CANDIDATE;
+   caps->texture_mirror_clamp_to_edge = PS5_ENABLE_GLSL_440_CANDIDATE;
+   caps->shader_array_components = PS5_ENABLE_GLSL_440_CANDIDATE;
    caps->gl_begin_end_buffer_size = 512 * 1024;
    caps->min_map_buffer_alignment = 64;
    vs_caps = (struct pipe_shader_caps *)

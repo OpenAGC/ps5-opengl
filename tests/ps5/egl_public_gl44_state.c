@@ -1,0 +1,173 @@
+// PS5 OpenGL - OpenGL implementation for PlayStation 5.
+// Copyright (C) 2026 BlackBearReloaded
+// SPDX-License-Identifier: GPL-3.0-or-later
+
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+
+#include <EGL/egl.h>
+#include <EGL/eglext.h>
+#define GL_GLEXT_PROTOTYPES 1
+#include <GL/gl.h>
+
+static GLuint
+compile(GLenum type, const char *source)
+{
+   GLuint shader = glCreateShader(type);
+   GLint ok = GL_FALSE;
+
+   glShaderSource(shader, 1, &source, NULL);
+   glCompileShader(shader);
+   glGetShaderiv(shader, GL_COMPILE_STATUS, &ok);
+   if (!ok) {
+      char log[512] = {0};
+      GLsizei length = 0;
+      glGetShaderInfoLog(shader, sizeof(log), &length, log);
+      printf("[ps5-egl-gl44-state] shader=%x log=%.*s\n", type, length, log);
+      glDeleteShader(shader);
+      return 0;
+   }
+   return shader;
+}
+
+static int
+has_extension(const char *name)
+{
+   GLint count = 0;
+   glGetIntegerv(GL_NUM_EXTENSIONS, &count);
+   for (GLint i = 0; i < count; ++i) {
+      const char *extension = (const char *)glGetStringi(GL_EXTENSIONS, i);
+      if (extension && !strcmp(extension, name))
+         return 1;
+   }
+   return 0;
+}
+
+int
+main(void)
+{
+   static const char *vertex_source =
+      "#version 440 core\n"
+      "layout(location=0) in vec4 p;"
+      "layout(location=0,component=1) out float v;"
+      "void main(){gl_Position=p;v=1.0;}\n";
+   static const char *fragment_source =
+      "#version 440 core\n"
+      "layout(location=0,component=1) in float v;"
+      "layout(location=0) out vec4 c;"
+      "void main(){c=vec4(0,v,0,1);}\n";
+   static const uint32_t initial[] = {0x10203040, 0x50607080};
+   const EGLint config_attrs[] = {
+      EGL_SURFACE_TYPE, EGL_WINDOW_BIT, EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
+      EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8, EGL_ALPHA_SIZE, 8,
+      EGL_NONE,
+   };
+   const EGLint context_attrs[] = {
+      EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 3,
+      EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR,
+      EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR, EGL_NONE,
+   };
+   EGLDisplay display = EGL_NO_DISPLAY;
+   EGLSurface surface = EGL_NO_SURFACE;
+   EGLContext context = EGL_NO_CONTEXT;
+   EGLConfig config = NULL;
+   EGLint count = 0;
+   GLuint shaders[2] = {0}, program = 0, storage = 0, query_buffer = 0;
+   GLuint query = 0, texture = 0;
+   GLint linked = GL_FALSE, stride = 0;
+   uint64_t query_value = 0;
+   uint32_t *mapped = NULL;
+   GLenum immutable_error = GL_NO_ERROR, error = GL_NO_ERROR;
+   int storage_ok = 0, query_ok = 0, mirror_ok = 0, passed = 0;
+
+   display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+   if (display == EGL_NO_DISPLAY || !eglInitialize(display, NULL, NULL) ||
+       !eglBindAPI(EGL_OPENGL_API) ||
+       !eglChooseConfig(display, config_attrs, &config, 1, &count) || count != 1)
+      goto done;
+   surface = eglCreateWindowSurface(display, config, 0, NULL);
+   context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attrs);
+   if (surface == EGL_NO_SURFACE || context == EGL_NO_CONTEXT ||
+       !eglMakeCurrent(display, surface, surface, context))
+      goto done;
+
+   glGetIntegerv(GL_MAX_VERTEX_ATTRIB_STRIDE, &stride);
+   shaders[0] = compile(GL_VERTEX_SHADER, vertex_source);
+   shaders[1] = compile(GL_FRAGMENT_SHADER, fragment_source);
+   if (!shaders[0] || !shaders[1])
+      goto done;
+   program = glCreateProgram();
+   glAttachShader(program, shaders[0]);
+   glAttachShader(program, shaders[1]);
+   glLinkProgram(program);
+   glGetProgramiv(program, GL_LINK_STATUS, &linked);
+
+   glGenBuffers(1, &storage);
+   glBindBuffer(GL_ARRAY_BUFFER, storage);
+   glBufferStorage(GL_ARRAY_BUFFER, sizeof(initial), initial,
+                   GL_MAP_READ_BIT | GL_MAP_WRITE_BIT | GL_MAP_PERSISTENT_BIT |
+                   GL_MAP_COHERENT_BIT | GL_DYNAMIC_STORAGE_BIT);
+   mapped = glMapBufferRange(GL_ARRAY_BUFFER, 0, sizeof(initial),
+                             GL_MAP_READ_BIT | GL_MAP_WRITE_BIT |
+                             GL_MAP_PERSISTENT_BIT | GL_MAP_COHERENT_BIT);
+   if (mapped) {
+      storage_ok = !memcmp(mapped, initial, sizeof(initial));
+      mapped[1] ^= UINT32_C(0xffffffff);
+   }
+   glBufferData(GL_ARRAY_BUFFER, sizeof(initial), initial, GL_STATIC_DRAW);
+   immutable_error = glGetError();
+
+   glGenQueries(1, &query);
+   glBeginQuery(GL_TIME_ELAPSED, query);
+   glClear(GL_COLOR_BUFFER_BIT);
+   glEndQuery(GL_TIME_ELAPSED);
+   glGenBuffers(1, &query_buffer);
+   glBindBuffer(GL_QUERY_BUFFER, query_buffer);
+   glBufferData(GL_QUERY_BUFFER, sizeof(query_value), NULL, GL_DYNAMIC_READ);
+   glGetQueryObjectui64v(query, GL_QUERY_RESULT, 0);
+   glBindBuffer(GL_QUERY_BUFFER, 0);
+   glBindBuffer(GL_COPY_READ_BUFFER, query_buffer);
+   glGetBufferSubData(GL_COPY_READ_BUFFER, 0, sizeof(query_value), &query_value);
+   query_ok = query_value != 0;
+
+   glGenTextures(1, &texture);
+   glBindTexture(GL_TEXTURE_2D, texture);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_MIRROR_CLAMP_TO_EDGE);
+   mirror_ok = glGetError() == GL_NO_ERROR;
+   error = glGetError();
+   passed = linked && stride >= 2048 && storage_ok && query_ok && mirror_ok &&
+            immutable_error == GL_INVALID_OPERATION && error == GL_NO_ERROR &&
+            has_extension("GL_ARB_buffer_storage") &&
+            has_extension("GL_ARB_enhanced_layouts") &&
+            has_extension("GL_ARB_query_buffer_object") &&
+            has_extension("GL_ARB_texture_mirror_clamp_to_edge");
+
+done:
+   printf("[ps5-egl-gl44-state] gl=%s glsl=%s stride=%d linked=%d storage=%d "
+          "immutable=0x%x query=%llu mirror=%d error=0x%x result=%s\n",
+          glGetString(GL_VERSION), glGetString(GL_SHADING_LANGUAGE_VERSION),
+          stride, linked, storage_ok, immutable_error,
+          (unsigned long long)query_value, mirror_ok, error,
+          passed ? "pass" : "fail");
+   if (mapped)
+      glUnmapBuffer(GL_ARRAY_BUFFER);
+   if (texture)
+      glDeleteTextures(1, &texture);
+   if (query)
+      glDeleteQueries(1, &query);
+   glDeleteBuffers(1, &query_buffer);
+   glDeleteBuffers(1, &storage);
+   glDeleteProgram(program);
+   glDeleteShader(shaders[0]);
+   glDeleteShader(shaders[1]);
+   if (display != EGL_NO_DISPLAY)
+      eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE, EGL_NO_CONTEXT);
+   if (context != EGL_NO_CONTEXT)
+      eglDestroyContext(display, context);
+   if (surface != EGL_NO_SURFACE)
+      eglDestroySurface(display, surface);
+   if (display != EGL_NO_DISPLAY)
+      eglTerminate(display);
+   return passed ? 0 : 1;
+}
