@@ -149,7 +149,10 @@ main(void)
 #ifdef PS5_GL43_COPY_IMAGE_TEST
    PFNGLCOPYIMAGESUBDATAPROC copy_image =
       (PFNGLCOPYIMAGESUBDATAPROC)eglGetProcAddress("glCopyImageSubData");
+   glBindTexture(GL_TEXTURE_2D, textures[0]);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
    glBindTexture(GL_TEXTURE_2D, textures[3]);
+   glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, 4, 4, 0,
                 GL_RGBA, GL_UNSIGNED_BYTE, NULL);
    if (!copy_image || !has_extension("GL_ARB_copy_image"))
