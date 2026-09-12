@@ -279,6 +279,15 @@ main(void)
           has_extension("GL_ARB_texture_mirror_clamp_to_edge"),
           has_extension("GL_ARB_texture_stencil8"),
           has_extension("GL_ARB_vertex_type_10f_11f_11f_rev"));
+   printf("[%s] gl45-prereqs es31=%d clip=%d conditional-inverted=%d "
+          "cull-distance=%d derivatives=%d image-samples=%d barrier=%d\n",
+          TEST_NAME, has_extension("GL_ARB_ES3_1_compatibility"),
+          has_extension("GL_ARB_clip_control"),
+          has_extension("GL_ARB_conditional_render_inverted"),
+          has_extension("GL_ARB_cull_distance"),
+          has_extension("GL_ARB_derivative_control"),
+          has_extension("GL_ARB_shader_texture_image_samples"),
+          has_extension("GL_NV_texture_barrier"));
 #endif
 #ifdef PS5_VIEWPORT_ARRAY_TEST
    viewport_array = has_extension("GL_ARB_viewport_array");
