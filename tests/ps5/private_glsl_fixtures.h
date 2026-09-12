@@ -51,7 +51,11 @@
       "bytes": 3596,
       "default_bytes": 0,
       "source": "#version 430\nlayout(local_size_x=2,local_size_y=2,local_size_z=4) in;\nlayout(std430,binding=0) buffer Output { uint result[]; };\nlayout(std430,binding=1) readonly buffer Input { uint data[]; };\nvoid main() { uint id=gl_LocalInvocationIndex+16u*(gl_WorkGroupID.x+gl_NumWorkGroups.x*(gl_WorkGroupID.y+gl_NumWorkGroups.y*gl_WorkGroupID.z));uint values[64]; uint seed=data[3u*id+2u];uint w=data[3u*id]%64u, r=data[3u*id+1u]%64u;for(uint i=0u;i<64u;++i) values[i]=seed^(17u+37u*i);values[w]=seed+991u; result[id]=values[r]; }\n",
-      "source_sha256": "adb2404a9fc4a489d18ccd81a5e0aa270a4fead38d6a036544872cc7b90a5bb6"
+      "source_sha256": "adb2404a9fc4a489d18ccd81a5e0aa270a4fead38d6a036544872cc7b90a5bb6",
+      "ssbo_bindings": [
+        1,
+        0
+      ]
     },
     {
       "addend_offset": 0,
@@ -59,7 +63,11 @@
       "bytes": 1488,
       "default_bytes": 0,
       "source": "#version 430\nlayout(local_size_x=2,local_size_y=2,local_size_z=4) in;\nlayout(std430,binding=0) buffer Output { uint result[]; };\nlayout(std430,binding=1) readonly buffer Input { uint data[]; };\nvoid main() { uint id=gl_LocalInvocationIndex+16u*(gl_WorkGroupID.x+gl_NumWorkGroups.x*(gl_WorkGroupID.y+gl_NumWorkGroups.y*gl_WorkGroupID.z));uint values[256]; uint seed=data[3u*id+2u];uint w=data[3u*id]%256u, r=data[3u*id+1u]%256u;for(uint i=0u;i<256u;++i) values[i]=seed^(17u+37u*i);values[w]=seed+991u; result[id]=values[r]; }\n",
-      "source_sha256": "a34eb4ea5c19b02948f8c176e577c10d100d0c3afa6aae61256b87690c1f2716"
+      "source_sha256": "a34eb4ea5c19b02948f8c176e577c10d100d0c3afa6aae61256b87690c1f2716",
+      "ssbo_bindings": [
+        1,
+        0
+      ]
     },
     {
       "addend_offset": 0,
@@ -67,7 +75,11 @@
       "bytes": 1492,
       "default_bytes": 0,
       "source": "#version 430\nlayout(local_size_x=2,local_size_y=2,local_size_z=4) in;\nlayout(std430,binding=0) buffer Output { uint result[]; };\nlayout(std430,binding=1) readonly buffer Input { uint data[]; };\nvoid main() { uint id=gl_LocalInvocationIndex+16u*(gl_WorkGroupID.x+gl_NumWorkGroups.x*(gl_WorkGroupID.y+gl_NumWorkGroups.y*gl_WorkGroupID.z));uint values[1024]; uint seed=data[3u*id+2u];uint w=data[3u*id]%1024u, r=data[3u*id+1u]%1024u;for(uint i=0u;i<1024u;++i) values[i]=seed^(17u+37u*i);values[w]=seed+991u; result[id]=values[r]; }\n",
-      "source_sha256": "f5260d8f8ef54e8ec57e087a7043923febb8d959e9dbce34cda90fd487058652"
+      "source_sha256": "f5260d8f8ef54e8ec57e087a7043923febb8d959e9dbce34cda90fd487058652",
+      "ssbo_bindings": [
+        1,
+        0
+      ]
     }
   ],
   "frontend_generated_sha256": {
@@ -269,11 +281,11 @@
   "source_sha256": {
     "src/gallium/ps5/ps5_screen.c": "a7cef2d7db55e5516b34644610876df826c2abc4091d706a6ac1a97ca0752913",
     "tests/ps5/glsl_handoff/abi.c": "f97e326a3d612d72dfc7348c46bafc40f5da203c8c97479c9e5762d06bfff4cf",
-    "tests/ps5/glsl_handoff/backend.c": "de5e77a4e1105535bd4d3d5bcb2c3c25b506300beccd8c87588f1399fffe1f7a",
+    "tests/ps5/glsl_handoff/backend.c": "b79568805c1a8a933595dc21762942af89d1ad17a9b7b1d5b7253c2c595a9d4b",
     "tests/ps5/glsl_handoff/check_target_abi.py": "df9d77a410bf3443f3bb752bf36ba69068d4ff1cf3f1cf503172823df8d28e86",
     "tests/ps5/glsl_handoff/configure.sh": "aeeb7566d64152015fcc560481862f4192a5af5e7f13bc5c62a653fd56c7914e",
-    "tests/ps5/glsl_handoff/handoff.cpp": "407f62a98a51dc4d1de2bc2f3c012d5acac5d864b5cc86a77d55982a0e160781",
-    "tests/ps5/glsl_handoff/run.py": "378e5ca00adfb7aa9ac2f8c45aaea2237e3681c4207429bfad0991b782314b8e",
+    "tests/ps5/glsl_handoff/handoff.cpp": "deef24fc639839c2368c9a40e4eed661116ca4cfe6f94a03cd73f5e2b03140eb",
+    "tests/ps5/glsl_handoff/run.py": "9dc0f9708ef1ba0f29ecedd38c2a568f8591958d3eb55ddf63a9961f693527f4",
     "third_party/mesa-26.2.0/src/compiler/glsl/gl_nir_linker.c": "ee29a3168980ad233e3ece7b93b87e5e9a56275b07e4a0ddb146594afc05be81",
     "third_party/mesa-26.2.0/src/compiler/glsl/standalone.cpp": "23e3f7aa805f2d13b0ca77afd169277d31bde3f9e7ef9bbb13bceadbbe3f21c7",
     "third_party/mesa-26.2.0/src/compiler/glsl/standalone_scaffolding.cpp": "075f5d7c019fcef79c8aca5cc234d1d3d46cc182b335f1103d37ffc01f0d9c31",
@@ -300,7 +312,7 @@
   }
 }
 PS5_GLSL_RECEIPT_END */
-#define PS5_GLSL_RECEIPT_SHA256 "7c50c057e0d980bdd27c231c50ba169450acfedea487db1c3ac03d93dd1795d2"
+#define PS5_GLSL_RECEIPT_SHA256 "6bb0703438bcc4f7c7689d011e38050b735f0806320d1a510aa82cbbc95f9052"
 #define PS5_GLSL_DEFAULT_BYTES 0u
 #define PS5_GLSL_ADDEND_OFFSET 0u
 _Static_assert(PS5_GLSL_DEFAULT_BYTES == 0, "private GLSL has no defaults");
@@ -524,6 +536,11 @@ static bool ps5_glsl_options_match(const nir_shader_compiler_options *o) {
    if (o->cb_data != NULL) return false;
    return true;
 }
+static const unsigned ps5_glsl_ssbo_bindings[3][2] = {
+   {1, 0},
+   {1, 0},
+   {1, 0},
+};
 static const uint8_t ps5_glsl_blob_0[] = {
    0x3a, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00,
    0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x6f, 0xc8, 0xfb, 0xa3, 0x3c, 0x97, 0x7f,

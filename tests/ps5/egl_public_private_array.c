@@ -101,6 +101,16 @@ int main(void) {
 #endif
     for (unsigned test=0;test<sizeof(cases)/sizeof(cases[0]);++test) {
         const unsigned words=cases[test];
+#if PS5_PRIVATE_GLSL_TEST
+        /* Match Mesa's block-index -> GL binding mapping, not declaration order. */
+        for (unsigned slot=0;slot<2;++slot) {
+            const unsigned binding=words?ps5_glsl_ssbo_bindings[test][slot]:slot;
+            if (binding>=2) goto done;
+            uintptr_t address=(uintptr_t)memory[binding+1]+GUARDS*4;
+            table[slot*4]=address; table[slot*4+1]=address>>32;
+            table[slot*4+2]=COUNT*4*(binding?3:1);
+        }
+#endif
         memset(memory[1],0xcd,sizes[1]); memset(memory[2],0xcd,sizes[2]);
 #if PS5_PRIVATE_BUFFER_TEST
         memset(memory[3],0xcd,sizes[3]);

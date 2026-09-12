@@ -51,7 +51,10 @@
       "bytes": 968,
       "default_bytes": 16,
       "source": "#version 430\nlayout(local_size_x=1) in; uniform uint addend;\nlayout(std140,binding=0) uniform Input { uint value; };\nlayout(std430,binding=0) buffer Output { uint result; };\nvoid main() { result = value + addend; }\n",
-      "source_sha256": "d6b1f60980c6e762bcd39f4781317ee33fa79e6e053e4f4e4084571abe681787"
+      "source_sha256": "d6b1f60980c6e762bcd39f4781317ee33fa79e6e053e4f4e4084571abe681787",
+      "ssbo_bindings": [
+        0
+      ]
     },
     {
       "addend_offset": 0,
@@ -59,7 +62,10 @@
       "bytes": 872,
       "default_bytes": 0,
       "source": "#version 430\nlayout(local_size_x=1) in;\nlayout(std140,binding=0) uniform Input { uint value; };\nlayout(std430,binding=0) buffer Output { uint result; };\nvoid main() { result = value; }\n",
-      "source_sha256": "2549ba5f09d6e88f5a355dafe12103e5e95fdd899db85988e803816f0a25acaa"
+      "source_sha256": "2549ba5f09d6e88f5a355dafe12103e5e95fdd899db85988e803816f0a25acaa",
+      "ssbo_bindings": [
+        0
+      ]
     },
     {
       "addend_offset": 0,
@@ -67,7 +73,10 @@
       "bytes": 804,
       "default_bytes": 0,
       "source": "#version 430\nlayout(local_size_x=1) in;\nlayout(binding=0) uniform sampler2D src;\nlayout(std430,binding=0) buffer Output { float result; };\nvoid main() { result = texture(src, vec2(0.5)).x; }\n",
-      "source_sha256": "8b9ce57a3bebf154162805214a7a40856ec192afce240302ebb5c2f76c5db3ac"
+      "source_sha256": "8b9ce57a3bebf154162805214a7a40856ec192afce240302ebb5c2f76c5db3ac",
+      "ssbo_bindings": [
+        0
+      ]
     }
   ],
   "frontend_generated_sha256": {
@@ -269,11 +278,11 @@
   "source_sha256": {
     "src/gallium/ps5/ps5_screen.c": "a7cef2d7db55e5516b34644610876df826c2abc4091d706a6ac1a97ca0752913",
     "tests/ps5/glsl_handoff/abi.c": "f97e326a3d612d72dfc7348c46bafc40f5da203c8c97479c9e5762d06bfff4cf",
-    "tests/ps5/glsl_handoff/backend.c": "de5e77a4e1105535bd4d3d5bcb2c3c25b506300beccd8c87588f1399fffe1f7a",
+    "tests/ps5/glsl_handoff/backend.c": "b79568805c1a8a933595dc21762942af89d1ad17a9b7b1d5b7253c2c595a9d4b",
     "tests/ps5/glsl_handoff/check_target_abi.py": "df9d77a410bf3443f3bb752bf36ba69068d4ff1cf3f1cf503172823df8d28e86",
     "tests/ps5/glsl_handoff/configure.sh": "aeeb7566d64152015fcc560481862f4192a5af5e7f13bc5c62a653fd56c7914e",
-    "tests/ps5/glsl_handoff/handoff.cpp": "407f62a98a51dc4d1de2bc2f3c012d5acac5d864b5cc86a77d55982a0e160781",
-    "tests/ps5/glsl_handoff/run.py": "378e5ca00adfb7aa9ac2f8c45aaea2237e3681c4207429bfad0991b782314b8e",
+    "tests/ps5/glsl_handoff/handoff.cpp": "deef24fc639839c2368c9a40e4eed661116ca4cfe6f94a03cd73f5e2b03140eb",
+    "tests/ps5/glsl_handoff/run.py": "9dc0f9708ef1ba0f29ecedd38c2a568f8591958d3eb55ddf63a9961f693527f4",
     "third_party/mesa-26.2.0/src/compiler/glsl/gl_nir_linker.c": "ee29a3168980ad233e3ece7b93b87e5e9a56275b07e4a0ddb146594afc05be81",
     "third_party/mesa-26.2.0/src/compiler/glsl/standalone.cpp": "23e3f7aa805f2d13b0ca77afd169277d31bde3f9e7ef9bbb13bceadbbe3f21c7",
     "third_party/mesa-26.2.0/src/compiler/glsl/standalone_scaffolding.cpp": "075f5d7c019fcef79c8aca5cc234d1d3d46cc182b335f1103d37ffc01f0d9c31",
@@ -300,7 +309,7 @@
   }
 }
 PS5_GLSL_RECEIPT_END */
-#define PS5_GLSL_RECEIPT_SHA256 "b5ff1b05b4cf723a410bfdbb142a4681c097673c096c79ec9684ef36147d7dfe"
+#define PS5_GLSL_RECEIPT_SHA256 "d3303b8a27ba9b00bef503be87aae8e73ea1abdc01157e6e93e72a0b64e27f51"
 #define PS5_GLSL_DEFAULT_BYTES 16u
 #define PS5_GLSL_ADDEND_OFFSET 0u
 _Static_assert(PS5_GLSL_DEFAULT_BYTES > 0 && PS5_GLSL_DEFAULT_BYTES <= 64 &&

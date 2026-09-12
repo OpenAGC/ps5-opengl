@@ -202,6 +202,8 @@ def export_header(target_abi):
     suffix = '-prepared' if cli_args.private_arrays else ''
     blobs = [(OUT/f'fixture-{i}{suffix}.nir').read_bytes() for i in range(3)]
     literals = [(OUT/f'fixture-{i}.comp').read_text() for i in range(3)]
+    ssbo_bindings = [list(map(int,(OUT/f'fixture-{i}-ssbo.txt').read_text().split())) for i in range(3)]
+    assert all(sorted(bindings)==([0,1] if cli_args.private_arrays else [0]) for bindings in ssbo_bindings)
     assert all(0 < len(blob) <= 1048576 for blob in blobs)
     metadata_version = int(re.search(r'#define PSBC_SHADER_METADATA_VERSION (\d+)u',
                                     (PSBC/'libpsbc/psbc_compile.h').read_text())[1])
@@ -235,7 +237,7 @@ def export_header(target_abi):
         'options_values_sha256': sha(json.dumps(values, sort_keys=True).encode()),
         'abi': dict(zip(abi_exprs, abi_values)),
         'fixtures': [{'source': literal, 'source_sha256': sha(literal.encode()),
-                      'blob_sha256': sha(blob), 'bytes': len(blob),
+                      'blob_sha256': sha(blob), 'bytes': len(blob), 'ssbo_bindings': ssbo_bindings[i],
                       'addend_offset': layout[i][1], 'default_bytes': layout[i][2]}
                      for i, (literal, blob) in enumerate(zip(literals, blobs))]
     }
@@ -288,6 +290,9 @@ def export_header(target_abi):
         expected = 'ac_nir_varying_expression_max_cost' if field == 'varying_expression_max_cost' else 'NULL'
         lines.append(f'   if (o->{field} != {expected}) return false;')
     lines += ['   return true;', '}']
+    if cli_args.private_arrays:
+        lines += ['static const unsigned ps5_glsl_ssbo_bindings[3][2] = {',
+                  *[f'   {{{bindings[0]}, {bindings[1]}}},' for bindings in ssbo_bindings], '};']
     for i, blob in enumerate(blobs):
         lines.append(f'static const uint8_t ps5_glsl_blob_{i}[] = {{')
         for start in range(0, len(blob), 16):

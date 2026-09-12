@@ -93,6 +93,12 @@ int main() {
       if (!gl_nir_link_glsl(&ctx, program)) { fprintf(stderr,"link[%u]: %s\n",fixture,program->data->InfoLog); return 2; }
       gl_program *prog = program->_LinkedShaders[MESA_SHADER_COMPUTE]->Program;
       nir_shader *nir = prog->nir;
+      char binding_name[48];
+      snprintf(binding_name,sizeof(binding_name),"fixture-%u-ssbo.txt",fixture);
+      FILE *bindings=fopen(binding_name,"w"); assert(bindings);
+      for(unsigned i=0;i<prog->info.num_ssbos;++i)
+         fprintf(bindings,"%u\n",prog->sh.ShaderStorageBlocks[i]->Binding);
+      assert(fclose(bindings)==0);
       printf("linked[%u]: uniforms=%u params=%u ubos=%u default=%u\n",fixture,
              nir->num_uniforms,prog->Parameters->NumParameterValues,nir->info.num_ubos,nir->info.first_ubo_is_default_ubo);
       // Explicit partial boundary: real linker and finalizer, not st_link_shader/variant capture.

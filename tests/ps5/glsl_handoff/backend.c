@@ -27,6 +27,15 @@ void handoff_compile(nir_shader *nir, unsigned fixture) {
    unsigned ubos = nir->info.num_ubos;
    assert(handoff_prepare(nir) && nir->info.num_ubos == ubos);
    nir_opt_constant_folding(nir);
+   unsigned ssbo_bindings[2]={0};
+   if (PS5_GLSL_PRIVATE_TEST) {
+      char name[48]; snprintf(name,sizeof(name),"fixture-%u-ssbo.txt",fixture);
+      FILE *bindings=fopen(name,"r"); assert(bindings);
+      assert(fscanf(bindings,"%u%u",&ssbo_bindings[0],&ssbo_bindings[1])==2);
+      assert(ssbo_bindings[0]<2 && ssbo_bindings[1]==1-ssbo_bindings[0]);
+      fclose(bindings);
+      printf("private-bindings[%u]: slots -> GL bindings %u,%u\n",fixture,ssbo_bindings[0],ssbo_bindings[1]);
+   }
    if (PS5_GLSL_PRIVATE_TEST) {
       struct blob prepared;
       blob_init(&prepared);
@@ -43,6 +52,14 @@ void handoff_compile(nir_shader *nir, unsigned fixture) {
       if (instr->type==nir_instr_type_intrinsic) {
          nir_intrinsic_instr *intr=nir_instr_as_intrinsic(instr);
          assert(intr->intrinsic!=nir_intrinsic_load_uniform);
+         if (PS5_GLSL_PRIVATE_TEST && (intr->intrinsic==nir_intrinsic_load_ssbo ||
+             intr->intrinsic==nir_intrinsic_store_ssbo)) {
+            const bool store=intr->intrinsic==nir_intrinsic_store_ssbo;
+            nir_scalar index=nir_scalar_resolved(intr->src[store?1:0].ssa,0);
+            assert(nir_scalar_is_const(index));
+            unsigned slot=nir_scalar_as_uint(index);
+            assert(slot<2 && ssbo_bindings[slot]==(store?0u:1u));
+         }
          if(intr->intrinsic==nir_intrinsic_load_ubo) {
             assert(nir_src_is_const(intr->src[0]));
             ubo_mask |= 1u << nir_src_as_uint(intr->src[0]);
