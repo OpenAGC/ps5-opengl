@@ -5,6 +5,8 @@
 
 """Compile real CS NIR and check native package/resource contracts without a GPU."""
 import subprocess
+import os
+import hashlib
 import tempfile
 from pathlib import Path
 
@@ -601,6 +603,22 @@ static void atomic_alignment_lowering(void) {
     }
 }
 #include "private_array_fixture.h"
+#include "private_buffer_fixture.h"
+static void private_buffer_contract(void) {
+    for (unsigned words=4; words<=32; words*=2) {
+        nir_builder b=private_array_fixture(words);
+        assert(b.shader->scratch_size==words*4);
+        private_buffer_lower(b.shader);
+        PsbcShaderOutput out={0};
+        assert(psbc_compile_nir(b.shader,&opts,&out)==PSBC_RESULT_OK);
+        assert(!out.metadata.scratch_valid && !out.metadata.scratch_bytes_per_wave);
+        uint8_t *package=NULL; size_t size=0;
+        assert(!ps5_agc_package_build(&out,0,&package,&size) && package && size);
+        printf("Private buffer host-only: words=%u code=%zu package=PASS native=NOT-RUN\n",
+            words,out.machine_code_size);
+        free(package); psbc_free_output(&out); ralloc_free(b.shader);
+    }
+}
 /* Host-only feasibility check, not a runtime fallback or GPU correctness test. */
 static void private_array_lowering(void) {
     for (unsigned words=4; words<=32; words*=2) for (unsigned optimize=0; optimize<2; ++optimize) {
@@ -634,6 +652,44 @@ static void private_array_lowering(void) {
         free(package); psbc_free_output(&original); psbc_free_output(&lowered); ralloc_free(b.shader);
     }
 }
+static void scratch_machine_code(const char *name, const PsbcShaderOutput *out) {
+    if (!getenv("PS5_SCRATCH_DISASSEMBLE")) return;
+    printf("SCRATCH_BYTES %s ",name);
+    const unsigned char *bytes=(const unsigned char *)out->machine_code;
+    for (size_t i=0;i<out->machine_code_size;++i) printf("%02x",bytes[i]);
+    putchar('\n');
+}
+static void spill_contract(void) {
+    nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
+        psbc_get_nir_options(PSBC_STAGE_COMPUTE),"forced-register-spill");
+    /* Multi-wave workgroup avoids ACO's single-wave LDS spill shortcut. */
+    b.shader->info.workgroup_size[0]=64;
+    b.shader->info.workgroup_size[1]=b.shader->info.workgroup_size[2]=1;
+    b.shader->info.num_ssbos=2;
+    nir_def *id=nir_channel(&b,nir_load_local_invocation_id(&b),0);
+    nir_def *base=nir_imul_imm(&b,id,128*16);
+    nir_def *values[128];
+    for (unsigned i=0;i<128;++i)
+        values[i]=nir_load_ssbo(&b,4,32,nir_imm_int(&b,1),nir_iadd_imm(&b,base,i*16),
+            .align_mul=16,.access=ACCESS_VOLATILE);
+    nir_barrier(&b,.execution_scope=SCOPE_WORKGROUP,.memory_scope=SCOPE_DEVICE,
+        .memory_semantics=NIR_MEMORY_ACQ_REL,.memory_modes=nir_var_mem_ssbo);
+    for (unsigned i=0;i<128;++i)
+        nir_store_ssbo(&b,values[i],nir_imm_int(&b,0),nir_iadd_imm(&b,base,i*16),
+            .align_mul=16,.write_mask=15,.access=ACCESS_VOLATILE);
+    nir_validate_shader(b.shader,"forced-register-spill input");
+    assert(!b.shader->scratch_size);
+    PsbcShaderOutput out={0};
+    assert(psbc_compile_nir(b.shader,&opts,&out)==PSBC_RESULT_OK);
+    printf("Register spill host-only: source-private=%u final-wave-bytes=%u code=%zu\n",
+        b.shader->scratch_size,out.metadata.scratch_bytes_per_wave,out.machine_code_size);
+    fflush(stdout);
+    assert(out.metadata.scratch_valid && out.metadata.scratch_bytes_per_wave);
+    assert(!out.metadata.scratch_size_per_thread); /* NIR private bytes exclude ACO spills. */
+    scratch_machine_code("register-spill",&out);
+    submission_contract(&out); /* Must reject before native allocation/submission. */
+    psbc_free_output(&out); ralloc_free(b.shader);
+}
 static void scratch_contract(void) {
     nir_shader *nir=create_probe_shader(SCRATCH);
     PsbcShaderOutput out={0};
@@ -642,6 +698,7 @@ static void scratch_contract(void) {
     assert(out.metadata.scratch_bytes_per_wave>=16*32 && !(out.metadata.scratch_bytes_per_wave&1023));
     assert(out.metadata.scratch_buffer_table_user_data_dword==0);
     assert(out.metadata.shader_registers[3].value&1); /* SCRATCH_EN */
+    scratch_machine_code("private-array",&out);
     submission_contract(&out);
     const PsbcShaderMetadata good=out.metadata;
     for (unsigned fault=0; fault<8; ++fault) {
@@ -667,7 +724,7 @@ static void scratch_contract(void) {
 int main(void) {
     psbc_init();
     for (unsigned i=0; i<4; ++i) compiled(i&1, i&2);
-    shapes(); native_cases(); atomic_counter_lowering(); atomic_alignment_lowering(); scratch_contract(); private_array_lowering(); compiled(false, false); psbc_shutdown();
+    shapes(); native_cases(); atomic_counter_lowering(); atomic_alignment_lowering(); scratch_contract(); private_array_lowering(); private_buffer_contract(); spill_contract(); compiled(false, false); psbc_shutdown();
 }
 '''
 with tempfile.TemporaryDirectory() as directory:
@@ -689,6 +746,27 @@ with tempfile.TemporaryDirectory() as directory:
         subprocess.run(compile_command + defines, input=code, text=True, check=True)
         subprocess.run(["g++", "-o", executable, obj, package_obj, str(PSBC / "libpsbc.a"),
             "-pthread", "-lm"], check=True)
-        subprocess.run([executable], check=True, timeout=30)
+        if not os.environ.get("PS5_SCRATCH_DISASSEMBLE"):
+            subprocess.run([executable], check=True, timeout=30)
+            continue
+        run = subprocess.run([executable], check=True, timeout=30, text=True, capture_output=True)
+        decoded = set()
+        for line in run.stdout.splitlines():
+            if not line.startswith("SCRATCH_BYTES "):
+                print(line)
+                continue
+            _, name, hex_code = line.split()
+            machine_code = bytes.fromhex(hex_code)
+            disasm = subprocess.run(["llvm-mc-18", "--disassemble", "--triple=amdgcn",
+                "--mcpu=gfx1030"], input=" ".join(f"0x{b:02x}" for b in machine_code),
+                text=True, capture_output=True, check=True, timeout=30)
+            assert not disasm.stderr.strip(), disasm.stderr
+            for operation in ("scratch_load", "scratch_store", "s_setreg_b32"):
+                assert operation in disasm.stdout, (name, operation)
+            decoded.add(name)
+            print(f"Independent LLVM decode: {name} bytes={len(machine_code)} "
+                  f"sha256={hashlib.sha256(machine_code).hexdigest()} PASS")
+            print("\n".join(disasm.stdout.splitlines()[:12]))
+        assert decoded == {"private-array", "register-spill"}
 print("PASS: compute package, grid/LDS metadata, malformed inputs; mocked submission lock/bounds/cleanup")
 print("PASS: allocated-span pre/post flush and acquire; logical SSBO/UBO ownership retained; invalid allocation extents rejected")
