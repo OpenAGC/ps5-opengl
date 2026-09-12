@@ -308,8 +308,8 @@ def require(condition: bool, message: str) -> None:
 
 
 render_limits = (ROOT / "src/gallium/ps5/ps5_screen.h").read_text()
-require("#define PS5_MAX_RENDER_SIZE 8192u" in render_limits,
-        "dynamic target and sampled-texture limits must share the 8192 bound")
+require("#define PS5_MAX_RENDER_SIZE 16384u" in render_limits,
+        "dynamic target and sampled-texture limits must share the GL 4.1 bound")
 for axis in ("WIDTH", "HEIGHT"):
     for target in ("COLOR", "DEPTH"):
         require(f"#define PS5_AGC_MAX_{target}_{axis} PS5_MAX_RENDER_SIZE" in BACKEND,
@@ -337,6 +337,7 @@ require(all(flag in core33_build for flag in (
             "PS5_ENABLE_DEPTH_CLAMP_CANDIDATE",
             "PS5_ENABLE_GLSL_330_CANDIDATE",
             "PS5_ENABLE_GLSL_400_CANDIDATE",
+            "PS5_ENABLE_GLSL_410_CANDIDATE",
             "PS5_ENABLE_FP64_CANDIDATE",
             "PS5_ENABLE_VIEWPORT_ARRAY_CANDIDATE",
             "PS5_ENABLE_TEXTURE_CUBE_ARRAY_CANDIDATE",
@@ -514,7 +515,7 @@ for default_extension in (
             f"Mesa default extension changed: {default_extension}")
 
 for cap in (
-    "caps->glsl_feature_level = PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :",
+    "caps->glsl_feature_level = PS5_ENABLE_GLSL_410_CANDIDATE ? 410 :",
     "PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :",
     "caps->doubles = PS5_ENABLE_FP64_CANDIDATE",
     "caps->cube_map_array = PS5_ENABLE_TEXTURE_CUBE_ARRAY_CANDIDATE",
@@ -545,6 +546,7 @@ require("#define PS5_ENABLE_DUAL_SOURCE_BLEND_CANDIDATE 0" in SCREEN and
         "PS5_ENABLE_DUAL_SOURCE_BLEND_CANDIDATE ? 1 : 0" in SCREEN,
         "dual-source capability is not conservatively gated")
 require("caps->glsl_feature_level_compatibility =" in SCREEN and
+        "PS5_ENABLE_GLSL_410_CANDIDATE ? 410 :" in SCREEN and
         "PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :" in SCREEN and
         "PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :" in SCREEN and
         "PS5_ENABLE_GEOMETRY_CANDIDATE ? 150 : 140" in SCREEN,
@@ -894,7 +896,7 @@ require("GL_NEAREST_MIPMAP_NEAREST" in MIPMAP and
         "public mipmap discriminator regressed")
 require("PS5_ENABLE_TEXTURE_CUBE_CANDIDATE" in SCREEN and
         "#define PS5_ENABLE_TEXTURE_CUBE_CANDIDATE 1" in SCREEN and
-        "PS5_MAX_TEXTURE_CUBE_LEVELS 12u" in SCREEN and
+        "PS5_MAX_TEXTURE_CUBE_LEVELS 15u" in SCREEN and
         "target == PIPE_TEXTURE_CUBE" in SCREEN and
         "ps5_mutable_sampled_resource_bind" in SCREEN and
         "resource->target != PIPE_TEXTURE_2D" in SCREEN and
@@ -924,7 +926,7 @@ require("PS5_ENABLE_SEAMLESS_CUBE_CANDIDATE" in SCREEN and
         "seamless cube-map candidate regressed")
 require("PS5_ENABLE_TEXTURE_ARRAY_CANDIDATE" in SCREEN and
         "#define PS5_ENABLE_TEXTURE_ARRAY_CANDIDATE 1" in SCREEN and
-        "PS5_MAX_TEXTURE_ARRAY_LAYERS 256u" in SCREEN and
+        "PS5_MAX_TEXTURE_ARRAY_LAYERS 2048u" in SCREEN and
         "target == PIPE_TEXTURE_2D_ARRAY" in SCREEN and
         "UINT32_C(0xd0000000)" in SCREEN and
         "caps->max_texture_array_layers" in SCREEN,
@@ -932,7 +934,8 @@ require("PS5_ENABLE_TEXTURE_ARRAY_CANDIDATE" in SCREEN and
 require("GL_EXT_texture_array : require" in ARRAY and
         "uniform sampler2DArray u_array" in ARRAY and
         "texture2DArray(u_array, vec3(0.5, 0.5, u_layer))" in ARRAY and
-        "glTexImage3D(GL_TEXTURE_2D_ARRAY_EXT" in ARRAY and
+        "#define ARRAY_TARGET GL_TEXTURE_2D_ARRAY_EXT" in ARRAY and
+        "glTexImage3D(ARRAY_TARGET" in ARRAY and
         "max_layers >= 256" in ARRAY,
         "public 2D-array discriminator regressed")
 require("egl_public_core33_framebuffer_texture_layer.o:" in MAKEFILE and
@@ -951,7 +954,7 @@ require("egl_public_core33_framebuffer_texture_layer.o:" in MAKEFILE and
 require("PS5_ENABLE_TEXTURE_3D_CANDIDATE" in SCREEN and
         "#define PS5_ENABLE_TEXTURE_3D_CANDIDATE 1" in SCREEN and
         "PS5_MAX_TEXTURE_3D_SIZE" in SCREEN and
-        "PS5_MAX_TEXTURE_3D_LEVELS 9u" in SCREEN and
+        "PS5_MAX_TEXTURE_3D_LEVELS 12u" in SCREEN and
         "target == PIPE_TEXTURE_3D" in SCREEN and
         "UINT32_C(0xa0000000)" in SCREEN and
         "texture->base.depth0 - 1" in SCREEN and
@@ -1044,7 +1047,8 @@ require("psbc_compile_nir_geometry_pipeline" in PSBC_H and
         "#define PSBC_MAX_DESCRIPTOR_BINDINGS 64" in PSBC_H and
         "shader_count = 2" in PSBC_C and
         "stage.info.force_indirect_descriptors = false;" in PSBC_C and
-        "S_028B54_ES_EN(V_028B54_ES_STAGE_REAL)" in PSBC_C and
+        "S_028B54_ES_EN(has_tessellation ? V_028B54_ES_STAGE_DS :" in PSBC_C and
+        "V_028B54_ES_STAGE_REAL) |" in PSBC_C and
         "S_028B54_GS_EN(has_geometry)" in PSBC_C and
         "S_028B54_MAX_PRIMGRP_IN_WAVE(2)" in PSBC_C and
         "ctx->rinfo->is_ngg_passthrough" in PSBC_C and
@@ -1109,7 +1113,7 @@ require("-DHAVE_FUNC_ATTRIBUTE_PACKED=1" in PSBC_HOST_CONFIG,
         "host PSBC build lost the shared packed-NIR ABI")
 require('--verify-psbc' in PSBC_PS5_BUILD and
         json.loads((ROOT / 'dependencies.json').read_text())['psbc_patch']['patched_tree'] ==
-                'd0fbcf844a55aa1e95898d91b7ce46b28882b424',
+                'dca0caa543ecee72f20bc0e24aee39254973758a',
         "PS5 compiler archive is not pinned to the expected source tree")
 require("-DOPENGNM_PSBC_ORBIS=1" in PSBC_PS5_CONFIG and
         "defined(OPENGNM_PSBC_ORBIS)" in ACO_ISEL_HELPERS and
@@ -1454,7 +1458,7 @@ require("info->instance_count != 1" not in SCREEN and
         "gfx_state.vi.instance_rate_divisors" in PSBC_C and
         "attribute->instance_divisor = element->instance_divisor;" in SCREEN and
         "binding_records[element->vertex_buffer_index]" in SCREEN and
-        "vertex_metadata->start_instance_user_data_dword" in SCREEN and
+        "input_metadata->start_instance_user_data_dword" in SCREEN and
         "ps5_agc_gate2_set_instance_count(info->instance_count)" in SCREEN,
         "instanced arrays capability lacks its compiler or backend route")
 
@@ -1489,7 +1493,7 @@ require("render_staging_offset" in SCREEN and
         LINEAR_SAMPLED_LAYOUT and
         "ps5_stage_color_surface(surface, true)" in SCREEN and
         "ps5_stage_color_surface(surface, false)" in SCREEN and
-        "surface->texture->target == PIPE_TEXTURE_CUBE" in SCREEN and
+        "ps5_cube_texture_target(surface->texture->target)" in SCREEN and
         "surface->texture->target == PIPE_TEXTURE_3D" in SCREEN and
         "egl_public_core33_layered_mip_fbo.o:" in MAKEFILE and
         "GL_TEXTURE_CUBE_MAP_POSITIVE_Y, cube, 1" in LAYERED_MIP_FBO and
@@ -2208,7 +2212,8 @@ require("struct pipe_resource *depth_stencil" in EGL and
         "PIPE_BIND_DEPTH_STENCIL" in EGL and
         "case EGL_DEPTH_SIZE: *value = 32" in EGL and
         "case EGL_STENCIL_SIZE: *value = 8" in EGL and
-        "PixelFormat(8, 8, 8, 8), 32, 8, 0" in CTS_PLATFORM and
+        "PixelFormat(red, green, blue, alpha)" in CTS_PLATFORM and
+        "depth, stencil, samples" in CTS_PLATFORM and
         "EGL_DEPTH_SIZE" in CTS_PLATFORM and
         "EGL_STENCIL_SIZE" in CTS_PLATFORM,
         "native CTS/default EGL surface lost depth-stencil backing")

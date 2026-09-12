@@ -450,10 +450,10 @@ ps5_render_condition_passes(const struct ps5_context *context);
 #define PS5_DESCRIPTOR_STORAGE_BYTES \
    (PS5_CONSTANT_DATA_OFFSET + 2u * PS5_MAX_CONSTANT_BUFFER_SIZE)
 #define PS5_MAX_TEXTURE_2D_SIZE PS5_MAX_RENDER_SIZE
-#define PS5_MAX_TEXTURE_CUBE_LEVELS 12u
+#define PS5_MAX_TEXTURE_CUBE_LEVELS 15u
 #define PS5_MAX_TEXTURE_CUBE_SIZE (1u << (PS5_MAX_TEXTURE_CUBE_LEVELS - 1u))
-#define PS5_MAX_TEXTURE_ARRAY_LAYERS 256u
-#define PS5_MAX_TEXTURE_3D_LEVELS 9u
+#define PS5_MAX_TEXTURE_ARRAY_LAYERS 2048u
+#define PS5_MAX_TEXTURE_3D_LEVELS 12u
 #define PS5_MAX_TEXTURE_3D_SIZE (1u << (PS5_MAX_TEXTURE_3D_LEVELS - 1u))
 #define PS5_MAX_TEXEL_BUFFER_ELEMENTS (1u << 20)
 #define PS5_MIN_POINT_LINE_SIZE 1.0f
@@ -538,6 +538,9 @@ ps5_render_condition_passes(const struct ps5_context *context);
 #endif
 #ifndef PS5_ENABLE_GLSL_400_CANDIDATE
 #define PS5_ENABLE_GLSL_400_CANDIDATE 0
+#endif
+#ifndef PS5_ENABLE_GLSL_410_CANDIDATE
+#define PS5_ENABLE_GLSL_410_CANDIDATE 0
 #endif
 #ifndef PS5_ENABLE_FP64_CANDIDATE
 #define PS5_ENABLE_FP64_CANDIDATE 0
@@ -12403,10 +12406,12 @@ ps5_screen_create(void)
       PS5_ENABLE_FRAMEBUFFER_SRGB_CANDIDATE;
    caps->blend_equation_separate = true;
    caps->doubles = PS5_ENABLE_FP64_CANDIDATE;
-   caps->glsl_feature_level = PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :
+   caps->glsl_feature_level = PS5_ENABLE_GLSL_410_CANDIDATE ? 410 :
+                              PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :
                               PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :
                               PS5_ENABLE_GEOMETRY_CANDIDATE ? 150 : 140;
    caps->glsl_feature_level_compatibility =
+      PS5_ENABLE_GLSL_410_CANDIDATE ? 410 :
       PS5_ENABLE_GLSL_400_CANDIDATE ? 400 :
       PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :
       PS5_ENABLE_GEOMETRY_CANDIDATE ? 150 : 140;

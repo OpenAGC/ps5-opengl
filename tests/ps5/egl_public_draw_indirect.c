@@ -15,9 +15,7 @@
 
 #if defined(PS5_FP64_VERTEX_TEST)
 #define TEST_NAME "ps5-egl-fp64-vertex"
-#define GLSL_VERSION "#version 400 core\n" \
-   "#extension GL_ARB_gpu_shader_fp64 : require\n" \
-   "#extension GL_ARB_vertex_attrib_64bit : require\n"
+#define GLSL_VERSION "#version 410 core\n"
 #define VERTEX_PROBE ""
 #define VERTEX_ID "gl_VertexID-3"
 #define GREEN_BODY "c=vec4(0,1,0,1);"
@@ -178,7 +176,11 @@ main(void)
    const EGLint context_attrs[] = {
 #if defined(PS5_GLSL_400_TEST) || defined(PS5_VIEWPORT_ARRAY_TEST) || \
     defined(PS5_FP64_VERTEX_TEST)
+#ifdef PS5_FP64_VERTEX_TEST
+      EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 1,
+#else
       EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 0,
+#endif
 #else
       EGL_CONTEXT_MAJOR_VERSION_KHR, 3, EGL_CONTEXT_MINOR_VERSION_KHR, 3,
 #endif
@@ -197,6 +199,10 @@ main(void)
 #endif
    const char *glsl = NULL;
    int draw_indirect = 0, gpu_shader5 = 0;
+#ifdef PS5_FP64_VERTEX_TEST
+   GLint max_texture = 0, max_renderbuffer = 0, max_cube = 0;
+   GLint max_3d = 0, max_layers = 0;
+#endif
 #ifdef PS5_VIEWPORT_ARRAY_TEST
    int viewport_array = 0;
 #endif
@@ -215,6 +221,16 @@ main(void)
    glsl = (const char *)glGetString(GL_SHADING_LANGUAGE_VERSION);
    draw_indirect = has_extension("GL_ARB_draw_indirect");
    gpu_shader5 = has_extension("GL_ARB_gpu_shader5");
+#ifdef PS5_FP64_VERTEX_TEST
+   glGetIntegerv(GL_MAX_TEXTURE_SIZE, &max_texture);
+   glGetIntegerv(GL_MAX_RENDERBUFFER_SIZE, &max_renderbuffer);
+   glGetIntegerv(GL_MAX_CUBE_MAP_TEXTURE_SIZE, &max_cube);
+   glGetIntegerv(GL_MAX_3D_TEXTURE_SIZE, &max_3d);
+   glGetIntegerv(GL_MAX_ARRAY_TEXTURE_LAYERS, &max_layers);
+   printf("[%s] limits texture=%d renderbuffer=%d cube=%d 3d=%d layers=%d\n",
+          TEST_NAME, max_texture, max_renderbuffer, max_cube, max_3d,
+          max_layers);
+#endif
 #ifdef PS5_VIEWPORT_ARRAY_TEST
    viewport_array = has_extension("GL_ARB_viewport_array");
 #endif
@@ -228,7 +244,10 @@ main(void)
        || !has_extension("GL_ARB_gpu_shader_fp64")
 #endif
 #ifdef PS5_FP64_VERTEX_TEST
-       || !has_extension("GL_ARB_gpu_shader_fp64") ||
+       || !glsl || strncmp(glsl, "4.10", 4) ||
+          max_texture < 16384 || max_renderbuffer < 16384 ||
+          max_cube < 16384 || max_3d < 2048 || max_layers < 2048 ||
+          !has_extension("GL_ARB_gpu_shader_fp64") ||
           !has_extension("GL_ARB_vertex_attrib_64bit")
 #endif
 #ifdef PS5_VIEWPORT_ARRAY_TEST
