@@ -15,7 +15,7 @@ PSBC = ROOT / "third_party/opengnm-psbc"
 runtime = (ROOT / "src/platform/ps5_agc_native_runtime.c").read_text()
 backend = (ROOT / "src/platform/ps5_agc_runtime_backend.c").read_text()
 probe = (ROOT / "tests/ps5/egl_public_compute_probe.c").read_text()
-probe = probe[probe.index("#ifdef PS5_COMPUTE_BUFFER_SPILL_PROBE"):probe.index("int main(void)")]
+probe = probe[probe.index("#define BUFFER_SPILL_VECTORS"):probe.index("int main(void)")]
 compute_at = backend.index("int\nps5_agc_compute_execute(")
 compute = backend[compute_at:backend.index("\n#endif", compute_at)]
 parser_at = runtime.index("static int shader_sections(")
@@ -827,14 +827,14 @@ static void spill_contract(void) {
     b.shader->info.workgroup_size[1]=b.shader->info.workgroup_size[2]=1;
     b.shader->info.num_ssbos=2;
     nir_def *id=nir_channel(&b,nir_load_local_invocation_id(&b),0);
-    nir_def *base=nir_imul_imm(&b,id,128*16);
-    nir_def *values[128];
-    for (unsigned i=0;i<128;++i)
+    nir_def *base=nir_imul_imm(&b,id,BUFFER_SPILL_VECTORS*16);
+    nir_def *values[BUFFER_SPILL_VECTORS];
+    for (unsigned i=0;i<BUFFER_SPILL_VECTORS;++i)
         values[i]=nir_load_ssbo(&b,4,32,nir_imm_int(&b,1),nir_iadd_imm(&b,base,i*16),
             .align_mul=16,.access=ACCESS_VOLATILE);
     nir_barrier(&b,.execution_scope=SCOPE_WORKGROUP,.memory_scope=SCOPE_DEVICE,
         .memory_semantics=NIR_MEMORY_ACQ_REL,.memory_modes=nir_var_mem_ssbo);
-    for (unsigned i=0;i<128;++i)
+    for (unsigned i=0;i<BUFFER_SPILL_VECTORS;++i)
         nir_store_ssbo(&b,values[i],nir_imm_int(&b,0),nir_iadd_imm(&b,base,i*16),
             .align_mul=16,.write_mask=15,.access=ACCESS_VOLATILE);
     nir_validate_shader(b.shader,"forced-register-spill input");

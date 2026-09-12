@@ -13,8 +13,9 @@
 #include "ps5_screen.h"
 #include "ps5_agc_package.h"
 
+#define BUFFER_SPILL_VECTORS 64
 #ifdef PS5_COMPUTE_BUFFER_SPILL_PROBE
-#define OUTPUT_WORDS (64 * 128 * 4)
+#define OUTPUT_WORDS (64 * BUFFER_SPILL_VECTORS * 4)
 #define INPUT_WORDS OUTPUT_WORDS
 #define FIRST_NATIVE_TEST BUFFER_SPILL
 #define END_NATIVE_TEST (BUFFER_SPILL + 1)
@@ -100,8 +101,8 @@ static nir_shader *create_probe_shader(unsigned test)
    b.shader->info.num_ssbos = 16;
    if (test == BUFFER_SPILL) {
       nir_def *id = nir_channel(&b, nir_load_local_invocation_id(&b), 0);
-      nir_def *base = nir_imul_imm(&b, id, 128 * 16);
-      nir_def *values[128];
+      nir_def *base = nir_imul_imm(&b, id, BUFFER_SPILL_VECTORS * 16);
+      nir_def *values[BUFFER_SPILL_VECTORS];
       for (unsigned i = 0; i < ARRAY_SIZE(values); ++i)
          values[i] = nir_load_ssbo(&b, 4, 32, nir_imm_int(&b, 1),
             nir_iadd_imm(&b, base, i * 16), .align_mul = 16,
@@ -392,6 +393,10 @@ static unsigned count_image_correct(unsigned test, unsigned slot, const uint32_t
 
 int main(void)
 {
+#ifdef PS5_COMPUTE_BUFFER_SPILL_PROBE
+   printf("[ps5-compute] buffer-spill probe entered vectors=%u\n", BUFFER_SPILL_VECTORS);
+   fflush(stdout);
+#endif
    int status = 1;
    struct pipe_screen *screen = ps5_screen_create();
    struct pipe_resource *buffers[13] = {0};
