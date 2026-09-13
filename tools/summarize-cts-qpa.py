@@ -37,11 +37,18 @@ ACCEPTED = {
 def summarize(text: str, expected: list[str] | None = None) -> dict:
     results: list[tuple[str, str]] = []
     durations = {}
+    acceptance_errors = []
     for match in CASE.finditer(text):
         status = STATUS.search(match.group("body"))
         if status is None:
             raise ValueError(f"case has no Result element: {match.group('name')}")
         results.append((match.group("name"), status.group(1)))
+        # Upstream overwrites `result` per validation, allowing a later success
+        # to hide an earlier failure. Preserve its status, but reject acceptance.
+        if (status.group(1) == "Pass" and match.group("name").endswith(
+                ".gl_spirv.spirv_validation_builtin_variable_decorations_test") and
+                re.search(r"Validation \d+ failed!", match.group("body"))):
+            acceptance_errors.append(match.group("name"))
         duration = DURATION.search(match.group("body"))
         if duration:
             durations[match.group("name")] = int(duration.group(1)) / 1_000_000
@@ -60,6 +67,7 @@ def summarize(text: str, expected: list[str] | None = None) -> dict:
         "expected": len(expected) if expected is not None else None,
         "counts": dict(sorted(counts.items())),
         "failed": failed,
+        "acceptance_errors": acceptance_errors,
         "seconds": sum(durations.values()),
         "cases": [dict(name=name, status=status, seconds=durations.get(name))
                   for name, status in results],
@@ -108,7 +116,8 @@ def inventory(directory: Path, current_eboot: str | None) -> dict:
                 lock_released=runner.get("lockReleased"))
             for case in summary["cases"]:
                 latest.setdefault(str(config), {})[case["name"]] = dict(
-                    status=case["status"], seconds=case["seconds"], receipt=receipt_id)
+                    status="DiagnosticFailure" if case["name"] in summary["acceptance_errors"] else case["status"],
+                    reported_status=case["status"], seconds=case["seconds"], receipt=receipt_id)
             completed = {case["name"] for case in summary["cases"]}
             for name in re.findall(r'^#beginTestCaseResult (\S+)', text, re.M):
                 if name not in completed:
@@ -198,10 +207,12 @@ def main() -> int:
         )
         for name in summary["failed"]:
             print(f"failed={name}")
+        for name in summary["acceptance_errors"]:
+            print(f"acceptance_error={name}: upstream Pass contradicts validation diagnostics")
         for error in summary.get("egl_configs", {}).get("errors", []):
             print(f"egl_inventory_error={error}")
 
-    return 1 if (not summary["complete"] or summary["failed"] or
+    return 1 if (not summary["complete"] or summary["failed"] or summary["acceptance_errors"] or
                  summary.get("egl_configs", {}).get("errors")) else 0
 
 

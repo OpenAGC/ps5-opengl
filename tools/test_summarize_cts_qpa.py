@@ -39,6 +39,19 @@ def qpa(cases: list[tuple[str, str]], newline: str = "\n", end: bool = True) -> 
 
 
 class QpaSummaryTest(unittest.TestCase):
+    def test_spirv_overwritten_failure_is_not_accepted(self):
+        name = 'KHR-GL46.gl_spirv.spirv_validation_builtin_variable_decorations_test'
+        text = qpa([(name, 'Pass')]).replace('<Result', '<Text>Validation 0 failed!</Text>\n<Result')
+        result, summary = self.run_parser(text)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(summary['counts'], {'Pass': 1})
+        self.assertEqual(summary['failed'], [])
+        self.assertEqual(summary['acceptance_errors'], [name])
+        result, _ = self.run_parser(qpa([(name, 'Pass')]))
+        self.assertEqual(result.returncode, 0)
+        result, _ = self.run_parser(text.replace(name, 'KHR-GL46.negative.expected_diagnostic'))
+        self.assertEqual(result.returncode, 0)
+
     def run_parser(
         self, text: str, expected: list[str] | None = None
     ) -> tuple[subprocess.CompletedProcess[str], dict[str, object]]:
