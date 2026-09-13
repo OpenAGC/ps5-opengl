@@ -242,12 +242,13 @@ static nir_shader *compute_dimensional(unsigned kind, bool filtered)
       y = nir_fadd_imm(&b, nir_u2f32(&b, y), 0.5f);
       if (filtered) { x = nir_fmul_imm(&b, x, 2); y = nir_fmul_imm(&b, y, 2); }
    } else if (filtered && kind < 4) {
-      x = nir_fmul_imm(&b, nir_fadd_imm(&b, nir_u2f32(&b, x), 0.5f), 0.25f);
+      x = nir_fmul_imm(&b, nir_fadd_imm(&b, nir_u2f32(&b, x), kind == 1 ? -0.5f : 0.5f), 0.25f);
       y = kind == 1 ? nir_u2f32(&b, y) :
          nir_fmul_imm(&b, nir_fadd_imm(&b, nir_u2f32(&b, y), 0.5f), 0.25f);
       z = y;
    }
-   nir_tex_instr *tex = nir_tex_instr_create(b.shader, kind == 3 && !filtered ? 1 : 2);
+   nir_tex_instr *tex = nir_tex_instr_create(b.shader,
+      kind == 1 && filtered ? 3 : kind == 3 && !filtered ? 1 : 2);
    tex->op = kind >= 4 ? nir_texop_txf_ms : kind == 3 ? nir_texop_tex : filtered ? nir_texop_txl : nir_texop_txf;
    tex->sampler_dim = kind >= 4 ? GLSL_SAMPLER_DIM_MS : kind == 3 ? GLSL_SAMPLER_DIM_RECT :
       kind == 2 ? GLSL_SAMPLER_DIM_3D : GLSL_SAMPLER_DIM_1D;
@@ -263,6 +264,8 @@ static nir_shader *compute_dimensional(unsigned kind, bool filtered)
    } else {
       tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod,
          filtered ? nir_imm_float(&b, 0) : nir_imm_int(&b, 0));
+      if (kind == 1 && filtered)
+         tex->src[2] = nir_tex_src_for_ssa(nir_tex_src_offset, nir_imm_int(&b, 1));
    }
    nir_def_init(&tex->instr, &tex->def, 4, 32);
    nir_builder_instr_insert(&b, &tex->instr);
@@ -825,7 +828,11 @@ static int run_dimensional(struct pipe_context *pipe, uint32_t *words, size_t by
    void *sampler = pipe->create_sampler_state(pipe, &ss);
    if (!sampler || bytes != 320) goto cleanup;
    pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 0, 1, &sampler);
-   for (unsigned kind = 0; kind < ARRAY_SIZE(targets); ++kind) {
+   for (unsigned trial = 0; trial < 2 * ARRAY_SIZE(targets); ++trial) {
+      const unsigned kind = trial % ARRAY_SIZE(targets);
+      const bool vector = trial >= ARRAY_SIZE(targets);
+      const unsigned channels = vector ? 4 : 1;
+      const enum pipe_format format = vector ? PIPE_FORMAT_R32G32B32A32_FLOAT : PIPE_FORMAT_R32_FLOAT;
       if (kind == 3) {
          void *none = NULL; pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 0, 1, &none);
          pipe->delete_sampler_state(pipe, sampler);
@@ -835,7 +842,7 @@ static int run_dimensional(struct pipe_context *pipe, uint32_t *words, size_t by
          pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 0, 1, &sampler);
       }
       const unsigned height = kind >= 2 ? 4 : 1, layers = kind == 1 || kind == 2 || kind == 5 ? 4 : 1;
-      const struct pipe_resource templ = {.target = targets[kind], .format = PIPE_FORMAT_R32_FLOAT,
+      const struct pipe_resource templ = {.target = targets[kind], .format = format,
          .width0 = 4, .height0 = height, .depth0 = kind == 2 ? 4 : 1,
          .array_size = kind == 1 || kind == 5 ? 4 : 1,
          .nr_samples = kind >= 4 ? 4 : 0, .nr_storage_samples = kind >= 4 ? 4 : 0,
@@ -844,7 +851,7 @@ static int run_dimensional(struct pipe_context *pipe, uint32_t *words, size_t by
       float *pixels = NULL; size_t size = 0, allocation = 0;
       if (!image || ps5_resource_info(image, (void **)&pixels, &size, &allocation) || !pixels) goto cleanup;
       if (kind >= 4) {
-         if (size != 4 * height * layers * 4 * 4 || allocation < 65536 * layers) goto cleanup;
+         if (size != 4 * height * layers * channels * 4 * 4 || allocation < 65536 * layers) goto cleanup;
          /* Constant per physical layer: checks sample 0/3 access and layer
           * selection, not distinct per-sample values or upload performance. */
          memset(pixels, 0xcd, allocation);
@@ -853,9 +860,10 @@ static int run_dimensional(struct pipe_context *pipe, uint32_t *words, size_t by
          if (size != 256 * height * layers) goto cleanup;
          memset(pixels, 0xcd, size);
          for (unsigned z = 0; z < layers; ++z) for (unsigned y = 0; y < height; ++y)
-            for (unsigned x = 0; x < 4; ++x) pixels[(z * height + y) * 64 + x] = 1 + x + 4 * y + 16 * z;
+            for (unsigned x = 0; x < 4; ++x) for (unsigned c = 0; c < channels; ++c)
+               pixels[(z * height + y) * 64 + x * channels + c] = 1 + x + 4 * y + 16 * z + 100 * c;
       }
-      const struct pipe_sampler_view sv = {.target = targets[kind], .format = PIPE_FORMAT_R32_FLOAT,
+      const struct pipe_sampler_view sv = {.target = targets[kind], .format = format,
          .swizzle_r = PIPE_SWIZZLE_X, .swizzle_g = PIPE_SWIZZLE_Y,
          .swizzle_b = PIPE_SWIZZLE_Z, .swizzle_a = PIPE_SWIZZLE_W,
          .u.tex.last_layer = kind == 1 || kind == 5 ? 3 : 0};
@@ -880,15 +888,15 @@ static int run_dimensional(struct pipe_context *pipe, uint32_t *words, size_t by
             uint32_t expected = GUARD_WORD;
             if (i >= 8 && i < 72) {
                const unsigned lane = (i - 8) % 4, id = (i - 8) / 4;
-               float value = lane == 3 ? 1 : lane ? 0 :
-                  kind >= 4 ? 1 + (kind == 5 ? 16 * (id >> 2) : 0) :
+               float red = kind >= 4 ? 1 + (kind == 5 ? 16 * (id >> 2) : 0) :
                   1 + (id & 3) + (kind == 1 || kind == 2 ? 16 * (id >> 2) : 0) + (kind >= 2 ? 4 * (id >> 2) : 0);
+               float value = vector ? red + (kind >= 4 ? 0 : 100 * lane) : lane == 3 ? 1 : lane ? 0 : red;
                memcpy(&expected, &value, 4);
             }
             correct += words[i] == expected;
          }
-         printf("[ps5-compute-dimensional] kind=%u filtered=%u rc=%d words=%u/80 dispatch=%u\n",
-                kind, filtered, rc, correct, after - before);
+         printf("[ps5-compute-dimensional] kind=%u channels=%u filtered=%u rc=%d words=%u/80 dispatch=%u\n",
+                kind, channels, filtered, rc, correct, after - before);
          if (rc || after != before + 1 || correct != 80) goto cleanup;
          pipe->bind_compute_state(pipe, NULL); pipe->delete_compute_state(pipe, shader); shader = NULL;
       }

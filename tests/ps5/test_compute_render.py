@@ -426,6 +426,20 @@ int main(void) {
         assert(ps5_compute_texture_usage(nir,&used,&buffers,&filtered,lods,&arrays,(uint8_t[16]){0}));
         assert(used==1 && !buffers && filtered==(dimensional<4 && (dimensional==3 || filtered_op)) &&
                arrays==(dimensional==1 || dimensional==5));
+        if(dimensional>=4) {
+            nir_tex_instr *tex=NULL;
+            nir_foreach_block(block,nir_shader_get_entrypoint(nir)) nir_foreach_instr(instr,block)
+                if(instr->type==nir_instr_type_tex) tex=nir_instr_as_tex(instr);
+            assert(tex);
+            int index=nir_tex_instr_src_index(tex,nir_tex_src_ms_index);
+            assert(index>=0);
+            nir_def *sample=tex->src[index].src.ssa;
+            nir_builder b=nir_builder_create(nir_shader_get_entrypoint(nir));
+            b.cursor=nir_before_instr(&tex->instr);
+            nir_src_rewrite(&tex->src[index].src,nir_imm_int(&b,4));
+            assert(!ps5_compute_texture_usage(nir,&used,&buffers,&filtered,lods,&arrays,(uint8_t[16]){0}));
+            nir_src_rewrite(&tex->src[index].src,sample);
+        }
         compile(nir,&all_slots);
     }
     const unsigned layer_counts[]={1,3,8};

@@ -11472,6 +11472,13 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
    return true;
 }
 
+static bool
+ps5_compute_lower_texture_offset(const nir_instr *instr, const void *data)
+{
+   (void)data;
+   return instr->type == nir_instr_type_tex;
+}
+
 /* Internal compute bring-up only: fixed groups and buffer resources. Public compute
  * caps stay off until images, public barriers and limits
  * are complete. Reuse the synchronous native submission owner. */
@@ -11495,6 +11502,7 @@ ps5_create_compute_state(struct pipe_context *base,
       .lower_invalid_implicit_lod = true, .lower_txp = ~0u,
       .lower_txp_array = true, .lower_txf_offset = true,
       .lower_rect_offset = true, .lower_rect = true,
+      .lower_offset_filter = ps5_compute_lower_texture_offset,
    };
    nir_lower_tex(nir, &tex_options);
    /* Mesa binds user blocks after CB0 even without default uniforms.
@@ -11997,7 +12005,8 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
           ((context->cs->array_textures & (1u << i)) != 0))
          return;
       if (context->cs->filtered_textures & (1u << i)) {
-         if (!(context->compute_sampler_mask & (1u << i)) || view->format != PIPE_FORMAT_R32_FLOAT)
+         if (!(context->compute_sampler_mask & (1u << i)) ||
+             (view->format != PIPE_FORMAT_R32_FLOAT && view->format != PIPE_FORMAT_R32G32B32A32_FLOAT))
             return;
          memcpy(table->data + PS5_COMPUTE_TEXTURE_OFFSET + i * 48 + 32,
                 context->compute_samplers[i], 16);
