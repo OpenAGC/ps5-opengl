@@ -11447,7 +11447,11 @@ ps5_create_compute_state(struct pipe_context *base,
       goto cleanup;
    /* Ordinary compute texture() has no implicit derivatives. Normalize it
     * before the usage validator requires an explicit, bounded LOD. */
-   const nir_lower_tex_options tex_options = {.lower_invalid_implicit_lod = true};
+   const nir_lower_tex_options tex_options = {
+      .lower_invalid_implicit_lod = true, .lower_txp = ~0u,
+      .lower_txp_array = true, .lower_txf_offset = true,
+      .lower_rect_offset = true, .lower_rect = true,
+   };
    nir_lower_tex(nir, &tex_options);
    /* Mesa binds user blocks after CB0 even without default uniforms.
     * Normalize both forms before checking the reserved-slot capacity. */
@@ -11792,10 +11796,12 @@ ps5_set_compute_sampler_states(struct pipe_context *base, unsigned start, unsign
       const struct pipe_sampler_state *s = &((const struct ps5_sampler_state *)states[i])->base;
       uint32_t wrap, min_filter, mag_filter, mip_filter;
       uint32_t anisotropy = ps5_texture_descriptor_anisotropy(s->max_anisotropy);
+      /* Rectangle coordinates are normalized in NIR, including projectors
+       * and offsets; keep the hardware sampler normalized for every target. */
       /* ponytail: matching-axis wrap modes; independent axes need qualification. */
       if ((s->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE && s->wrap_s != PIPE_TEX_WRAP_REPEAT &&
            s->wrap_s != PIPE_TEX_WRAP_MIRROR_REPEAT) || s->wrap_t != s->wrap_s ||
-          s->wrap_r != s->wrap_s || s->compare_mode || s->unnormalized_coords ||
+          s->wrap_r != s->wrap_s || s->compare_mode ||
           s->max_anisotropy > 16 || !ps5_float_is_finite(s->min_lod) ||
           !ps5_float_is_finite(s->max_lod) ||
           !(s->min_lod >= 0 && s->max_lod >= s->min_lod) ||

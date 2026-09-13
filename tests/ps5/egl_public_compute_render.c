@@ -237,22 +237,31 @@ static nir_shader *compute_dimensional(unsigned kind, bool filtered)
    BITSET_SET(b.shader->info.textures_used, 0);
    nir_def *id = nir_channel(&b, nir_load_local_invocation_id(&b), 0);
    nir_def *x = nir_iand_imm(&b, id, 3), *y = nir_ushr_imm(&b, id, 2), *z = y;
-   if (filtered) {
+   if (kind == 3) {
+      x = nir_fadd_imm(&b, nir_u2f32(&b, x), 0.5f);
+      y = nir_fadd_imm(&b, nir_u2f32(&b, y), 0.5f);
+      if (filtered) { x = nir_fmul_imm(&b, x, 2); y = nir_fmul_imm(&b, y, 2); }
+   } else if (filtered) {
       x = nir_fmul_imm(&b, nir_fadd_imm(&b, nir_u2f32(&b, x), 0.5f), 0.25f);
       y = kind == 1 ? nir_u2f32(&b, y) :
          nir_fmul_imm(&b, nir_fadd_imm(&b, nir_u2f32(&b, y), 0.5f), 0.25f);
       z = y;
    }
-   nir_tex_instr *tex = nir_tex_instr_create(b.shader, 2);
-   tex->op = filtered ? nir_texop_txl : nir_texop_txf;
-   tex->sampler_dim = kind == 2 ? GLSL_SAMPLER_DIM_3D : GLSL_SAMPLER_DIM_1D;
+   nir_tex_instr *tex = nir_tex_instr_create(b.shader, kind == 3 && !filtered ? 1 : 2);
+   tex->op = kind == 3 ? nir_texop_tex : filtered ? nir_texop_txl : nir_texop_txf;
+   tex->sampler_dim = kind == 3 ? GLSL_SAMPLER_DIM_RECT :
+      kind == 2 ? GLSL_SAMPLER_DIM_3D : GLSL_SAMPLER_DIM_1D;
    tex->is_array = kind == 1;
-   tex->coord_components = kind + 1;
+   tex->coord_components = kind == 3 ? 2 : kind + 1;
    tex->dest_type = nir_type_float32;
    tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_coord,
-      kind == 0 ? x : kind == 1 ? nir_vec2(&b, x, y) : nir_vec3(&b, x, y, z));
-   tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod,
-      filtered ? nir_imm_float(&b, 0) : nir_imm_int(&b, 0));
+      kind == 0 ? x : kind == 2 ? nir_vec3(&b, x, y, z) : nir_vec2(&b, x, y));
+   if (kind == 3) {
+      if (filtered) tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_projector, nir_imm_float(&b, 2));
+   } else {
+      tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod,
+         filtered ? nir_imm_float(&b, 0) : nir_imm_int(&b, 0));
+   }
    nir_def_init(&tex->instr, &tex->def, 4, 32);
    nir_builder_instr_insert(&b, &tex->instr);
    nir_store_ssbo(&b, &tex->def, nir_imm_int(&b, 0), nir_imul_imm(&b, id, 16),
@@ -802,19 +811,27 @@ cleanup:
 
 static int run_dimensional(struct pipe_context *pipe, uint32_t *words, size_t bytes)
 {
-   const unsigned targets[] = {PIPE_TEXTURE_1D, PIPE_TEXTURE_1D_ARRAY, PIPE_TEXTURE_3D};
+   const unsigned targets[] = {PIPE_TEXTURE_1D, PIPE_TEXTURE_1D_ARRAY, PIPE_TEXTURE_3D, PIPE_TEXTURE_RECT};
    int status = 1;
    struct pipe_resource *image = NULL;
    struct pipe_sampler_view *view = NULL;
    void *shader = NULL;
-   const struct pipe_sampler_state ss = {.wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
+   struct pipe_sampler_state ss = {.wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
       .wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE, .wrap_r = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
       .min_img_filter = PIPE_TEX_FILTER_NEAREST, .mag_img_filter = PIPE_TEX_FILTER_NEAREST};
    void *sampler = pipe->create_sampler_state(pipe, &ss);
    if (!sampler || bytes != 320) goto cleanup;
    pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 0, 1, &sampler);
-   for (unsigned kind = 0; kind < 3; ++kind) {
-      const unsigned height = kind == 2 ? 4 : 1, layers = kind ? 4 : 1;
+   for (unsigned kind = 0; kind < ARRAY_SIZE(targets); ++kind) {
+      if (kind == 3) {
+         void *none = NULL; pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 0, 1, &none);
+         pipe->delete_sampler_state(pipe, sampler);
+         ss.unnormalized_coords = true;
+         sampler = pipe->create_sampler_state(pipe, &ss);
+         if (!sampler) goto cleanup;
+         pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 0, 1, &sampler);
+      }
+      const unsigned height = kind >= 2 ? 4 : 1, layers = kind == 1 || kind == 2 ? 4 : 1;
       const struct pipe_resource templ = {.target = targets[kind], .format = PIPE_FORMAT_R32_FLOAT,
          .width0 = 4, .height0 = height, .depth0 = kind == 2 ? 4 : 1,
          .array_size = kind == 1 ? 4 : 1, .bind = PIPE_BIND_SAMPLER_VIEW};
@@ -851,7 +868,7 @@ static int run_dimensional(struct pipe_context *pipe, uint32_t *words, size_t by
             if (i >= 8 && i < 72) {
                const unsigned lane = (i - 8) % 4, id = (i - 8) / 4;
                float value = lane == 3 ? 1 : lane ? 0 :
-                  1 + (id & 3) + (kind ? 16 * (id >> 2) : 0) + (kind == 2 ? 4 * (id >> 2) : 0);
+                  1 + (id & 3) + (kind == 1 || kind == 2 ? 16 * (id >> 2) : 0) + (kind >= 2 ? 4 * (id >> 2) : 0);
                memcpy(&expected, &value, 4);
             }
             correct += words[i] == expected;

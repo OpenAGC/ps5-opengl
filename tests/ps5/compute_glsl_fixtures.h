@@ -276,7 +276,7 @@
   "scope": "parsed GLSL + selected ST passes; not st_link_shader or a stable NIR format",
   "serialization_audited_sha256": "0aecf87e19e14164981710895204b7a64414719a4343c99911a70a6e2789f12e",
   "source_sha256": {
-    "src/gallium/ps5/ps5_screen.c": "39f9c15aae7f3568cdcf891341dd4da388adcd62460440d7c402ad6c60dc27b0",
+    "src/gallium/ps5/ps5_screen.c": "4bc365e8a303f63751b64ce5f5d5814e6adf9fc37037124a41bc3387e5f1c736",
     "tests/ps5/glsl_handoff/abi.c": "f97e326a3d612d72dfc7348c46bafc40f5da203c8c97479c9e5762d06bfff4cf",
     "tests/ps5/glsl_handoff/backend.c": "11a0eaed07731552919177c95c66135e33ac54ec293176515943cd5ff38dc93a",
     "tests/ps5/glsl_handoff/check_target_abi.py": "df9d77a410bf3443f3bb752bf36ba69068d4ff1cf3f1cf503172823df8d28e86",
@@ -309,7 +309,7 @@
   }
 }
 PS5_GLSL_RECEIPT_END */
-#define PS5_GLSL_RECEIPT_SHA256 "be85d9c9400575f401a9f4f480489669242fe48bd29e2d2d78ecbd80ea8f950e"
+#define PS5_GLSL_RECEIPT_SHA256 "7c8cf14e936b7ca3b4d9f4e67026b66a8e35eb623b02d456c55bd5ee9281dcb4"
 #define PS5_GLSL_DEFAULT_BYTES 16u
 #define PS5_GLSL_ADDEND_OFFSET 0u
 _Static_assert(PS5_GLSL_DEFAULT_BYTES > 0 && PS5_GLSL_DEFAULT_BYTES <= 64 &&
