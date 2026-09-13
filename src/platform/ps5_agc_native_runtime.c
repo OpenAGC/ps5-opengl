@@ -2561,6 +2561,7 @@ int main(void)
 #endif
 #endif
     int result = 1;
+    const char *failure_phase = "packages";
     int64_t direct_limit = -1;
     agc_register_t *cx;
     agc_register_t *sh;
@@ -2682,6 +2683,7 @@ int main(void)
         printf(LOG_PREFIX " hull shader header validation failed\n");
         goto cleanup;
     }
+    failure_phase = "api";
 
 #ifdef AGC_TRIANGLE_NEGATIVE_PACKAGE
     {
@@ -2731,6 +2733,7 @@ int main(void)
      * allocation contract accepts (search_start, search_end) == (0, 0). */
     if (init_rc != 0)
         goto receipt;
+    failure_phase = "work";
 #ifdef AGC_DEPTH_DEFAULTS_PROBE
     result = dump_depth_register_template(agc_module);
     goto cleanup;
@@ -2764,6 +2767,7 @@ int main(void)
             tf_ring_address != factor || tf_ring_bytes != TESS_FACTOR_BYTES)
             goto receipt;
     }
+    failure_phase = "shaders";
     memset(memory, 0, work_bytes);
 #ifdef AGC_RUNTIME_PACKAGES
     completion_marker = (volatile uint32_t *)(memory + 0x6ff0);
@@ -2808,6 +2812,7 @@ int main(void)
 #endif
     if (link_rc != 0)
         goto receipt;
+    failure_phase = "framebuffer";
 #ifdef AGC_RUNTIME_PACKAGES
     if (runtime_point_coord_input) {
         agc_register_t *input = (agc_register_t *)(memory + 0x5000);
@@ -3081,6 +3086,7 @@ int main(void)
     if (runtime_video_prepare_draw() != 0)
         goto receipt;
     render_marker = runtime_next_render_marker();
+    failure_phase = "state";
     PS5_PROFILE_MARK(3);
 #else
     for (int attempt = 1; attempt <= 3; ++attempt) {
@@ -3184,6 +3190,9 @@ int main(void)
         goto receipt;
     if (runtime_hs_package) {
         uint32_t stages = last_register_value(cx, cx_count, 0x02d5);
+
+        printf(LOG_PREFIX " tess-stages=%08" PRIx32 " cx=%u sh=%u\n",
+               stages, cx_count, sh_count);
 
         /* GFX10.3 tessellation preamble defaults from Mesa ac_cmdbuf.c.
          * CLEAR_STATE does not supply a usable tessellation distribution. */
@@ -3495,6 +3504,7 @@ int main(void)
     if (out_of_space || command.up < command.bottom ||
         command.up > command.top || draw_words == 0)
         goto receipt;
+    failure_phase = "release";
 
 #ifdef AGC_TRIANGLE_SUBMIT
 #ifdef AGC_RUNTIME_PACKAGES
@@ -3509,6 +3519,7 @@ int main(void)
 #endif
 #endif
     final_words = (uint32_t)(command.up - words);
+    failure_phase = "indirect";
 #if !defined(AGC_RUNTIME_PACKAGES) || defined(AGC_RUNTIME_DIAGNOSTICS)
     final_hash = fnv1a32(words, final_words * sizeof(*words));
 #endif
@@ -3592,6 +3603,7 @@ int main(void)
 #endif
         goto receipt;
     }
+    failure_phase = "submit";
 #if defined(AGC_TEXTURE_VARIANT)
     {
         const uint32_t *texture_descriptor =
@@ -4074,10 +4086,10 @@ receipt:
     if (result)
 #endif
     {
-    printf(LOG_PREFIX " init=%08" PRIx32 " vertex=%08" PRIx32
+    printf(LOG_PREFIX " phase=%s init=%08" PRIx32 " vertex=%08" PRIx32
            " hull=%08" PRIx32 " pixel=%08" PRIx32 " link=%08" PRIx32
            " video=%08" PRIx32 " video_attempts=%d registered=%d result=%d\n",
-           (uint32_t)init_rc, (uint32_t)vertex_rc, (uint32_t)hull_rc,
+           failure_phase, (uint32_t)init_rc, (uint32_t)vertex_rc, (uint32_t)hull_rc,
            (uint32_t)pixel_rc, (uint32_t)link_rc, (uint32_t)video_handle,
            video_open_attempts, buffers_registered, result);
     printf(LOG_PREFIX " dmem_limit=%016" PRIx64
