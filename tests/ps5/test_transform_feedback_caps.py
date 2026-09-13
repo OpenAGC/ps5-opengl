@@ -14,3 +14,4 @@ assert "query->type != PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE" in screen
 assert "output->stream >= PIPE_MAX_VERTEX_STREAMS" in screen
 assert "ps5_streamout_buffer_mask" in screen
 assert "generated_primitives[stream]" in screen
+assert "metadata == &context->geometry_streamout_output.metadata" in screen

@@ -2344,7 +2344,8 @@ ps5_uses_merged_geometry_metadata(const struct ps5_context *context,
                                   const PsbcShaderMetadata *metadata)
 {
    return context->gs && shader == context->vs &&
-          metadata == &context->geometry_output.metadata;
+          (metadata == &context->geometry_output.metadata ||
+           metadata == &context->geometry_streamout_output.metadata);
 }
 
 static bool
@@ -2597,11 +2598,6 @@ ps5_prepare_constant(struct ps5_context *context,
          descriptor[2] = state->size;
          descriptor[3] = UINT32_C(0x0004dfac) |
             S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_RAW);
-         if (merged_geometry)
-            printf("[ps5-gallium] geometry-ubo-bind binding=%u slot=%u descriptor=%p words=%08x/%08x/%08x/%08x data=%p size=%u copied=%u\n",
-                   binding->binding, state_slot, descriptor,
-                   descriptor[0], descriptor[1], descriptor[2], descriptor[3],
-                   (void *)data_address, state->size, state->copied);
       }
    }
    if (ubo_count != expected_ubo_count)
@@ -7324,14 +7320,6 @@ ps5_prepare_streamout(struct ps5_context *context,
    }
    user_data[metadata->streamout_buffer_table_user_data_dword] =
       (uint32_t)table_address;
-   printf("[ps5-gallium] geometry-streamout-bind table=%p user-dword=%u user-value=%08x mask=%x desc0=%08x/%08x/%08x/%08x desc1=%08x/%08x/%08x/%08x desc2=%08x/%08x/%08x/%08x desc3=%08x/%08x/%08x/%08x control=%08x/%08x/%08x/%08x\n",
-          descriptors, metadata->streamout_buffer_table_user_data_dword,
-          (uint32_t)table_address, mask,
-          descriptors[0], descriptors[1], descriptors[2], descriptors[3],
-          descriptors[4], descriptors[5], descriptors[6], descriptors[7],
-          descriptors[8], descriptors[9], descriptors[10], descriptors[11],
-          descriptors[12], descriptors[13], descriptors[14], descriptors[15],
-          descriptors[16], descriptors[17], descriptors[18], descriptors[19]);
    ps5_flush_gpu_data(
       descriptors,
       global_control
@@ -10985,23 +10973,13 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
       options.ps5_global_streamout = true;
       result = psbc_compile_nir_geometry_pipeline(
          context->vs->nir, geometry_nir, &options, &streamout_output);
-      printf("[ps5-gallium] compile-geometry-streamout result=%d bytes=%zu hash=%08x user-sgprs=%u mask=%x table=%u address32=%08x lds=%u\n",
+      printf("[ps5-gallium] compile-geometry-streamout result=%d bytes=%zu hash=%08x user-sgprs=%u mask=%x\n",
              result, streamout_output.machine_code_size,
              ps5_hash32(streamout_output.machine_code,
                         streamout_output.machine_code_size),
              streamout_output.metadata.user_sgpr_count,
              streamout_output.metadata
-                .streamout_enabled_stream_buffers_mask,
-             streamout_output.metadata
-                .streamout_buffer_table_user_data_dword,
-             streamout_output.metadata.address32_hi,
-             streamout_output.metadata.ngg_lds_layout);
-      printf("[ps5-gallium] geometry-streamout-code");
-      for (size_t i = 0;
-           i < MIN2(streamout_output.machine_code_size, (size_t)128); ++i)
-         printf("%s%02x", i ? "" : " ",
-                ((const uint8_t *)streamout_output.machine_code)[i]);
-      printf("\n");
+                .streamout_enabled_stream_buffers_mask);
       if (result != PSBC_RESULT_OK ||
           !ps5_stream_output_metadata_matches(
              &context->gs->stream_output, &streamout_output.metadata) ||
@@ -12184,13 +12162,6 @@ ps5_set_constant_buffer(struct pipe_context *base, mesa_shader_stage shader,
    size_t destination_offset;
    size_t copied_size;
 
-   if (shader == MESA_SHADER_GEOMETRY)
-      printf("[ps5-gallium] geometry-constant-set index=%u buffer=%p user=%p resource=%p offset=%u size=%u\n",
-             index, (const void *)buffer,
-             buffer ? buffer->user_buffer : NULL,
-             buffer ? (void *)buffer->buffer : NULL,
-             buffer ? buffer->buffer_offset : 0,
-             buffer ? buffer->buffer_size : 0);
 
    if (index >= (PS5_ENABLE_UBO_CANDIDATE
                     ? PS5_MAX_CONSTANT_BUFFERS : 1))
@@ -12256,9 +12227,6 @@ ps5_set_constant_buffer(struct pipe_context *base, mesa_shader_stage shader,
    }
    state->size = buffer->buffer_size;
    state->valid = true;
-   if (shader == MESA_SHADER_GEOMETRY)
-      printf("[ps5-gallium] geometry-constant-ready index=%u copied=%u size=%u\n",
-             index, state->copied, state->size);
 }
 
 static void
