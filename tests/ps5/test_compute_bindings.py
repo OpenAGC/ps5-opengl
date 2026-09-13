@@ -118,6 +118,7 @@ code = r'''
 #define PS5_COMPUTE_DESCRIPTOR_BYTES (PS5_COMPUTE_TEXTURE_OFFSET+PS5_COMPUTE_TEXTURE_SLOTS*48)
 #define PS5_MAX_TEXTURE_2D_SIZE 8192
 #define PS5_MAX_TEXTURE_3D_SIZE 2048
+#define PS5_MAX_TEXTURE_ARRAY_LAYERS 2048u
 #define PS5_MAX_TEXEL_BUFFER_ELEMENTS (1u << 20)
 #define PS5_MAX_CONSTANT_BUFFER_SIZE 0x4000u
 struct ps5_resource {
@@ -911,8 +912,8 @@ int main(void) {
     canonical.render_staging_offset=canonical.render_staging_size=0;
     assert(!ps5_resource_storage_image_descriptor(&canonical.base,0,descriptor));
     assert(!memcmp(descriptor,canonical_srd,sizeof(descriptor)));
-    /* New sampled dimensions retain canonical owned backing; storage-image
-     * support is deliberately unchanged. Volumes are single-level for now. */
+    /* Sampled and storage dimensions share canonical owned backing.
+     * Volumes are single-level for now. */
     const unsigned sampled_targets[]={PIPE_TEXTURE_1D,PIPE_TEXTURE_1D_ARRAY,
         PIPE_TEXTURE_3D,PIPE_TEXTURE_RECT};
     const uint32_t sampled_types[]={0x80000000u,0xc0000000u,0xa0000000u,0x90000000u};
@@ -927,7 +928,18 @@ int main(void) {
         assert(!ps5_resource_sampled_image_descriptor(&dimensional.base,0,0,descriptor));
         assert((descriptor[3]&0xf0000000u)==sampled_types[target]);
         assert(descriptor[4]==(target==1 || target==2 ? 3 : target==3 ? 63 : 0));
-        assert(ps5_resource_storage_image_descriptor(&dimensional.base,0,descriptor)<0);
+        assert(!ps5_resource_storage_image_descriptor(&dimensional.base,0,descriptor));
+        for(unsigned stage=0;stage<2;++stage) {
+            mesa_shader_stage which=stage ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
+            struct pipe_image_view v={.resource=&dimensional.base,.format=dimensional.base.format,
+                .access=PIPE_IMAGE_ACCESS_READ_WRITE};
+            v.u.tex.last_layer=target==1 || target==2 ? 3 : 0;
+            v.u.tex.single_layer_view=target==0 || target==3;
+            ps5_set_shader_images(&context.base,which,0,1,0,&v);
+            assert(!(stage ? context.fragment_images_invalid : context.compute_images_invalid));
+            ps5_set_shader_images(&context.base,which,0,0,1,NULL);
+            assert(dimensional.base.reference.count==1);
+        }
         /* Mesa attaches a render-target hint even to dimensions for which
          * resource creation deliberately allocates no render staging. */
         if (target != 2) {
@@ -958,11 +970,109 @@ int main(void) {
         array.layer_stride=256;
         assert(!ps5_resource_sampled_image_descriptor(&array.base,0,0,descriptor));
         assert(descriptor[4]==15);
-        assert(ps5_resource_storage_image_descriptor(&array.base,0,descriptor)<0);
+        assert(!ps5_resource_storage_image_descriptor(&array.base,0,descriptor));
         --array.size;
         assert(ps5_resource_sampled_image_descriptor(&array.base,0,0,descriptor)<0);
         ++array.size; array.base.array_size=17;
         assert(ps5_resource_sampled_image_descriptor(&array.base,0,0,descriptor)<0);
+    }
+    {
+        _Alignas(256) uint8_t pixels[12*512];
+        struct ps5_resource cube=canonical;
+        cube.base.target=PIPE_TEXTURE_CUBE_ARRAY;
+        cube.base.width0=cube.base.height0=2; cube.base.array_size=12;
+        cube.data=pixels; cube.size=cube.allocation_size=sizeof(pixels);
+        cube.layer_stride=512;
+        struct pipe_image_view v={.resource=&cube.base,.format=cube.base.format,
+            .access=PIPE_IMAGE_ACCESS_READ_WRITE};
+        v.u.tex.last_layer=11;
+        assert(!ps5_storage_image_view_descriptor(&v,descriptor));
+        assert((descriptor[3]>>28)==13 && descriptor[4]==11);
+        v.u.tex.first_layer=v.u.tex.last_layer=7; v.u.tex.single_layer_view=true;
+        assert(!ps5_storage_image_view_descriptor(&v,descriptor));
+        assert(descriptor[0]==(uint32_t)((uintptr_t)(pixels+7*512)>>8));
+        assert((descriptor[3]>>28)==9 && descriptor[4]==63);
+        for(unsigned stage=0;stage<2;++stage) {
+            mesa_shader_stage which=stage ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
+            ps5_set_shader_images(&context.base,which,0,1,0,&v);
+            assert(!(stage ? context.fragment_images_invalid : context.compute_images_invalid));
+            ps5_set_shader_images(&context.base,which,0,0,1,NULL);
+        }
+        v.u.tex.last_layer=12;
+        assert(ps5_storage_image_view_descriptor(&v,descriptor)<0);
+        v.u.tex.last_layer=7; v.u.tex.level=PIPE_MAX_TEXTURE_LEVELS;
+        assert(ps5_storage_image_view_descriptor(&v,descriptor)<0);
+        assert(cube.base.reference.count==1);
+    }
+    /* All core image formats use the same checked linear descriptor path. */
+    {
+        const enum pipe_format formats[]={
+            PIPE_FORMAT_R8_UINT,
+            PIPE_FORMAT_R8_SINT,
+            PIPE_FORMAT_R8G8_UINT,
+            PIPE_FORMAT_R8G8_SINT,
+            PIPE_FORMAT_R8G8B8A8_UINT,
+            PIPE_FORMAT_R8G8B8A8_SINT,
+            PIPE_FORMAT_R16_UINT,
+            PIPE_FORMAT_R16_SINT,
+            PIPE_FORMAT_R16G16_UINT,
+            PIPE_FORMAT_R16G16_SINT,
+            PIPE_FORMAT_R16G16B16A16_UINT,
+            PIPE_FORMAT_R16G16B16A16_SINT,
+            PIPE_FORMAT_R32_UINT,
+            PIPE_FORMAT_R32_SINT,
+            PIPE_FORMAT_R32G32_UINT,
+            PIPE_FORMAT_R32G32_SINT,
+            PIPE_FORMAT_R32G32B32A32_UINT,
+            PIPE_FORMAT_R32G32B32A32_SINT,
+            PIPE_FORMAT_R8_UNORM,
+            PIPE_FORMAT_R8_SNORM,
+            PIPE_FORMAT_R8G8_UNORM,
+            PIPE_FORMAT_R8G8_SNORM,
+            PIPE_FORMAT_R8G8B8A8_UNORM,
+            PIPE_FORMAT_R8G8B8A8_SNORM,
+            PIPE_FORMAT_R16_UNORM,
+            PIPE_FORMAT_R16_SNORM,
+            PIPE_FORMAT_R16G16_UNORM,
+            PIPE_FORMAT_R16G16_SNORM,
+            PIPE_FORMAT_R16G16B16A16_UNORM,
+            PIPE_FORMAT_R16G16B16A16_SNORM,
+            PIPE_FORMAT_R16_FLOAT,
+            PIPE_FORMAT_R16G16_FLOAT,
+            PIPE_FORMAT_R16G16B16A16_FLOAT,
+            PIPE_FORMAT_R32_FLOAT,
+            PIPE_FORMAT_R32G32_FLOAT,
+            PIPE_FORMAT_R32G32B32A32_FLOAT,
+            PIPE_FORMAT_R10G10B10A2_UNORM,
+            PIPE_FORMAT_R10G10B10A2_UINT,
+            PIPE_FORMAT_R11G11B10_FLOAT};
+        _Alignas(256) uint8_t pixels[2048];
+        for(unsigned f=0;f<ARRAY_SIZE(formats);++f) {
+            struct ps5_resource typed=canonical;
+            typed.base.format=formats[f]; typed.base.width0=17; typed.base.height0=3;
+            typed.data=pixels; typed.allocation_size=sizeof(pixels);
+            const unsigned bytes=util_format_get_blocksize(formats[f]);
+            typed.level_stride[0]=(17*bytes+255)&~255u;
+            typed.size=typed.layer_stride=typed.level_stride[0]*3;
+            assert(ps5_storage_image_texel_size(formats[f])==bytes);
+            assert(!ps5_resource_storage_image_descriptor(&typed.base,0,descriptor));
+            assert((descriptor[1]&0x3ff00000u)==(gfx10_format_table[formats[f]].img_format<<20));
+            unsigned expected=0;
+            for(unsigned lane=0;lane<4;++lane) {
+                const unsigned selector=lane<util_format_get_nr_components(formats[f]) ? 4+lane : lane==3 ? 1 : 0;
+                expected|=selector<<(lane*3);
+            }
+            assert((descriptor[3]&0xfffu)==expected);
+            for(unsigned stage=0;stage<2;++stage) {
+                mesa_shader_stage which=stage ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
+                struct pipe_image_view v={.resource=&typed.base,.format=formats[f],
+                    .access=PIPE_IMAGE_ACCESS_READ_WRITE,.u.tex.single_layer_view=true};
+                ps5_set_shader_images(&context.base,which,7,1,0,&v);
+                assert(!(stage ? context.fragment_images_invalid : context.compute_images_invalid));
+                ps5_set_shader_images(&context.base,which,7,0,1,NULL);
+                assert(typed.base.reference.count==1);
+            }
+        }
     }
     const enum pipe_format normalized_formats[]={PIPE_FORMAT_R16G16B16A16_UNORM,PIPE_FORMAT_R8G8B8A8_UNORM};
     for(unsigned f=0;f<ARRAY_SIZE(normalized_formats);++f) {
@@ -1086,6 +1196,28 @@ int main(void) {
         ps5_set_shader_images(&context.base,which,7,0,1,NULL);
         assert(tiled.base.reference.count==1);
     }
+    /* RGBA16F uses the native tiled layout too, including image bindings. */
+    {
+        struct ps5_resource half=tiled;
+        half.base.format=PIPE_FORMAT_R16G16B16A16_FLOAT;
+        half.size=half.layer_stride=17*3*8;
+        half.level_stride[0]=17*8;
+        assert(!ps5_linear_sampled_layout(&half.base));
+        assert(!ps5_resource_storage_image_descriptor(&half.base,0,descriptor));
+        assert(descriptor[1]==(0x04700000u|(uint32_t)((uintptr_t)half.data>>40)));
+        assert(descriptor[3]==tiled_srd[3]);
+        for(unsigned stage=0;stage<2;++stage) {
+            mesa_shader_stage which=stage ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
+            struct pipe_image_view v={.resource=&half.base,.format=half.base.format,
+                .access=PIPE_IMAGE_ACCESS_READ_WRITE,.u.tex.single_layer_view=true};
+            ps5_set_shader_images(&context.base,which,7,1,0,&v);
+            assert(!(stage ? context.fragment_images_invalid : context.compute_images_invalid));
+            ps5_set_shader_images(&context.base,which,7,0,1,NULL);
+            assert(half.base.reference.count==1);
+        }
+        half.allocation_size=65535;
+        assert(ps5_resource_storage_image_descriptor(&half.base,0,descriptor)<0);
+    }
     for(unsigned fault=0;fault<14;++fault) {
         struct ps5_resource bad=tiled;
         if(fault==0) bad.data+=256;
@@ -1108,8 +1240,8 @@ int main(void) {
         for(unsigned i=0;i<8;++i) assert(descriptor[i]==0xa5a5a5a5u);
     }
     assert(ps5_resource_storage_image_descriptor(&tiled.base,1,descriptor)<0);
-    const enum pipe_format still_gated[]={PIPE_FORMAT_R16G16B16A16_SNORM,
-        PIPE_FORMAT_R8G8B8A8_SNORM,PIPE_FORMAT_R16_UNORM,PIPE_FORMAT_R16G16_UNORM};
+    const enum pipe_format still_gated[]={PIPE_FORMAT_R9G9B9E5_FLOAT,
+        PIPE_FORMAT_R8G8B8A8_SRGB,PIPE_FORMAT_Z32_FLOAT,PIPE_FORMAT_R32G32B32_FLOAT};
     for(unsigned i=0;i<ARRAY_SIZE(still_gated);++i) {
         struct ps5_resource bad=canonical; bad.base.format=still_gated[i];
         assert(!ps5_storage_image_texel_size(bad.base.format));
@@ -1169,7 +1301,7 @@ int main(void) {
         if(fault==2) bad.nr_samples=4;
         if(fault==3) bad.nr_storage_samples=4;
         if(fault==4) bad.bind|=PIPE_BIND_RENDER_TARGET;
-        if(fault==5) bad.format=PIPE_FORMAT_R16_FLOAT;
+        if(fault==5) bad.format=PIPE_FORMAT_R9G9B9E5_FLOAT;
         if(fault==6) bad.bind=PIPE_BIND_SHADER_IMAGE;
         assert(!ps5_compute_image_array_resource(&bad));
     }
@@ -1249,17 +1381,23 @@ int main(void) {
             view.u.tex.level=level; view.u.tex.last_layer=7;
             ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,1,0,&view);
             assert(!context.compute_images_invalid && v.base.reference.count==2);
-            /* A non-layered array view needs a different descriptor; stay gated. */
+            /* A single-layer view cannot name several layers. */
             view.u.tex.single_layer_view=true;
             ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,1,0,&view);
             assert(context.compute_images_invalid && v.base.reference.count==2);
             assert(!context.compute_images[7].u.tex.single_layer_view);
             view.u.tex.single_layer_view=false;
-            /* Rejected sublayers must preserve the retained binding. */
+            /* Sublayers rebase the descriptor; invalid ranges retain the binding. */
             view.u.tex.first_layer=1;
             ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,1,0,&view);
+            assert(!context.compute_images_invalid && v.base.reference.count==2);
+            assert(!ps5_storage_image_view_descriptor(&view,descriptor));
+            assert(descriptor[0]==(uint32_t)(((uintptr_t)v.data+v.layer_stride)>>8));
+            assert(descriptor[4]==6);
+            view.u.tex.first_layer=8;
+            ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,1,0,&view);
             assert(context.compute_images_invalid && v.base.reference.count==2);
-            assert(context.compute_images[7].u.tex.first_layer==0);
+            assert(context.compute_images[7].u.tex.first_layer==1);
             ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,0,1,NULL);
             assert(!context.compute_images_invalid && v.base.reference.count==1);
         }
@@ -1281,7 +1419,7 @@ int main(void) {
     for(unsigned fault=0;fault<15;++fault) {
         struct ps5_resource bad=image;
         if(fault==0) bad.base.target=PIPE_BUFFER;
-        if(fault==1) bad.base.format=PIPE_FORMAT_R16_FLOAT;
+        if(fault==1) bad.base.format=PIPE_FORMAT_R9G9B9E5_FLOAT;
         if(fault==2) bad.base.width0=0;
         if(fault==3) bad.base.height0=8193;
         if(fault==4) bad.base.depth0=2;

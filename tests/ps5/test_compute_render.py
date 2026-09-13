@@ -126,7 +126,8 @@ static nir_shader *compute_buffer_image(void) {
 }
 /* Reuse actual image-store builders; mutate only format/op and retain an
  * observable SSBO sink for loads/size/atomics. Compiler-only, not GL parsing. */
-static nir_shader *normalized_image(nir_shader *nir, unsigned operation, enum pipe_format format) {
+static nir_shader *normalized_image(nir_shader *nir, unsigned operation, enum pipe_format format,
+                                    enum glsl_sampler_dim dim, bool array) {
     unsigned changed=0;
     nir_foreach_function_impl(impl,nir) {
         nir_builder b=nir_builder_create(impl);
@@ -136,20 +137,23 @@ static nir_shader *normalized_image(nir_shader *nir, unsigned operation, enum pi
             if(intr->intrinsic!=nir_intrinsic_image_store) continue;
             ++changed;
             nir_intrinsic_set_format(intr,format);
+            nir_intrinsic_set_image_dim(intr,dim);
+            nir_intrinsic_set_image_array(intr,array);
             nir_alu_type type=nir_intrinsic_src_type(intr);
             if(!operation) continue;
             b.cursor=nir_before_instr(instr);
             nir_def *slot=intr->src[0].ssa, *zero=nir_imm_int(&b,0), *value;
             if(operation==1)
                 value=nir_image_load(&b,4,32,slot,intr->src[1].ssa,zero,zero,
-                    .image_dim=GLSL_SAMPLER_DIM_2D,.format=format,
+                    .image_dim=dim,.image_array=array,.format=format,
                     .dest_type=type);
             else if(operation==2)
-                value=nir_image_size(&b,2,32,slot,zero,.image_dim=GLSL_SAMPLER_DIM_2D,
-                    .format=format);
+                value=nir_image_size(&b,dim==GLSL_SAMPLER_DIM_3D ? 3 :
+                    (dim==GLSL_SAMPLER_DIM_1D || dim==GLSL_SAMPLER_DIM_BUF ? 1 : 2)+array,
+                    32,slot,zero,.image_dim=dim,.image_array=array,.format=format);
             else
                 value=nir_image_atomic(&b,32,slot,intr->src[1].ssa,zero,nir_imm_int(&b,1),
-                    .image_dim=GLSL_SAMPLER_DIM_2D,.format=PIPE_FORMAT_R32_UINT,
+                    .image_dim=dim,.image_array=array,.format=PIPE_FORMAT_R32_UINT,
                     .atomic_op=nir_atomic_op_iadd);
             nir_store_ssbo(&b,value,zero,zero,.align_mul=4,
                 .write_mask=(1u<<value->num_components)-1);
@@ -216,8 +220,65 @@ int main(void) {
                                 .array_size=16,.stride=48,.offset=752};
     compile(buffer_array,&buffer_array_options);
     compile(compute_buffer_image(),&options);
-    const enum pipe_format normalized_formats[]={PIPE_FORMAT_R16G16B16A16_UNORM,PIPE_FORMAT_R8G8B8A8_UNORM,
-        PIPE_FORMAT_R8G8B8A8_UINT,PIPE_FORMAT_R8G8B8A8_SINT};
+    const enum glsl_sampler_dim image_dims[]={GLSL_SAMPLER_DIM_1D,GLSL_SAMPLER_DIM_2D,
+        GLSL_SAMPLER_DIM_3D,GLSL_SAMPLER_DIM_CUBE,GLSL_SAMPLER_DIM_RECT,GLSL_SAMPLER_DIM_BUF};
+    for(unsigned d=0;d<ARRAY_SIZE(image_dims);++d) for(unsigned array=0;array<2;++array) {
+        enum glsl_sampler_dim dim=image_dims[d];
+        if(array && (dim==GLSL_SAMPLER_DIM_3D || dim==GLSL_SAMPLER_DIM_RECT || dim==GLSL_SAMPLER_DIM_BUF)) continue;
+        for(unsigned stage=0;stage<2;++stage) for(unsigned op=0;op<4;++op) {
+            PsbcCompileOptions candidate=options;
+            candidate.stage=stage ? PSBC_STAGE_FRAGMENT : PSBC_STAGE_COMPUTE;
+            candidate.spi_shader_col_format=stage ? 4 : 0;
+            candidate.descriptor_bindings[0].binding=PSBC_GALLIUM_SSBO_ARRAY_BINDING(candidate.stage);
+            candidate.descriptor_bindings[1].binding=PSBC_GALLIUM_UBO_ARRAY_BINDING(candidate.stage);
+            candidate.descriptor_bindings[2].binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(candidate.stage);
+            nir_shader *nir=normalized_image(stage ? build_fragment_storage(2,7,10,false,false,0) :
+                build_compute(1),op,PIPE_FORMAT_R32_UINT,dim,array);
+            nir_validate_shader(nir,"image target regression");
+            fprintf(stderr,"image-target dim=%u array=%u stage=%u op=%u\n",dim,array,stage,op);
+            compile(nir,&candidate);
+        }
+    }
+    const enum pipe_format normalized_formats[]={
+        PIPE_FORMAT_R8_UINT,
+        PIPE_FORMAT_R8_SINT,
+        PIPE_FORMAT_R8G8_UINT,
+        PIPE_FORMAT_R8G8_SINT,
+        PIPE_FORMAT_R8G8B8A8_UINT,
+        PIPE_FORMAT_R8G8B8A8_SINT,
+        PIPE_FORMAT_R16_UINT,
+        PIPE_FORMAT_R16_SINT,
+        PIPE_FORMAT_R16G16_UINT,
+        PIPE_FORMAT_R16G16_SINT,
+        PIPE_FORMAT_R16G16B16A16_UINT,
+        PIPE_FORMAT_R16G16B16A16_SINT,
+        PIPE_FORMAT_R32_UINT,
+        PIPE_FORMAT_R32_SINT,
+        PIPE_FORMAT_R32G32_UINT,
+        PIPE_FORMAT_R32G32_SINT,
+        PIPE_FORMAT_R32G32B32A32_UINT,
+        PIPE_FORMAT_R32G32B32A32_SINT,
+        PIPE_FORMAT_R8_UNORM,
+        PIPE_FORMAT_R8_SNORM,
+        PIPE_FORMAT_R8G8_UNORM,
+        PIPE_FORMAT_R8G8_SNORM,
+        PIPE_FORMAT_R8G8B8A8_UNORM,
+        PIPE_FORMAT_R8G8B8A8_SNORM,
+        PIPE_FORMAT_R16_UNORM,
+        PIPE_FORMAT_R16_SNORM,
+        PIPE_FORMAT_R16G16_UNORM,
+        PIPE_FORMAT_R16G16_SNORM,
+        PIPE_FORMAT_R16G16B16A16_UNORM,
+        PIPE_FORMAT_R16G16B16A16_SNORM,
+        PIPE_FORMAT_R16_FLOAT,
+        PIPE_FORMAT_R16G16_FLOAT,
+        PIPE_FORMAT_R16G16B16A16_FLOAT,
+        PIPE_FORMAT_R32_FLOAT,
+        PIPE_FORMAT_R32G32_FLOAT,
+        PIPE_FORMAT_R32G32B32A32_FLOAT,
+        PIPE_FORMAT_R10G10B10A2_UNORM,
+        PIPE_FORMAT_R10G10B10A2_UINT,
+        PIPE_FORMAT_R11G11B10_FLOAT};
     for(unsigned f=0;f<ARRAY_SIZE(normalized_formats);++f) for(unsigned stage=0;stage<2;++stage) {
         PsbcCompileOptions normalized=options;
         normalized.stage=stage ? PSBC_STAGE_FRAGMENT : PSBC_STAGE_COMPUTE;
@@ -226,11 +287,16 @@ int main(void) {
         normalized.descriptor_bindings[1].binding=PSBC_GALLIUM_UBO_ARRAY_BINDING(normalized.stage);
         normalized.descriptor_bindings[2].binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(normalized.stage);
         for(unsigned operation=0;operation<4;++operation) {
-            unsigned kind=f<2 ? 0 : f-1;
+            unsigned kind=util_format_is_pure_uint(normalized_formats[f]) ? 1 :
+                util_format_is_pure_sint(normalized_formats[f]) ? 2 : 0;
             nir_shader *nir=normalized_image(stage ? build_fragment_storage(2,7,9+kind,false,false,0) :
-                build_compute(kind),operation,normalized_formats[f]);
+                build_compute(kind),operation,normalized_formats[f],GLSL_SAMPLER_DIM_2D,false);
             nir_validate_shader(nir,"RGBA compiler regression");
             if(operation==3) {
+                if(normalized_formats[f]==PIPE_FORMAT_R32_UINT || normalized_formats[f]==PIPE_FORMAT_R32_SINT) {
+                    compile(nir,&normalized);
+                    continue;
+                }
                 /* Narrow RGBA atomics are invalid NIR, so test the exact
                  * extracted admission guard, not an invalid compile pipeline. */
                 unsigned changed=0;

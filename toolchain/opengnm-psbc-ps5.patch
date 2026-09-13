@@ -538,7 +538,7 @@ index bacbc6a..035ffd1 100644
  #include <stdarg.h>
  #include <stdio.h>
  #include <string.h>
-@@ -26,16 +27,250 @@
+@@ -26,16 +27,284 @@
  #include "ac_binary.h"
  #include "ac_nir.h"
  #include "amd_family.h"
@@ -675,7 +675,7 @@ index bacbc6a..035ffd1 100644
 +    return true;
 +}
 +
-+/* 32-bit R/RG/RGBA, 16-bit RGBA and RGBA8_UNORM single-sample 2D images. Atomics remain
++/* 32-bit R/RG/RGBA, 16-bit RGBA and RGBA8_UNORM single-sample images. Atomics remain
 + * restricted to scalar integer formats with matching native descriptors. */
 +static bool lower_gallium_image_index(nir_builder* b, nir_instr* instruction,
 +                                     void* data) {
@@ -704,18 +704,52 @@ index bacbc6a..035ffd1 100644
 +    const enum pipe_format format = nir_intrinsic_format(intr);
 +    const bool atomic = intr->intrinsic == nir_intrinsic_image_atomic ||
 +                        intr->intrinsic == nir_intrinsic_image_atomic_swap;
-+    const bool uint_format = format == PIPE_FORMAT_R32_UINT || format == PIPE_FORMAT_R32G32_UINT || format == PIPE_FORMAT_R32G32B32A32_UINT || format == PIPE_FORMAT_R16G16B16A16_UINT || format == PIPE_FORMAT_R8G8B8A8_UINT;
-+    const bool sint_format = format == PIPE_FORMAT_R32_SINT || format == PIPE_FORMAT_R32G32_SINT || format == PIPE_FORMAT_R32G32B32A32_SINT || format == PIPE_FORMAT_R16G16B16A16_SINT || format == PIPE_FORMAT_R8G8B8A8_SINT;
-+    const bool float_format = format == PIPE_FORMAT_R32_FLOAT || format == PIPE_FORMAT_R32G32_FLOAT || format == PIPE_FORMAT_R32G32B32A32_FLOAT || format == PIPE_FORMAT_R16G16B16A16_FLOAT || format == PIPE_FORMAT_R16G16B16A16_UNORM || format == PIPE_FORMAT_R8G8B8A8_UNORM;
++    const bool uint_format =
++        format == PIPE_FORMAT_R8_UINT || format == PIPE_FORMAT_R8G8_UINT ||
++        format == PIPE_FORMAT_R8G8B8A8_UINT || format == PIPE_FORMAT_R16_UINT ||
++        format == PIPE_FORMAT_R16G16_UINT || format == PIPE_FORMAT_R16G16B16A16_UINT ||
++        format == PIPE_FORMAT_R32_UINT || format == PIPE_FORMAT_R32G32_UINT ||
++        format == PIPE_FORMAT_R32G32B32A32_UINT || format == PIPE_FORMAT_R10G10B10A2_UINT;
++    const bool sint_format =
++        format == PIPE_FORMAT_R8_SINT || format == PIPE_FORMAT_R8G8_SINT ||
++        format == PIPE_FORMAT_R8G8B8A8_SINT || format == PIPE_FORMAT_R16_SINT ||
++        format == PIPE_FORMAT_R16G16_SINT || format == PIPE_FORMAT_R16G16B16A16_SINT ||
++        format == PIPE_FORMAT_R32_SINT || format == PIPE_FORMAT_R32G32_SINT ||
++        format == PIPE_FORMAT_R32G32B32A32_SINT;
++    const bool float_format =
++        format == PIPE_FORMAT_R8_UNORM || format == PIPE_FORMAT_R8_SNORM ||
++        format == PIPE_FORMAT_R8G8_UNORM || format == PIPE_FORMAT_R8G8_SNORM ||
++        format == PIPE_FORMAT_R8G8B8A8_UNORM || format == PIPE_FORMAT_R8G8B8A8_SNORM ||
++        format == PIPE_FORMAT_R16_UNORM || format == PIPE_FORMAT_R16_SNORM ||
++        format == PIPE_FORMAT_R16G16_UNORM || format == PIPE_FORMAT_R16G16_SNORM ||
++        format == PIPE_FORMAT_R16G16B16A16_UNORM || format == PIPE_FORMAT_R16G16B16A16_SNORM ||
++        format == PIPE_FORMAT_R16_FLOAT || format == PIPE_FORMAT_R16G16_FLOAT ||
++        format == PIPE_FORMAT_R16G16B16A16_FLOAT || format == PIPE_FORMAT_R32_FLOAT ||
++        format == PIPE_FORMAT_R32G32_FLOAT || format == PIPE_FORMAT_R32G32B32A32_FLOAT ||
++        format == PIPE_FORMAT_R10G10B10A2_UNORM || format == PIPE_FORMAT_R11G11B10_FLOAT;
 +    const bool scalar_integer = format == PIPE_FORMAT_R32_UINT || format == PIPE_FORMAT_R32_SINT;
 +    if (!opts->gallium_buffer_arrays || !bank ||
 +        slot.ssa->num_components != 1 || slot.ssa->bit_size != 32 ||
 +        (nir_src_is_const(slot) && nir_src_as_uint(slot) >= bank->array_size) ||
 +        (nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_2D &&
++         nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_1D &&
++         nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_3D &&
++         nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_CUBE &&
++         nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_RECT &&
 +         nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_BUF) ||
 +        !(uint_format || sint_format || float_format) || (atomic && !scalar_integer)) {
 +        state->valid = false;
 +        return false;
++    }
++    /* Cube-size lowering retains a vec2 destination for a non-array cube,
++     * but its normalized 2D-array descriptor produces vec3. Preserve vec2 uses. */
++    if (intr->intrinsic == nir_intrinsic_image_size &&
++        nir_intrinsic_image_dim(intr) == GLSL_SAMPLER_DIM_2D &&
++        nir_intrinsic_image_array(intr) && intr->def.num_components == 2) {
++        intr->num_components = intr->def.num_components = 3;
++        b->cursor = nir_after_instr(instruction);
++        nir_def* size = nir_trim_vector(b, &intr->def, 2);
++        nir_def_rewrite_uses_after(&intr->def, size);
 +    }
 +    b->cursor = nir_before_instr(instruction);
 +    const enum glsl_base_type type = uint_format ? GLSL_TYPE_UINT :

@@ -115,6 +115,8 @@ static void ps5_draw_batch_drain_buffer(struct pipe_resource *resource);
 #else
 #define ps5_draw_batch_drain_buffer(resource) ((void)(resource))
 #endif
+static int ps5_storage_image_view_descriptor(const struct pipe_image_view *view,
+                                             uint32_t descriptor[8]);
 
 void
 ps5_screen_submit_lock(struct pipe_screen *base)
@@ -1393,12 +1395,23 @@ static unsigned
 ps5_storage_image_texel_size(enum pipe_format format)
 {
    switch (format) {
+   case PIPE_FORMAT_R8_UNORM: case PIPE_FORMAT_R8_SNORM:
+   case PIPE_FORMAT_R8_UINT: case PIPE_FORMAT_R8_SINT: return 1;
+   case PIPE_FORMAT_R8G8_UNORM: case PIPE_FORMAT_R8G8_SNORM:
+   case PIPE_FORMAT_R8G8_UINT: case PIPE_FORMAT_R8G8_SINT:
+   case PIPE_FORMAT_R16_UNORM: case PIPE_FORMAT_R16_SNORM: case PIPE_FORMAT_R16_FLOAT:
+   case PIPE_FORMAT_R16_UINT: case PIPE_FORMAT_R16_SINT: return 2;
+   case PIPE_FORMAT_R16G16_UNORM: case PIPE_FORMAT_R16G16_SNORM: case PIPE_FORMAT_R16G16_FLOAT:
+   case PIPE_FORMAT_R16G16_UINT: case PIPE_FORMAT_R16G16_SINT:
+   case PIPE_FORMAT_R11G11B10_FLOAT: case PIPE_FORMAT_R10G10B10A2_UNORM:
+   case PIPE_FORMAT_R10G10B10A2_UINT:
    case PIPE_FORMAT_R8G8B8A8_UNORM: case PIPE_FORMAT_R8G8B8A8_UINT:
-   case PIPE_FORMAT_R8G8B8A8_SINT: return 4;
+   case PIPE_FORMAT_R8G8B8A8_SNORM: case PIPE_FORMAT_R8G8B8A8_SINT: return 4;
    case PIPE_FORMAT_R32_FLOAT: case PIPE_FORMAT_R32_UINT: case PIPE_FORMAT_R32_SINT: return 4;
    case PIPE_FORMAT_R32G32_FLOAT: case PIPE_FORMAT_R32G32_UINT: case PIPE_FORMAT_R32G32_SINT: return 8;
    case PIPE_FORMAT_R16G16B16A16_FLOAT: case PIPE_FORMAT_R16G16B16A16_UINT:
-   case PIPE_FORMAT_R16G16B16A16_SINT: case PIPE_FORMAT_R16G16B16A16_UNORM: return 8;
+   case PIPE_FORMAT_R16G16B16A16_SINT: case PIPE_FORMAT_R16G16B16A16_UNORM:
+   case PIPE_FORMAT_R16G16B16A16_SNORM: return 8;
    case PIPE_FORMAT_R32G32B32A32_FLOAT: case PIPE_FORMAT_R32G32B32A32_UINT:
    case PIPE_FORMAT_R32G32B32A32_SINT: return 16;
    default: return 0;
@@ -1408,11 +1421,7 @@ ps5_storage_image_texel_size(enum pipe_format format)
 static unsigned
 ps5_storage_image_channels(enum pipe_format format)
 {
-   switch (format) {
-   case PIPE_FORMAT_R32_FLOAT: case PIPE_FORMAT_R32_UINT: case PIPE_FORMAT_R32_SINT: return 1;
-   case PIPE_FORMAT_R32G32_FLOAT: case PIPE_FORMAT_R32G32_UINT: case PIPE_FORMAT_R32G32_SINT: return 2;
-   default: return ps5_storage_image_texel_size(format) ? 4 : 0;
-   }
+   return ps5_storage_image_texel_size(format) ? util_format_get_nr_components(format) : 0;
 }
 
 static bool
@@ -2559,8 +2568,7 @@ ps5_prepare_fragment_storage(struct ps5_context *context, uint32_t *user_data,
          PS5_COMPUTE_STORAGE_SLOTS * 16 + i * 32);
       if (!resource || (resource->base.target == PIPE_BUFFER ?
           !ps5_image_buffer_descriptor(view, metadata->address32_hi, descriptor) :
-          ps5_resource_storage_image_descriptor(view->resource, view->u.tex.level,
-                                                descriptor)))
+          ps5_storage_image_view_descriptor(view, descriptor)))
          return false;
       if (resource->base.target == PIPE_BUFFER)
          ps5_flush_gpu_data(resource->data + view->u.buf.offset, view->u.buf.size);
@@ -4205,20 +4213,23 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
    const unsigned texel_size = base ? ps5_storage_image_texel_size(base->format) : 0;
    const bool sampled = required_bind == PIPE_BIND_SAMPLER_VIEW;
    const bool multisampled = base && sampled && base->nr_samples == 4 && base->nr_storage_samples == 4;
-   const bool one_d = base && sampled &&
+   const bool one_d = base &&
       (base->target == PIPE_TEXTURE_1D || base->target == PIPE_TEXTURE_1D_ARRAY);
-   const bool volume = base && sampled && base->target == PIPE_TEXTURE_3D;
-   const bool rectangle = base && sampled && base->target == PIPE_TEXTURE_RECT;
+   const bool volume = base && base->target == PIPE_TEXTURE_3D;
+   const bool rectangle = base && base->target == PIPE_TEXTURE_RECT;
+   const bool cube = base && !sampled && ps5_cube_texture_target(base->target);
    const bool array = base && (base->target == PIPE_TEXTURE_2D_ARRAY ||
-                               (one_d && base->target == PIPE_TEXTURE_1D_ARRAY));
-   if (!base || !descriptor || (!one_d && !volume && !rectangle &&
+                               (one_d && base->target == PIPE_TEXTURE_1D_ARRAY) || cube);
+   if (!base || !descriptor || (!one_d && !volume && !rectangle && !cube &&
        base->target != PIPE_TEXTURE_2D && base->target != PIPE_TEXTURE_2D_ARRAY) ||
        !texel_size || !base->width0 || !base->height0 ||
        base->width0 > PS5_MAX_TEXTURE_2D_SIZE || base->height0 > PS5_MAX_TEXTURE_2D_SIZE ||
        (one_d && base->height0 != 1) ||
        (volume ? (!base->depth0 || base->depth0 > PS5_MAX_TEXTURE_3D_SIZE ||
                   base->width0 > PS5_MAX_TEXTURE_3D_SIZE || base->height0 > PS5_MAX_TEXTURE_3D_SIZE) : base->depth0 != 1) ||
-       !base->array_size || base->array_size > (sampled ? 16u : 8u) ||
+       !base->array_size || base->array_size > (sampled ? 16u : PS5_MAX_TEXTURE_ARRAY_LAYERS) ||
+       (cube && (base->width0 != base->height0 || base->array_size % 6 ||
+                 (base->target == PIPE_TEXTURE_CUBE && base->array_size != 6))) ||
        (!array && base->array_size != 1) || base->last_level >= PIPE_MAX_TEXTURE_LEVELS ||
        ((rectangle || volume) && base->last_level) ||
        base->last_level > 15 || first_level > last_level || last_level > base->last_level ||
@@ -4249,19 +4260,21 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
           !physical_layer || physical_layer > resource->allocation_size / base->array_size)
          return -1;
    } else if (tiled) {
-      /* Reuse the single-level RGBA8 color SRD already used by graphics.
+      /* Reuse the single-level R8/RG8/RGBA8/RGBA16F layout used by graphics.
        * No depth, MSAA, compression metadata, aliases or staging are admitted. */
       const unsigned binds = PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET;
-      const size_t logical = (size_t)base->width0 * base->height0 * 4u;
+      const size_t logical = (size_t)base->width0 * base->height0 * texel_size;
       const size_t physical = ps5_tiled_color_surface_size(base->format, base->width0, base->height0);
-      if (base->format != PIPE_FORMAT_R8G8B8A8_UNORM || base->target != PIPE_TEXTURE_2D ||
+      if ((base->format != PIPE_FORMAT_R8G8B8A8_UNORM &&
+           base->format != PIPE_FORMAT_R8_UNORM && base->format != PIPE_FORMAT_R8G8_UNORM &&
+           base->format != PIPE_FORMAT_R16G16B16A16_FLOAT) || base->target != PIPE_TEXTURE_2D ||
           base->last_level || base->array_size != 1 || (base->bind & binds) != binds ||
           (base->bind & ~(binds | PIPE_BIND_SHADER_IMAGE)) ||
           base->width0 > PS5_MAX_COLOR_WIDTH || base->height0 > PS5_MAX_COLOR_HEIGHT ||
           resource->render_staging_size || resource->render_staging_offset ||
           ((uintptr_t)resource->data & (PS5_COLOR_TARGET_ALIGNMENT - 1u)) ||
           resource->size != logical || resource->layer_stride != logical ||
-          resource->level_offset[0] || resource->level_stride[0] != base->width0 * 4u ||
+          resource->level_offset[0] || resource->level_stride[0] != base->width0 * texel_size ||
           !physical || physical > resource->allocation_size)
          return -1;
    } else {
@@ -4300,7 +4313,8 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
    const uintptr_t address = (uintptr_t)resource->data;
    const unsigned pitch = resource->level_stride[0] / texel_size;
    const unsigned channels = ps5_storage_image_channels(base->format);
-   const uint32_t swizzle = channels == 1 ? 0x204u : channels == 2 ? 0x22cu : 0xfacu;
+   const uint32_t swizzle = channels == 1 ? 0x204u : channels == 2 ? 0x22cu :
+                            channels == 3 ? 0x3acu : 0xfacu;
    const uint32_t srd[8] = {
       address >> 8,
       format | (((base->width0 - 1u) & 3u) << 30) | (uint32_t)(address >> 40),
@@ -4322,6 +4336,48 @@ int
 ps5_resource_storage_image_descriptor(struct pipe_resource *base, unsigned level, uint32_t descriptor[8])
 {
    return ps5_resource_image_descriptor(base, descriptor, PIPE_BIND_SHADER_IMAGE, level, level);
+}
+
+static int
+ps5_storage_image_view_descriptor(const struct pipe_image_view *view,
+                                  uint32_t descriptor[8])
+{
+   struct pipe_resource *base = view ? view->resource : NULL;
+   if (!base || !descriptor || view->u.tex.level >= PIPE_MAX_TEXTURE_LEVELS ||
+       view->u.tex.level > base->last_level)
+      return -1;
+   const unsigned first = view->u.tex.first_layer, last = view->u.tex.last_layer;
+   const bool volume = base->target == PIPE_TEXTURE_3D;
+   const unsigned layers = volume ? MAX2(base->depth0 >> view->u.tex.level, 1u) : base->array_size;
+   if (first > last || last >= layers ||
+       (view->u.tex.single_layer_view && first != last) ||
+       (volume && (view->u.tex.is_2d_view_of_3d || first || last != layers - 1)) ||
+       ps5_resource_storage_image_descriptor(base, view->u.tex.level, descriptor))
+      return -1;
+   if (volume)
+      return 0;
+   const struct ps5_resource *resource = (const struct ps5_resource *)base;
+   const bool array = base->target == PIPE_TEXTURE_1D_ARRAY ||
+                      base->target == PIPE_TEXTURE_2D_ARRAY || ps5_cube_texture_target(base->target);
+   if (!array)
+      return first || last ? -1 : 0;
+   const size_t offset = (size_t)first * resource->layer_stride;
+   if (offset >= resource->size)
+      return -1;
+   const uintptr_t address = (uintptr_t)resource->data + offset;
+   if ((address & 255u) || address >> 48)
+      return -1;
+   descriptor[0] = address >> 8;
+   descriptor[1] = (descriptor[1] & UINT32_C(0xffffff00)) | (uint32_t)(address >> 40);
+   descriptor[4] = last - first;
+   if (view->u.tex.single_layer_view) {
+      const bool one_d = base->target == PIPE_TEXTURE_1D_ARRAY;
+      descriptor[3] = (descriptor[3] & UINT32_C(0x0fffffff)) |
+                     (one_d ? UINT32_C(0x80000000) : UINT32_C(0x90000000));
+      const unsigned pitch = resource->level_stride[0] / ps5_storage_image_texel_size(base->format);
+      descriptor[4] = !one_d && !base->last_level && pitch > base->width0 ? pitch - 1u : 0;
+   }
+   return 0;
 }
 
 int
@@ -11813,12 +11869,7 @@ ps5_set_shader_images(struct pipe_context *base, mesa_shader_stage stage,
                (uintptr_t)((struct ps5_resource *)v->resource)->data >> 32,
                descriptor))
             return;
-      } else if (v->u.tex.first_layer ||
-          v->u.tex.last_layer != v->resource->array_size - 1 ||
-          /* Mesa marks ordinary, non-layered 2D images as single-layer views. */
-          (v->u.tex.single_layer_view && v->resource->target != PIPE_TEXTURE_2D) ||
-          (v->resource->target == PIPE_TEXTURE_3D && v->u.tex.is_2d_view_of_3d) ||
-          ps5_resource_storage_image_descriptor(v->resource, v->u.tex.level, descriptor))
+      } else if (ps5_storage_image_view_descriptor(v, descriptor))
          return;
    }
    if (stage == MESA_SHADER_FRAGMENT)
@@ -12016,8 +12067,7 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
       if (resource->target == PIPE_BUFFER ?
           !ps5_image_buffer_descriptor(view, context->cs->output.metadata.address32_hi,
                                        descriptor) :
-          ps5_resource_storage_image_descriptor(resource, view->u.tex.level,
-                                                descriptor))
+          ps5_storage_image_view_descriptor(view, descriptor))
          return;
       const struct ps5_resource *native = (const struct ps5_resource *)resource;
       if (resource->target == PIPE_BUFFER)
