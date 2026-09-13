@@ -288,6 +288,11 @@ static void submission_contract(PsbcShaderOutput *out) {
         sampled[10]=((filters&1)!=0)<<20 | ((filters&2)!=0)<<22;
         assert(!ps5_agc_compute_execute(&screen,out,&table,all,47,groups));
     }
+    sampled[8]=0x88; sampled[10]=0;
+    assert(!ps5_agc_compute_execute(&screen,out,&table,all,47,groups));
+    sampled[8]=5u<<9 | 2u<<16 | 5u<<21;
+    assert(ps5_agc_compute_execute(&screen,out,&table,all,47,groups)<0);
+    sampled[8]=0;
     sampled[9]=0x300000; sampled[10]=0x08500000;
     assert(!ps5_agc_compute_execute(&screen,out,&table,all,47,groups));
     const uint32_t bad_lods[]={0x1000000,0xf01000,0xf01,0x100};
@@ -310,6 +315,7 @@ static void submission_contract(PsbcShaderOutput *out) {
     memcpy(sampled,expected,32);
     const unsigned sampled_submissions=submissions;
     for(unsigned word=0;word<12;++word) {
+        if(word==8) continue; /* Independent wrap bits have multiple valid values. */
         sampled[word]^=1;
         assert(ps5_agc_compute_execute(&screen,out,&table,all,47,groups)<0);
         assert(!allocations && !locked && submissions==sampled_submissions);

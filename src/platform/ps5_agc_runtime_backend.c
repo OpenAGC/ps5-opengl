@@ -736,14 +736,21 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
             if (!nonzero)
                continue;
             if (image || sampled) {
-               /* Zero for fetch/size; bounded repeat/mirror/edge and mip filtering for txl.
-                * No border-table pointers or unqualified descriptor bits. */
-               if (sampled && ((srd[8] != 0 && srd[8] != 0x49u && srd[8] != 0x92u) ||
-                   (srd[9] & 0xff000000u) || (srd[9] & 0xfffu) > 0xf00u ||
-                   ((srd[9] >> 12) & 0xfffu) > 0xf00u ||
-                   (srd[9] & 0xfffu) > ((srd[9] >> 12) & 0xfffu) ||
-                   (srd[10] & ~UINT32_C(0x0c500000)) || (srd[10] >> 26) == 3 || srd[11]))
-                  goto cleanup;
+               if (sampled) {
+                  const uint32_t anisotropy = (srd[8] >> 9) & 7u;
+                  const uint32_t sampler0 = (srd[8] & 0x1ffu) |
+                     (anisotropy << 9) | ((anisotropy >> 1) << 16) |
+                     (anisotropy << 21);
+                  /* Zero for fetch/size; bounded repeat/mirror/edge and mip filtering for txl.
+                   * No border-table pointers or unqualified descriptor bits. */
+                  if (anisotropy > 4 || srd[8] != sampler0 ||
+                      (srd[9] & 0xff000000u) || (srd[9] & 0xfffu) > 0xf00u ||
+                      ((srd[9] >> 12) & 0xfffu) > 0xf00u ||
+                      (srd[9] & 0xfffu) > ((srd[9] >> 12) & 0xfffu) ||
+                      (srd[10] & ~UINT32_C(0x0c500000)) ||
+                      (srd[10] >> 26) == 3 || srd[11])
+                     goto cleanup;
+               }
                bool owned = false;
                for (unsigned j = 0; j < buffer_count; ++j) {
                   uint32_t expected[8];

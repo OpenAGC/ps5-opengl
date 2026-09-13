@@ -8227,6 +8227,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
          PsbcVertexFormat ignored_format;
          unsigned format_size = ps5_vertex_format_size(element->src_format);
          uint64_t records = element->src_stride ? vertex_count : 1u;
+         uint64_t descriptor_records = records;
          uint64_t required;
 
          if (element->vertex_buffer_index >= context->vertex_buffer_count ||
@@ -8258,14 +8259,20 @@ ps5_draw_vbo_locked(struct pipe_context *base,
                     element->src_offset +
                     (records - 1u) * element->src_stride +
                     format_size;
+         if (element->src_stride)
+            descriptor_records =
+               (element->src_offset + (records - 1u) * element->src_stride +
+                format_size + element->src_stride - 1u) /
+               element->src_stride;
          if (vertex_resource->base.target != PIPE_BUFFER ||
-             required > vertex_resource->size) {
+             required > vertex_resource->size ||
+             descriptor_records > UINT32_MAX) {
             context->last_draw_status = -9;
             return;
          }
          binding_records[element->vertex_buffer_index] =
             MAX2(binding_records[element->vertex_buffer_index],
-                 (uint32_t)records);
+                 (uint32_t)descriptor_records);
          binding_mask |= BITFIELD_BIT(element->vertex_buffer_index);
       }
       descriptor_address = (uintptr_t)descriptor_resource->data;
@@ -12186,7 +12193,9 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
          return;
       if (context->cs->texture_lod[i] > view->u.tex.last_level - view->u.tex.first_level)
          return;
-      if ((view->target == PIPE_TEXTURE_1D_ARRAY || view->target == PIPE_TEXTURE_2D_ARRAY) !=
+      if ((view->target == PIPE_TEXTURE_1D_ARRAY ||
+           view->target == PIPE_TEXTURE_2D_ARRAY ||
+           view->target == PIPE_TEXTURE_CUBE_ARRAY) !=
           ((context->cs->array_textures & (1u << i)) != 0))
          return;
       if (context->cs->filtered_textures & (1u << i)) {
