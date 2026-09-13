@@ -72,9 +72,10 @@ static nir_shader *build(mesa_shader_stage stage, bool cross,
                         const struct radv_compiler_info *ci) {
     nir_builder b=nir_builder_init_simple_shader(stage,&ci->nir_options[stage],"linked-tess-host");
     if(stage==MESA_SHADER_VERTEX) {
-        nir_def *id=nir_u2f32(&b,nir_iadd(&b,nir_load_vertex_id_zero_base(&b),
-                                         nir_load_first_vertex(&b)));
-        nir_def *p=nir_vec4(&b,id,nir_fmul(&b,id,id),nir_fsin(&b,id),nir_imm_float(&b,1));
+        nir_def *attr=nir_load_var(&b,varying(&b,nir_var_shader_in,
+            glsl_vector_type(GLSL_TYPE_FLOAT,3),VERT_ATTRIB_GENERIC0,false));
+        nir_def *p=nir_vec4(&b,nir_channel(&b,attr,0),nir_channel(&b,attr,1),
+                            nir_channel(&b,attr,2),nir_imm_float(&b,1));
         nir_store_var(&b,varying(&b,nir_var_shader_out,glsl_vec4_type(),VARYING_SLOT_POS,false),p,15);
     } else if(stage==MESA_SHADER_GEOMETRY) {
         b.shader->info.gs.input_primitive=MESA_PRIM_TRIANGLES;
@@ -225,6 +226,10 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
     PsbcTessellationCompileOptions options={
         .input_patch_vertices=3,.offchip_workgroup_capacity_dwords=8192,.address32_hi=2
     };
+    options.vertex.vertex_attribute_count=1;
+    options.vertex.vertex_attributes[0]=(PsbcVertexAttribute){
+        .location=0,.binding=0,.format=PSBC_VERTEX_FORMAT_R32G32B32_FLOAT,
+        .stride=12,.alignment=4};
     PsbcTessellationOutput out={0};
     assert(psbc_compile_nir_tessellation_pipeline(NULL,inputs[1],inputs[2],NULL,&options,&out)
            ==PSBC_RESULT_INVALID_ARGUMENT);
@@ -299,7 +304,7 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
     assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
     expect_empty(&out); exec_node_remove(&resource->node);
     nir_variable* attr=nir_variable_create(inputs[0],nir_var_shader_in,glsl_vec4_type(),"unsupported-attribute");
-    attr->data.location=VERT_ATTRIB_GENERIC0;
+    attr->data.location=VERT_ATTRIB_GENERIC0+1;
     assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
     expect_empty(&out); exec_node_remove(&attr->node);
 
@@ -439,6 +444,10 @@ int main(int argc,char **argv) {
     PsbcTessellationOutput reference={0};
     api_tests(&ci,cross,&reference);
     struct radv_graphics_state_key gfx={0}; gfx.ts.patch_control_points=3;
+    gfx.vi.attributes_valid=1;
+    gfx.vi.vertex_attribute_formats[0]=PIPE_FORMAT_R32G32B32_FLOAT;
+    gfx.vi.vertex_attribute_strides[0]=12;
+    gfx.vi.vertex_binding_align[0]=4;
     struct radv_shader_stage stages[MESA_VULKAN_SHADER_STAGES]={0};
     const mesa_shader_stage ids[]={MESA_SHADER_VERTEX,MESA_SHADER_TESS_CTRL,MESA_SHADER_TESS_EVAL};
     const mesa_shader_stage next[]={MESA_SHADER_TESS_CTRL,MESA_SHADER_TESS_EVAL,MESA_SHADER_FRAGMENT};
@@ -499,7 +508,6 @@ int main(int argc,char **argv) {
     assert(hs->args.ac.ring_offsets.used && tes->args.ac.ring_offsets.used);
     assert(hs->args.ac.args[hs->args.ac.ring_offsets.arg_index].offset==0 &&
            tes->args.ac.args[tes->args.ac.ring_offsets.arg_index].offset==0);
-    assert(hs->args.num_user_sgprs==2 && tes->args.num_user_sgprs==1);
     assert(tes->args.ac.args[tes->args.ngg_lds_layout.arg_index].offset==8);
     printf("ring ABI hs arg=%u off=%u users=%u tes arg=%u off=%u users=%u ngg-layout arg=%u off=%u ud=%d\n",
            hs->args.ac.ring_offsets.arg_index,
@@ -511,6 +519,7 @@ int main(int argc,char **argv) {
            tes->args.ngg_lds_layout.arg_index,
            tes->args.ac.args[tes->args.ngg_lds_layout.arg_index].offset,
            tes->args.user_sgprs_locs.shader_data[AC_UD_NGG_LDS_LAYOUT].sgpr_idx);
+    assert(hs->args.num_user_sgprs==3 && tes->args.num_user_sgprs==1);
     assert(hs->args.ac.merged_wave_info.used && hs->args.ac.tcs_factor_offset.used);
     unsigned abi[3][3]={{0}};
     for(unsigned i=0;i<3;++i) abi_constants(&ci,&gfx,&stages[ids[i]],abi[i]);
