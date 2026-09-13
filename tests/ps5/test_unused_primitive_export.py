@@ -348,13 +348,14 @@ with tempfile.TemporaryDirectory() as temporary:
                     "-pthread", "-lm"], check=True)
     subprocess.run([executable], check=True)
 source = (ROOT / "src/gallium/ps5/ps5_screen.c").read_text()
+flat_source = " ".join(source.split())
 assert "variant->omit_implicit_primitive_id == omit_implicit_primitive_id" in source
 assert "variant->omit_implicit_primitive_id = omit_implicit_primitive_id" in source
 assert "options.omit_implicit_primitive_id = omit_implicit_primitive_id" in source
 assert "variant->primitive_id_per_primitive == primitive_id_per_primitive" in source
 assert "variant->primitive_id_per_primitive = primitive_id_per_primitive" in source
 assert "options.primitive_id_per_primitive = primitive_id_per_primitive" in source
-assert "!(context->fs->nir->info.inputs_read & VARYING_BIT_PRIMITIVE_ID)" in source
+assert "!(context->fs->nir->info.inputs_read & VARYING_BIT_PRIMITIVE_ID)" in flat_source
 assert "SYSTEM_VALUE_PRIMITIVE_ID)" in source
 assert "user_data[vertex_metadata->ngg_lds_layout_user_data_dword] =" in source
 assert "vertex_metadata->ngg_lds_layout_user_data_dword >= user_data_count" in source

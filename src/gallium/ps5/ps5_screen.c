@@ -219,6 +219,7 @@ struct ps5_context {
    struct ps5_shader *tessellation_vs;
    struct ps5_shader *tessellation_tcs;
    struct ps5_shader *tessellation_tes;
+   struct ps5_shader *tessellation_gs;
    struct ps5_vertex_layout *tessellation_layout;
    PsbcTessellationOutput tessellation_output;
    uint8_t *tessellation_hs_package;
@@ -439,6 +440,9 @@ static bool
 ps5_select_tessellation_pipeline(struct ps5_context *context,
                                  uint32_t address32_hi,
                                  const struct ps5_vertex_layout *layout);
+static bool
+ps5_geometry_ring_itemsize(const PsbcShaderMetadata *metadata,
+                           uint32_t *itemsize);
 static bool
 ps5_render_condition_passes(const struct ps5_context *context);
 
@@ -7122,10 +7126,8 @@ static uint32_t
 ps5_fragment_primitive_type(const struct ps5_context *context,
                             uint32_t draw_primitive_type)
 {
-   if (context->tcs && context->tes)
-      return 4;
    if (!context->gs)
-      return draw_primitive_type;
+      return context->tcs && context->tes ? 4 : draw_primitive_type;
 
    switch (context->gs->nir->info.gs.output_primitive) {
    case MESA_PRIM_POINTS:
@@ -7704,6 +7706,17 @@ ps5_draw_vbo_locked(struct pipe_context *base,
        pixel_user_data_count > 32) {
       context->last_draw_status = -11;
       return;
+   }
+   if (tessellation_active &&
+       context->tessellation_output.runtime.final_offchip_layout_valid) {
+      unsigned dword = context->tessellation_output.runtime
+                          .final_offchip_layout_user_data_dword;
+      if (dword >= user_data_count) {
+         context->last_draw_status = -10;
+         return;
+      }
+      user_data[dword] = context->tessellation_output.runtime
+                            .final_offchip_layout;
    }
    vertex_metadata = &vertex_output->metadata;
    if (vertex_metadata->hardware_stage == PSBC_HW_STAGE_NGG) {
@@ -10637,6 +10650,7 @@ ps5_release_tessellation_pipeline(struct ps5_context *context)
    context->tessellation_vs = NULL;
    context->tessellation_tcs = NULL;
    context->tessellation_tes = NULL;
+   context->tessellation_gs = NULL;
 }
 
 static bool
@@ -10654,34 +10668,50 @@ ps5_select_tessellation_pipeline(struct ps5_context *context,
    uint8_t *tes_package = NULL;
    size_t hs_size = 0;
    size_t tes_size = 0;
+   uint32_t ring_itemsize = 0;
+   uint32_t geometry_primitive_type = 0;
    struct ps5_vertex_layout *saved_layout;
    PsbcResult result;
 
    if (!context->tcs && !context->tes)
       return true;
    if (!PS5_ENABLE_TESSELLATION_CANDIDATE || !context->tcs ||
-       !context->tes || context->gs || !context->patch_vertices ||
+       !context->tes || !context->patch_vertices ||
        context->patch_vertices > 32 ||
-       layout->count || context->vs->stream_output.num_outputs ||
+       context->vs->stream_output.num_outputs ||
        context->tcs->stream_output.num_outputs ||
-       context->tes->stream_output.num_outputs)
+       context->tes->stream_output.num_outputs ||
+       (context->gs && context->gs->stream_output.num_outputs) ||
+       (context->gs &&
+        !ps5_draw_primitive(context->gs->nir->info.gs.input_primitive, 6,
+                            &geometry_primitive_type)) ||
+       !ps5_shader_compile_options(context->vs, address32_hi, layout,
+                                   geometry_primitive_type
+                                      ? geometry_primitive_type : 4,
+                                   false,
+                                   &options.vertex))
       return false;
    if (context->tessellation_vs == context->vs &&
        context->tessellation_tcs == context->tcs &&
        context->tessellation_tes == context->tes &&
+       context->tessellation_gs == context->gs &&
        context->tessellation_layout &&
        !memcmp(context->tessellation_layout, layout, sizeof(*layout)))
       return true;
 
    result = psbc_compile_nir_tessellation_pipeline(
       context->vs->nir, context->tcs->nir, context->tes->nir,
-      &options, &output);
-   printf("[ps5-gallium] compile-tessellation result=%d hs=%zu tes=%zu patches=%u\n",
+      context->gs ? context->gs->nir : NULL, &options, &output);
+   printf("[ps5-gallium] compile-tessellation result=%d hs=%zu final=%zu gs=%u patches=%u\n",
           result, output.hs.machine_code_size, output.tes.machine_code_size,
-          output.runtime.num_patches);
+          context->gs != NULL, output.runtime.num_patches);
+   if (context->gs && result == PSBC_RESULT_OK &&
+       !ps5_geometry_ring_itemsize(&output.tes.metadata, &ring_itemsize))
+      result = PSBC_RESULT_INTERNAL_ERROR;
    if (result != PSBC_RESULT_OK || !output.runtime.valid ||
        ps5_agc_package_build(&output.hs, 0, &hs_package, &hs_size) ||
-       ps5_agc_package_build(&output.tes, 0, &tes_package, &tes_size)) {
+       ps5_agc_package_build(&output.tes, ring_itemsize,
+                             &tes_package, &tes_size)) {
       free(hs_package);
       free(tes_package);
       psbc_free_tessellation_output(&output);
@@ -10699,6 +10729,7 @@ ps5_select_tessellation_pipeline(struct ps5_context *context,
    context->tessellation_vs = context->vs;
    context->tessellation_tcs = context->tcs;
    context->tessellation_tes = context->tes;
+   context->tessellation_gs = context->gs;
    context->tessellation_layout = saved_layout;
    context->tessellation_output = output;
    context->tessellation_hs_package = hs_package;

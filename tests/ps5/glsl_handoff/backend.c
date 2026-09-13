@@ -6,6 +6,7 @@
 #include <stdio.h>
 #include <string.h>
 #include "compiler/nir/nir_builder.h"
+#include "pipe/p_state.h"
 #include "psbc_compile.h"
 #include "compiler/nir/nir_serialize.h"
 #include "util/blob.h"

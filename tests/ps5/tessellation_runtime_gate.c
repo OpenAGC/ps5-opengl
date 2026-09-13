@@ -148,7 +148,7 @@ main(void)
    stages[2] = build_stage(MESA_SHADER_TESS_EVAL);
    fragment = build_fragment();
    if (psbc_compile_nir_tessellation_pipeline(
-          stages[0], stages[1], stages[2], &tess_options, &tess) !=
+          stages[0], stages[1], stages[2], NULL, &tess_options, &tess) !=
           PSBC_RESULT_OK ||
        psbc_compile_nir(fragment, &fs_options, &fs) != PSBC_RESULT_OK ||
        ps5_agc_package_build(&tess.hs, 0, &hs_package, &hs_size) ||

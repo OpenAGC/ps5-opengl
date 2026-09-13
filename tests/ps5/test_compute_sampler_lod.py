@@ -39,7 +39,8 @@ struct ps5_context {
 };
 ''' + "\n".join(extract(name) for name in (
     "ps5_float_bits", "ps5_float_is_finite", "ps5_texture_descriptor_wrap",
-    "ps5_texture_descriptor_filter", "ps5_texture_descriptor_mip_filter",
+    "ps5_texture_descriptor_anisotropy", "ps5_texture_descriptor_filter",
+    "ps5_texture_descriptor_mip_filter",
     "ps5_texture_descriptor_unsigned_lod", "ps5_texture_descriptor_lod_bias",
     "ps5_set_compute_sampler_states",
 )) + r'''
@@ -89,7 +90,7 @@ int main(void)
             case 1: bad.base.lod_bias = NAN; break;
             case 2: bad.base.lod_bias = INFINITY; break;
             case 3: bad.base.compare_mode = 1; break;
-            case 4: bad.base.max_anisotropy = 2; break;
+            case 4: bad.base.max_anisotropy = 17; break;
             case 5: bad.base.wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE; break;
             case 6: bad.base.unnormalized_coords = 1; break;
             }

@@ -50,12 +50,16 @@ def caps_source():
 #include <stdio.h>
 #include <string.h>
 #include "pipe/p_screen.h"
+#include "pipe/p_state.h"
 #define PS5_ENABLE_UBO_CANDIDATE 1
 #define PS5_ENABLE_GLSL_330_CANDIDATE 1
 #define PS5_ENABLE_GLSL_400_CANDIDATE 0
 #define PS5_ENABLE_GLSL_410_CANDIDATE 0
 #define PS5_ENABLE_GLSL_420_CANDIDATE 0
 #define PS5_ENABLE_GLSL_430_CANDIDATE 0
+#define PS5_ENABLE_GLSL_440_CANDIDATE 0
+#define PS5_ENABLE_GLSL_450_CANDIDATE 0
+#define PS5_ENABLE_GLSL_460_CANDIDATE 0
 #define PS5_ENABLE_GEOMETRY_CANDIDATE 1
 ''' + default[0] + "\n" + "\n".join(defines) + r'''
 static void baseline(struct pipe_screen *screen) {
@@ -81,8 +85,8 @@ int main(void) {
    struct pipe_shader_caps *cs = (struct pipe_shader_caps *)&expected.shader_caps[MESA_SHADER_COMPUTE];
    *cs = *fs;
    cs->max_const_buffers = 15;
-   cs->max_shader_buffers = fs->max_shader_buffers = 16;
-   cs->max_shader_images = fs->max_shader_images = 8;
+   cs->max_shader_buffers = fs->max_shader_buffers = PS5_COMPUTE_STORAGE_SLOTS;
+   cs->max_shader_images = fs->max_shader_images = PS5_COMPUTE_IMAGE_SLOTS;
    caps->compute = true;
    caps->image_store_formatted = true;
    caps->shader_buffer_offset_alignment = 16;

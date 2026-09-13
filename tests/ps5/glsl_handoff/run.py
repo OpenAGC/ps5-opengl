@@ -151,7 +151,7 @@ run(['clang-18','-std=gnu11','-DHAVE_FUNC_ATTRIBUTE_PACKED=1','-DHAVE_ENDIAN_H=1
 run(['clang-18','-std=gnu11','-DHAVE_FUNC_ATTRIBUTE_PACKED=1','-DHAVE_ENDIAN_H=1',
      '-DHAVE_PTHREAD=1','-DHAVE_STRUCT_TIMESPEC=1','-D_GNU_SOURCE',
      '-I'+str(PSBC/'include/mesa'),'-I'+str(PSBC/'include'),'-I'+str(PSBC/'src'),
-     '-I'+str(PSBC/'libpsbc'),'-I'+str(OUT), *private_defines,
+     '-I'+str(PSBC/'src/gallium/include'),'-I'+str(PSBC/'libpsbc'),'-I'+str(OUT), *private_defines,
      '-c',str(HERE/'backend.c'),'-o',str(OUT/'backend.o')])
 
 link = shlex.split(run(['ninja','-t','commands','src/compiler/glsl/glsl_compiler'],capture_output=True).stdout.splitlines()[-1])

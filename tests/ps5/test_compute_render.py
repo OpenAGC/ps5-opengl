@@ -38,6 +38,7 @@ code = r'''
 #include <string.h>
 #include "compiler/nir/nir_builder.h"
 #include "compiler/nir/nir_serialize.h"
+#include "pipe/p_state.h"
 #include "util/blob.h"
 #include "compute_glsl_fixtures.h"
 #include "util/format/u_format.h"
@@ -622,7 +623,8 @@ with tempfile.TemporaryDirectory() as directory:
         "-DHAVE_ENDIAN_H=1", "-DHAVE_FUNC_ATTRIBUTE_PACKED=1", "-DHAVE_PTHREAD=1",
         "-DHAVE_STRUCT_TIMESPEC=1", "-D_GNU_SOURCE",
         "-I", str(PSBC / "include/mesa"), "-I", str(PSBC / "include"),
-        "-I", str(PSBC / "src"), "-I", str(PSBC / "libpsbc"),
+        "-I", str(PSBC / "src"), "-I", str(PSBC / "src/gallium/include"),
+        "-I", str(PSBC / "libpsbc"),
         "-I", str(ROOT / "src/platform"), "-I", str(ROOT / "tests/ps5"),
         "-x", "c", "-c", "-o", obj, "-"],
         input=code, text=True, check=True)

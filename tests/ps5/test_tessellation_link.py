@@ -76,6 +76,23 @@ static nir_shader *build(mesa_shader_stage stage, bool cross,
                                          nir_load_first_vertex(&b)));
         nir_def *p=nir_vec4(&b,id,nir_fmul(&b,id,id),nir_fsin(&b,id),nir_imm_float(&b,1));
         nir_store_var(&b,varying(&b,nir_var_shader_out,glsl_vec4_type(),VARYING_SLOT_POS,false),p,15);
+    } else if(stage==MESA_SHADER_GEOMETRY) {
+        b.shader->info.gs.input_primitive=MESA_PRIM_TRIANGLES;
+        b.shader->info.gs.output_primitive=MESA_PRIM_TRIANGLE_STRIP;
+        b.shader->info.gs.vertices_in=3;
+        b.shader->info.gs.vertices_out=3;
+        b.shader->info.gs.invocations=1;
+        b.shader->info.gs.active_stream_mask=1;
+        nir_def *zero=nir_imm_int(&b,0);
+        for(unsigned i=0;i<3;++i) {
+            nir_def *p=nir_load_per_vertex_input(&b,4,32,nir_imm_int(&b,i),zero,
+                .dest_type=nir_type_float32,
+                .io_semantics={.location=VARYING_SLOT_POS,.num_slots=1});
+            nir_store_output(&b,p,zero,.src_type=nir_type_float32,
+                .io_semantics={.location=VARYING_SLOT_POS,.num_slots=1});
+            nir_emit_vertex(&b,0);
+        }
+        nir_end_primitive(&b,0);
     } else {
         b.shader->info.tess._primitive_mode=TESS_PRIMITIVE_TRIANGLES;
         b.shader->info.tess.spacing=TESS_SPACING_EQUAL;
@@ -182,7 +199,7 @@ static PsbcResult checked_compile(nir_shader** inputs,
         nir_serialize(&before[i],inputs[i],false);
         pointers[i]=inputs[i]->options;
     }
-    PsbcResult result=psbc_compile_nir_tessellation_pipeline(inputs[0],inputs[1],inputs[2],options,out);
+    PsbcResult result=psbc_compile_nir_tessellation_pipeline(inputs[0],inputs[1],inputs[2],NULL,options,out);
     for (unsigned i=0;i<3;++i) {
         assert(inputs[i]->options==pointers[i]); /* Never dereference a stale options pointer. */
         blob_init(&after[i]);
@@ -209,12 +226,25 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
         .input_patch_vertices=3,.offchip_workgroup_capacity_dwords=8192,.address32_hi=2
     };
     PsbcTessellationOutput out={0};
-    assert(psbc_compile_nir_tessellation_pipeline(NULL,inputs[1],inputs[2],&options,&out)
+    assert(psbc_compile_nir_tessellation_pipeline(NULL,inputs[1],inputs[2],NULL,&options,&out)
            ==PSBC_RESULT_INVALID_ARGUMENT);
     expect_empty(&out);
     assert(checked_compile(inputs,NULL,&out)==PSBC_RESULT_INVALID_ARGUMENT);
     expect_empty(&out);
     assert(checked_compile(inputs,&options,NULL)==PSBC_RESULT_INVALID_ARGUMENT);
+    nir_shader* gs=build(MESA_SHADER_GEOMETRY,false,ci);
+    PsbcResult gs_result=psbc_compile_nir_tessellation_pipeline(
+        inputs[0],inputs[1],inputs[2],gs,&options,&out);
+    printf("four-stage result=%d %s\n",gs_result,psbc_result_string(gs_result));
+    assert(gs_result==PSBC_RESULT_OK);
+    assert(out.tes.metadata.source_stage==PSBC_STAGE_GEOMETRY);
+    assert(out.tes.metadata.hardware_stage==PSBC_HW_STAGE_NGG);
+    assert(context_value(&out.tes.metadata,0x2ab));
+    assert(out.runtime.final_offchip_layout_valid);
+    assert(out.runtime.final_offchip_layout_user_data_dword<
+           out.tes.metadata.user_sgpr_count);
+    assert(out.runtime.final_offchip_layout);
+    psbc_free_tessellation_output(&out); ralloc_free(gs);
     mesa_shader_stage stage=inputs[0]->info.stage;
     inputs[0]->info.stage=MESA_SHADER_FRAGMENT;
     assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_UNSUPPORTED_STAGE);
@@ -380,6 +410,7 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
                out.runtime.tes_ring_offsets_sgpr==0);
         assert(out.runtime.hs_ring_offsets_register==0x102 &&
                out.runtime.tes_ring_offsets_register==0x082);
+        assert(!out.runtime.final_offchip_layout_valid);
         assert(out.runtime.offchip_ring_bytes_per_workgroup==32768);
         assert(out.runtime.tess_factor_ring_bytes_per_workgroup==1024);
         PsbcTessellationOutput owned=out;

@@ -66,6 +66,7 @@ code = r'''
 #include "amd/common/amdgfxregs.h"
 #include "amd/common/gfx10_format_table.h"
 #define PS5_ENABLE_UBO_CANDIDATE 1
+#define PS5_ENABLE_GLSL_430_CANDIDATE 1
 #define PS5_ENABLE_RENDER_TO_TEXTURE_CANDIDATE 1
 #define PS5_ENABLE_DYNAMIC_COLOR_TARGET_CANDIDATE 1
 #define PS5_ENABLE_CORE_RENDER_FORMATS_CANDIDATE 1
@@ -1278,7 +1279,7 @@ int main(void) {
         if(fault==2) sampler.base.wrap_r=PIPE_TEX_WRAP_REPEAT;
         if(fault==3) sampler.base.compare_mode=1;
         if(fault==4) sampler.base.unnormalized_coords=1;
-        if(fault==5) sampler.base.max_anisotropy=2;
+        if(fault==5) sampler.base.max_anisotropy=17;
         if(fault==6) sampler.base.min_mip_filter=3;
         if(fault==7) sampler.base.min_lod=-1;
         if(fault==8) sampler.base.max_lod=NAN;

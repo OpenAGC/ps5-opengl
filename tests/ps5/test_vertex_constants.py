@@ -27,6 +27,7 @@ code = r'''
 #include "util/format/u_format.h"
 #define PS5_ENABLE_PACKED_VERTEX_CANDIDATE 1
 #define PS5_ENABLE_INTEGER_VERTEX_CANDIDATE 1
+#define PS5_ENABLE_FP64_CANDIDATE 0
 ''' + descriptor + r'''
 int main(void) {
     psbc_init();

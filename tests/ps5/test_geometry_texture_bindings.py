@@ -48,8 +48,10 @@ int main(void) {
     assert(!ps5_append_texture_descriptor(&mixed,16,UINT32_MAX));
     assert(ps5_append_ubo_descriptors(&options, 0, 26));
     assert(options.descriptor_binding_count == 58);
-    assert(!ps5_append_ubo_descriptors(&options, 26, 1));
-    for (unsigned i = 0; i < 58; ++i) {
+    assert(ps5_append_ubo_descriptors(&options, 26, 4));
+    assert(options.descriptor_binding_count == 62);
+    assert(!ps5_append_ubo_descriptors(&options, 30, 1));
+    for (unsigned i = 0; i < 62; ++i) {
         const PsbcDescriptorBinding *a = &options.descriptor_bindings[i];
         assert(a->offset + a->stride <= PS5_CONSTANT_DATA_OFFSET);
         for (unsigned j = 0; j < i; ++j) {
@@ -86,4 +88,4 @@ with tempfile.TemporaryDirectory() as temporary:
         "-I", str(psbc / "libpsbc"),
         "-x", "c", "-o", executable, "-"], input=code, text=True, check=True)
     subprocess.run([executable], check=True)
-print("PASS: 32 sampler + 26 UBO descriptors, no alias/overlap; GS NIR index bounds")
+print("PASS: 32 sampler + 30 UBO descriptors, no alias/overlap; GS NIR index bounds")
