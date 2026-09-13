@@ -10705,18 +10705,6 @@ ps5_select_tessellation_pipeline(struct ps5_context *context,
    printf("[ps5-gallium] compile-tessellation result=%d hs=%zu final=%zu gs=%u patches=%u\n",
           result, output.hs.machine_code_size, output.tes.machine_code_size,
           context->gs != NULL, output.runtime.num_patches);
-   if (result != PSBC_RESULT_OK) {
-      struct ps5_shader *stages[] = {
-         context->vs, context->tcs, context->tes, context->gs,
-      };
-      for (unsigned i = 0; i < ARRAY_SIZE(stages); ++i) {
-         if (!stages[i])
-            continue;
-         printf("[ps5-gallium] rejected-tess-nir stage=%u\n",
-                stages[i]->nir->info.stage);
-         nir_print_shader(stages[i]->nir, stdout);
-      }
-   }
    if (context->gs && result == PSBC_RESULT_OK &&
        !ps5_geometry_ring_itemsize(&output.tes.metadata, &ring_itemsize))
       result = PSBC_RESULT_INTERNAL_ERROR;

@@ -3191,9 +3191,6 @@ int main(void)
     if (runtime_hs_package) {
         uint32_t stages = last_register_value(cx, cx_count, 0x02d5);
 
-        printf(LOG_PREFIX " tess-stages=%08" PRIx32 " cx=%u sh=%u\n",
-               stages, cx_count, sh_count);
-
         /* GFX10.3 tessellation preamble defaults from Mesa ac_cmdbuf.c.
          * CLEAR_STATE does not supply a usable tessellation distribution. */
         if ((stages & UINT32_C(0x211f)) != UINT32_C(0x210d))
