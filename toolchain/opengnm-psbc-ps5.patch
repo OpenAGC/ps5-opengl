@@ -522,7 +522,7 @@ index 945737d..c84de60 100644
  
  	psbc_free_output(&output);
 diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
-index bacbc6a..bc7cdc4 100644
+index bacbc6a..10a6065 100644
 --- a/libpsbc/psbc_compile.c
 +++ b/libpsbc/psbc_compile.c
 @@ -12,6 +12,7 @@
@@ -2998,7 +2998,7 @@ index bacbc6a..bc7cdc4 100644
  
      /* Determine previous stage for shader args declaration.
       * HS/GS need previous_stage=VERTEX so that the merged-pipeline args
-@@ -1049,10 +3256,22 @@ PsbcResult psbc_compile_shader(
+@@ -1049,10 +3259,22 @@ PsbcResult psbc_compile_shader(
      radv_declare_shader_args(
          &compiler_info, &gfx_state, &stage, previous_stage, NULL
      );
@@ -3022,7 +3022,7 @@ index bacbc6a..bc7cdc4 100644
  
      /* For geometry shaders, run the legacy GS lowering pass.
       * On GFX10.3 (PS5), NGG GS requires merging with the previous stage,
-@@ -1080,16 +3299,72 @@ PsbcResult psbc_compile_shader(
+@@ -1080,16 +3302,72 @@ PsbcResult psbc_compile_shader(
              ralloc_free(gs_copy);
      }
  
@@ -3099,7 +3099,7 @@ index bacbc6a..bc7cdc4 100644
          psbc_shutdown();
          return PSBC_RESULT_COMPILE_ACO;
      }
-@@ -1098,6 +3373,22 @@ PsbcResult psbc_compile_shader(
+@@ -1098,6 +3376,22 @@ PsbcResult psbc_compile_shader(
      struct radv_shader_binary_legacy* legacy =
          (struct radv_shader_binary_legacy*)binary;
  
@@ -3122,7 +3122,7 @@ index bacbc6a..bc7cdc4 100644
      /* The data layout in radv_shader_binary_legacy is:
       * [stats | code | ir | disasm | debug_info]
       * Code starts at offset stats_size. */
-@@ -1116,28 +3407,104 @@ PsbcResult psbc_compile_shader(
+@@ -1116,28 +3410,104 @@ PsbcResult psbc_compile_shader(
          .psbc_stage = opts->stage,
          .spirv_data = spirv,
          .spirv_size = spirv_size,
@@ -3231,7 +3231,7 @@ index bacbc6a..bc7cdc4 100644
  }
  
  const char* psbc_result_string(PsbcResult result) {
-@@ -1149,6 +3516,7 @@ const char* psbc_result_string(PsbcResult result) {
+@@ -1149,6 +3519,7 @@ const char* psbc_result_string(PsbcResult result) {
      case PSBC_RESULT_COMPILE_ACO:      return "ACO shader compilation failed";
      case PSBC_RESULT_OUT_OF_MEMORY:    return "out of memory";
      case PSBC_RESULT_INTERNAL_ERROR:   return "internal error";
@@ -3240,7 +3240,7 @@ index bacbc6a..bc7cdc4 100644
      }
  }
 diff --git a/libpsbc/psbc_compile.h b/libpsbc/psbc_compile.h
-index 000e7e1..bc6077d 100644
+index 000e7e1..921f1e9 100644
 --- a/libpsbc/psbc_compile.h
 +++ b/libpsbc/psbc_compile.h
 @@ -20,6 +20,11 @@
@@ -3426,7 +3426,7 @@ index 000e7e1..bc6077d 100644
  } PsbcShaderOutput;
  
  typedef struct {
-@@ -61,8 +222,61 @@ typedef struct {
+@@ -61,8 +223,61 @@ typedef struct {
      PsbcStage   stage;
      const char* entrypoint;  /* Default: "main" */
      bool        optimise;    /* Default: true */
@@ -3488,7 +3488,7 @@ index 000e7e1..bc6077d 100644
  /* === API === */
  
  /*
-@@ -77,20 +291,26 @@ void psbc_init(void);
+@@ -77,20 +292,26 @@ void psbc_init(void);
   */
  void psbc_shutdown(void);
  
@@ -3520,7 +3520,7 @@ index 000e7e1..bc6077d 100644
   */
  PsbcResult psbc_compile_shader(
      const uint32_t*       spirv,
-@@ -99,6 +319,54 @@ PsbcResult psbc_compile_shader(
+@@ -99,6 +320,54 @@ PsbcResult psbc_compile_shader(
      PsbcShaderOutput*     out
  );
  
@@ -3618,6 +3618,18 @@ index 916da8c..c7a1b8e 100644
                                         nir_def *scratch_base,
                                         nir_def *tid_in_tg,
                                         nir_def *gen_prim[4],
+diff --git a/src/amd/common/nir/ac_nir_lower_intrinsics_to_args.c b/src/amd/common/nir/ac_nir_lower_intrinsics_to_args.c
+index 68c19cc..a88e973 100644
+--- a/src/amd/common/nir/ac_nir_lower_intrinsics_to_args.c
++++ b/src/amd/common/nir/ac_nir_lower_intrinsics_to_args.c
+@@ -313,6 +313,7 @@ lower_intrinsic_to_arg(nir_builder *b, nir_intrinsic_instr *intrin, void *state)
+       break;
+    }
+    case nir_intrinsic_load_first_vertex:
++   case nir_intrinsic_load_base_vertex:
+       replacement = ac_nir_load_arg(b, s->args, s->args->base_vertex);
+       break;
+    case nir_intrinsic_load_base_instance:
 diff --git a/src/amd/common/nir/ac_nir_lower_ngg.c b/src/amd/common/nir/ac_nir_lower_ngg.c
 index f40b379..462a71c 100644
 --- a/src/amd/common/nir/ac_nir_lower_ngg.c
