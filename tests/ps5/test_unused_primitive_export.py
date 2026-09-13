@@ -227,6 +227,9 @@ static void geometry(bool inputs, bool buffer_arrays) {
     g.shader->info.gs.invocations = 1;
     g.shader->info.gs.active_stream_mask = 1;
     nir_def *vz = nir_imm_int(&v, 0), *gz = nir_imm_int(&g, 0);
+    if (buffer_arrays)
+        nir_store_ssbo(&g,nir_imm_int(&g,1),nir_imm_int(&g,0),gz,
+            .align_mul=4,.write_mask=1);
     if (inputs) {
         nir_def *position = nir_load_input(&v, 4, 32, vz,
             .dest_type=nir_type_float32,
@@ -244,7 +247,7 @@ static void geometry(bool inputs, bool buffer_arrays) {
             nir_imm_vec4(&g, i == 0 ? -0.5 : 0.5, i == 2 ? 0.5 : -0.5, 0, 1);
         if (buffer_arrays)
             p = nir_fadd(&g, p, nir_load_ubo(&g, 4, 32,
-                nir_imm_int(&g, 1), gz, .align_mul=16, .range=16));
+                nir_load_primitive_id(&g), gz, .align_mul=16, .range=16));
         nir_store_output(&g, p, gz, .src_type=nir_type_float32,
             .io_semantics={.location=VARYING_SLOT_POS, .num_slots=1});
         nir_store_output(&g, p, gz, .base=1, .src_type=nir_type_float32,
@@ -257,12 +260,14 @@ static void geometry(bool inputs, bool buffer_arrays) {
     PsbcCompileOptions options = {.target=PSBC_TARGET_PS5, .stage=PSBC_STAGE_GEOMETRY,
         .optimise=true, .ngg=true, .primitive_type=inputs ? 4 : 1, .address32_hi=2,
         .gallium_buffer_arrays=buffer_arrays,
-        .descriptor_binding_count=buffer_arrays ? 2 : 0,
+        .descriptor_binding_count=buffer_arrays ? 3 : 0,
         .descriptor_bindings={
             {.binding=PSBC_GALLIUM_UBO_ARRAY_BINDING(PSBC_STAGE_VERTEX),
              .type=PSBC_DESCRIPTOR_UNIFORM_BUFFER, .array_size=2, .stride=16},
             {.binding=PSBC_GALLIUM_UBO_ARRAY_BINDING(PSBC_STAGE_GEOMETRY),
-             .type=PSBC_DESCRIPTOR_UNIFORM_BUFFER, .array_size=2, .stride=16, .offset=32}},
+             .type=PSBC_DESCRIPTOR_UNIFORM_BUFFER, .array_size=2, .stride=16, .offset=32},
+            {.binding=PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_GEOMETRY),
+             .type=PSBC_DESCRIPTOR_STORAGE_BUFFER, .array_size=16, .stride=16, .offset=64}},
         .vertex_attribute_count=inputs ? 1 : 0,
         .vertex_attributes={{.location=0, .binding=0,
             .format=PSBC_VERTEX_FORMAT_R32G32B32A32_FLOAT, .stride=16, .alignment=16}}};
@@ -280,8 +285,9 @@ static void geometry(bool inputs, bool buffer_arrays) {
         assert(m->descriptor_set0_user_data_dword < m->user_sgpr_count);
         assert(!(supplied & (1u << m->descriptor_set0_user_data_dword)));
         supplied |= 1u << m->descriptor_set0_user_data_dword;
-        assert(m->descriptor_binding_count == 2);
-        assert(m->descriptor_bindings[0].binding != m->descriptor_bindings[1].binding);
+        assert(m->descriptor_binding_count == 3);
+        assert(m->descriptor_bindings[0].binding != m->descriptor_bindings[1].binding &&
+               m->descriptor_bindings[1].binding != m->descriptor_bindings[2].binding);
     }
     assert(m->ngg_lds_layout_valid && m->ngg_lds_layout_user_data_dword < m->user_sgpr_count);
     assert(!(supplied & (1u << m->ngg_lds_layout_user_data_dword)));

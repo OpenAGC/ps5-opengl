@@ -2551,6 +2551,7 @@ ps5_prepare_constant(struct ps5_context *context,
    unsigned index;
    unsigned ubo_count = 0;
    unsigned expected_ubo_count;
+   unsigned expected_ubo_bindings;
    unsigned expected_texture_count;
    bool merged_geometry;
    bool merged_geometry_storage;
@@ -2566,6 +2567,10 @@ ps5_prepare_constant(struct ps5_context *context,
                              ps5_shader_storage_count(context->gs);
    expected_ubo_count = shader->nir->info.num_ubos +
       (merged_geometry ? context->gs->nir->info.num_ubos : 0u);
+   expected_ubo_bindings = merged_geometry_storage
+      ? (shader->nir->info.num_ubos != 0) +
+           (context->gs->nir->info.num_ubos != 0)
+      : expected_ubo_count;
    expected_texture_count = ps5_texture_count(context, shader, metadata);
    if (!expected_ubo_count)
       return true;
@@ -2581,7 +2586,7 @@ ps5_prepare_constant(struct ps5_context *context,
                            : PS5_DIRECT_ALIGNMENT) ||
        metadata->descriptor_binding_count !=
           (storage_fs ? 2u + (shader->nir->info.num_images != 0) :
-                        expected_ubo_count + merged_geometry_storage) +
+                        expected_ubo_bindings + merged_geometry_storage) +
              expected_texture_count ||
        !metadata->descriptor_set0_valid ||
        metadata->descriptor_set0_user_data_dword >= user_data_count)
@@ -2604,6 +2609,8 @@ ps5_prepare_constant(struct ps5_context *context,
       unsigned state_binding;
       unsigned state_slot = slot;
       unsigned ubo_index;
+      unsigned binding_ubo_count = 1;
+      const struct ps5_shader *binding_shader = shader;
 
       if (binding->type != PSBC_DESCRIPTOR_UNIFORM_BUFFER)
          continue;
@@ -2612,6 +2619,27 @@ ps5_prepare_constant(struct ps5_context *context,
              binding->array_size != PS5_MAX_CONSTANT_BUFFERS || binding->stride != 16 ||
              binding->offset != PS5_FRAGMENT_UBO_OFFSET || expected_ubo_count > PS5_MAX_CONSTANT_BUFFERS)
             return false;
+      } else if (merged_geometry_storage) {
+         if (binding->set || binding->stride != 16)
+            return false;
+         if (binding->binding ==
+             PSBC_GALLIUM_UBO_ARRAY_BINDING(PSBC_STAGE_VERTEX)) {
+            binding_ubo_count = shader->nir->info.num_ubos;
+            if (!binding_ubo_count || binding->array_size != binding_ubo_count ||
+                binding->offset != PS5_TEXTURE_DESCRIPTOR_BYTES)
+               return false;
+         } else if (binding->binding ==
+                    PSBC_GALLIUM_UBO_ARRAY_BINDING(PSBC_STAGE_GEOMETRY)) {
+            binding_shader = context->gs;
+            binding_ubo_count = binding_shader->nir->info.num_ubos;
+            state_slot = PS5_GEOMETRY_CONSTANT_SLOT;
+            if (!binding_ubo_count || binding->array_size != binding_ubo_count ||
+                binding->offset != PS5_TEXTURE_DESCRIPTOR_BYTES +
+                                      shader->nir->info.num_ubos * 16u)
+               return false;
+         } else {
+            return false;
+         }
       } else if (binding->set ||
           binding->binding < PSBC_GALLIUM_UBO_BINDING_BASE ||
           binding->binding >= PSBC_GALLIUM_UBO_BINDING_BASE +
@@ -2621,12 +2649,20 @@ ps5_prepare_constant(struct ps5_context *context,
                                 (binding->binding -
                                  PSBC_GALLIUM_UBO_BINDING_BASE) * 16u)
          return false;
-      for (unsigned array_index = 0; array_index < (storage_fs ? expected_ubo_count : 1u); ++array_index) {
-         state_binding = storage_fs ? array_index : binding->binding - PSBC_GALLIUM_UBO_BINDING_BASE;
+      for (unsigned array_index = 0;
+           array_index < (storage_fs ? expected_ubo_count : binding_ubo_count);
+           ++array_index) {
+         state_binding = (storage_fs || merged_geometry_storage)
+            ? array_index
+            : binding->binding - PSBC_GALLIUM_UBO_BINDING_BASE;
          if (state_binding >= expected_ubo_count)
             return false;
          ubo_index = state_binding;
-         if (merged_geometry && state_binding >= shader->nir->info.num_ubos) {
+         if (merged_geometry_storage) {
+            state_binding = ps5_constant_state_binding(binding_shader,
+                                                        ubo_index);
+         } else if (merged_geometry &&
+                    state_binding >= shader->nir->info.num_ubos) {
             state_slot = PS5_GEOMETRY_CONSTANT_SLOT;
             ubo_index -= shader->nir->info.num_ubos;
             if (ubo_index >= context->gs->nir->info.num_ubos)
@@ -2696,6 +2732,7 @@ ps5_prepare_texture(struct ps5_context *context,
    unsigned texture_count = 0;
    unsigned expected_texture_count;
    unsigned expected_ubo_count;
+   unsigned expected_ubo_bindings;
    bool merged_geometry;
    bool merged_geometry_storage;
    const bool storage_fs = slot == 1 && ps5_shader_uses_storage(shader);
@@ -2713,6 +2750,10 @@ ps5_prepare_texture(struct ps5_context *context,
       return true;
    expected_ubo_count = shader->nir->info.num_ubos +
       (merged_geometry ? context->gs->nir->info.num_ubos : 0u);
+   expected_ubo_bindings = merged_geometry_storage
+      ? (shader->nir->info.num_ubos != 0) +
+           (context->gs->nir->info.num_ubos != 0)
+      : expected_ubo_count;
    table = (struct ps5_resource *)context->descriptor_storage[slot];
    if ((shader->stage == PSBC_STAGE_VERTEX && slot != 0) ||
        (shader->stage == PSBC_STAGE_FRAGMENT && slot != 1) ||
@@ -2725,7 +2766,7 @@ ps5_prepare_texture(struct ps5_context *context,
        metadata->descriptor_binding_count !=
           (storage_fs ? 1u + (shader->nir->info.num_images != 0) +
                            (expected_ubo_count != 0) :
-                        expected_ubo_count + merged_geometry_storage) +
+                        expected_ubo_bindings + merged_geometry_storage) +
              expected_texture_count ||
        !table)
       return false;
@@ -10961,14 +11002,20 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
              context->vs->nir->info.num_ubos);
       return false;
    }
+   vertex_ubos = context->vs->nir->info.num_ubos;
+   geometry_ubos = context->gs->nir->info.num_ubos;
    geometry_ssbos = context->gs->nir->info.num_ssbos;
    if (context->gs->nir->info.num_images ||
        geometry_ssbos > PS5_COMPUTE_STORAGE_SLOTS ||
-       (geometry_ssbos &&
-        options.descriptor_binding_count >= PSBC_MAX_DESCRIPTOR_BINDINGS))
+       vertex_ubos + geometry_ubos > 2u * PS5_MAX_CONSTANT_BUFFERS)
       return false;
    if (geometry_ssbos) {
+      if (options.descriptor_binding_count < vertex_ubos)
+         return false;
+      options.descriptor_binding_count -= vertex_ubos;
       options.gallium_buffer_arrays = true;
+      if (options.descriptor_binding_count >= PSBC_MAX_DESCRIPTOR_BINDINGS)
+         return false;
       options.descriptor_bindings[options.descriptor_binding_count++] =
          (PsbcDescriptorBinding){
             .binding =
@@ -10995,18 +11042,38 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
                              context, context->vs,
                              &context->geometry_output.metadata) ||
        options.descriptor_binding_count !=
-          merged_textures + context->vs->nir->info.num_ubos +
-             (geometry_ssbos != 0)) {
+          merged_textures + (geometry_ssbos != 0) +
+             (geometry_ssbos ? 0 : vertex_ubos)) {
       printf("[ps5-gallium] geometry-select reject=texture-count vertex=%u geometry=%u merged=%u descriptors=%u\n",
              context->vs->nir->info.num_textures,
              context->gs->nir->info.num_textures, merged_textures,
              options.descriptor_binding_count);
       return false;
    }
-   vertex_ubos = context->vs->nir->info.num_ubos;
-   geometry_ubos = context->gs->nir->info.num_ubos;
-   if (vertex_ubos + geometry_ubos > 2u * PS5_MAX_CONSTANT_BUFFERS ||
-       !ps5_append_ubo_descriptors(&options, vertex_ubos, geometry_ubos)) {
+   if (geometry_ssbos) {
+      if (options.descriptor_binding_count + (vertex_ubos != 0) +
+             (geometry_ubos != 0) > PSBC_MAX_DESCRIPTOR_BINDINGS)
+         return false;
+      if (vertex_ubos)
+         options.descriptor_bindings[options.descriptor_binding_count++] =
+            (PsbcDescriptorBinding){
+               .binding = PSBC_GALLIUM_UBO_ARRAY_BINDING(PSBC_STAGE_VERTEX),
+               .type = PSBC_DESCRIPTOR_UNIFORM_BUFFER,
+               .array_size = vertex_ubos,
+               .offset = PS5_TEXTURE_DESCRIPTOR_BYTES,
+               .stride = 16,
+            };
+      if (geometry_ubos)
+         options.descriptor_bindings[options.descriptor_binding_count++] =
+            (PsbcDescriptorBinding){
+               .binding = PSBC_GALLIUM_UBO_ARRAY_BINDING(PSBC_STAGE_GEOMETRY),
+               .type = PSBC_DESCRIPTOR_UNIFORM_BUFFER,
+               .array_size = geometry_ubos,
+               .offset = PS5_TEXTURE_DESCRIPTOR_BYTES + vertex_ubos * 16u,
+               .stride = 16,
+            };
+   } else if (!ps5_append_ubo_descriptors(&options, vertex_ubos,
+                                           geometry_ubos)) {
       printf("[ps5-gallium] geometry-select reject=descriptors vertex-ubos=%u geometry-ubos=%u descriptors=%u\n",
              vertex_ubos, geometry_ubos,
              options.descriptor_binding_count);
@@ -11038,7 +11105,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
    ubo_offset.first = vertex_ubos;
    ubo_offset.source_count = geometry_ubos;
    ubo_offset.valid = true;
-   if (geometry_ubos) {
+   if (geometry_ubos && !geometry_ssbos) {
       nir_shader_instructions_pass(geometry_nir, ps5_offset_ubo_index,
                                    nir_metadata_control_flow, &ubo_offset);
       geometry_nir->info.num_ubos = vertex_ubos + geometry_ubos;
