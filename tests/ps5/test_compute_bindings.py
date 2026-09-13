@@ -87,8 +87,9 @@ code = r'''
 #define PS5_MAX_COLOR_HEIGHT 8192
 #define PS5_COLOR_TARGET_ALIGNMENT 0x10000u
 #define PS5_MAX_CONSTANT_BUFFERS 13
-#define PS5_CONSTANT_DATA_OFFSET 2048
-#define PS5_DESCRIPTOR_STORAGE_BYTES (2048+2*PS5_MAX_CONSTANT_BUFFER_SIZE)
+#define PS5_GEOMETRY_STORAGE_OFFSET 2048
+#define PS5_CONSTANT_DATA_OFFSET 2560
+#define PS5_DESCRIPTOR_STORAGE_BYTES (2560+2*PS5_MAX_CONSTANT_BUFFER_SIZE)
 #define PS5_FRAGMENT_UBO_OFFSET 512
 #define PS5_TEXTURE_DESCRIPTOR_BYTES 1536
 #define PS5_DIRECT_ALIGNMENT 16384
@@ -121,7 +122,9 @@ struct ps5_context {
     struct pipe_resource *compute_descriptors;
     struct pipe_shader_buffer compute_buffers[31];
     struct pipe_shader_buffer fragment_buffers[16];
+    struct pipe_shader_buffer geometry_buffers[16];
     bool fragment_bindings_invalid;
+    bool geometry_bindings_invalid;
     struct ps5_shader *fs;
     struct ps5_shader *gs;
     struct ps5_constant_state constants[3][13];
@@ -164,7 +167,7 @@ static void ps5_flush_gpu_data(const void *address, size_t size) { assert(addres
 static bool ps5_uses_merged_geometry_metadata(const struct ps5_context *c, const struct ps5_shader *s, const PsbcShaderMetadata *m) { return false; }
 static unsigned ps5_texture_count(const struct ps5_context *c, const struct ps5_shader *s, const PsbcShaderMetadata *m) { return s->nir->info.num_textures; }
 static unsigned ps5_constant_state_binding(const struct ps5_shader *s, unsigned i) { return i+!s->nir->info.first_ubo_is_default_ubo; }
-static size_t ps5_copied_constant_offset(unsigned slot) { return 2048+(slot==2 ? PS5_MAX_CONSTANT_BUFFER_SIZE : 0); }
+static size_t ps5_copied_constant_offset(unsigned slot) { return 2560+(slot==2 ? PS5_MAX_CONSTANT_BUFFER_SIZE : 0); }
 void u_upload_data_ref(struct u_upload_mgr *upload, unsigned minimum, unsigned size,
     unsigned alignment, const void *data, unsigned *offset, struct pipe_resource **buffer) {
     assert(upload && !minimum && alignment==16 && size<=64 && upload_resource);
@@ -489,7 +492,7 @@ static void fragment_contract(void) {
     assert(!memcmp(preserved,mixed_table,512));
     for(unsigned i=0;i<13;++i) {
         const uint32_t *d=(const uint32_t *)(mixed_table+512+i*16);
-        assert(d[0]==(uint32_t)(uintptr_t)(i ? (void *)words : mixed_table+2048) && d[2]==64);
+        assert(d[0]==(uint32_t)(uintptr_t)(i ? (void *)words : mixed_table+PS5_CONSTANT_DATA_OFFSET) && d[2]==64);
     }
     for(unsigned i=720;i<sizeof(mixed_table);++i) assert(mixed_table[i]==0xab);
     c.constants[1][12].valid=false;
@@ -550,10 +553,43 @@ static void fragment_contract(void) {
     assert(image.base.reference.count==1 && !ps5_prepare_fragment_storage(&c,userdata,16));
     fragment_mode=false;
 }
+static void geometry_storage_contract(void) {
+    struct pipe_screen screen={.resource_destroy=destroy};
+    uint32_t words[32]={0}, userdata[16]={0};
+    _Alignas(256) uint8_t descriptors[PS5_DESCRIPTOR_STORAGE_BYTES]={0};
+    struct ps5_resource data={.base={.screen=&screen,.target=PIPE_BUFFER,.width0=sizeof(words)},
+        .data=(void *)words,.size=sizeof(words)};
+    struct ps5_resource table={.data=descriptors,.size=sizeof(descriptors)};
+    pipe_reference_init(&data.base.reference,1);
+    struct test_nir nir={.info.num_ssbos=1};
+    struct test_variant variant={0};
+    struct ps5_shader shader={&nir,&variant};
+    PsbcShaderMetadata *m=&variant.output.metadata;
+    m->address32_hi=(uintptr_t)descriptors>>32;
+    m->descriptor_set0_valid=true; m->descriptor_binding_count=1;
+    m->descriptor_bindings[0]=(PsbcDescriptorBinding){
+        .binding=PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_GEOMETRY),
+        .type=PSBC_DESCRIPTOR_STORAGE_BUFFER,.array_size=PS5_COMPUTE_STORAGE_SLOTS,
+        .offset=PS5_GEOMETRY_STORAGE_OFFSET,.stride=16};
+    struct ps5_context c={.base.screen=&screen,.gs=&shader,.descriptor_storage[0]=&table.base};
+    struct pipe_shader_buffer binding={&data.base,16,64};
+    fragment_mode=true;
+    ps5_set_shader_buffers(&c.base,MESA_SHADER_GEOMETRY,0,1,&binding,1);
+    assert(!c.geometry_bindings_invalid && data.base.reference.count==2);
+    assert(ps5_prepare_geometry_storage(&c,m,userdata,16));
+    const uint32_t *srd=(const uint32_t *)(descriptors+PS5_GEOMETRY_STORAGE_OFFSET);
+    assert(srd[0]==(uint32_t)(uintptr_t)((uint8_t *)words+16));
+    assert(srd[2]==64 && srd[3]==0x31016fac);
+    assert(userdata[0]==(uint32_t)(uintptr_t)descriptors);
+    ps5_set_shader_buffers(&c.base,MESA_SHADER_GEOMETRY,0,1,NULL,0);
+    assert(data.base.reference.count==1 && !ps5_prepare_geometry_storage(&c,m,userdata,16));
+    fragment_mode=false;
+}
 int main(void) {
     atomic_handoff_contract();
     stale_cleanup_regression();
     fragment_contract();
+    geometry_storage_contract();
     assert(PS5_COMPUTE_TEXTURE_SLOTS==16 && PS5_AGC_COMPUTE_MAX_RESOURCES==55);
     struct pipe_screen screen={.resource_destroy=destroy}, other_screen={0};
     struct pipe_context barrier_context={0};

@@ -283,7 +283,9 @@ struct ps5_context {
    bool compute_samplers_invalid;
    struct pipe_shader_buffer compute_buffers[PS5_COMPUTE_BUFFER_SLOTS];
    struct pipe_shader_buffer fragment_buffers[PS5_COMPUTE_STORAGE_SLOTS];
+   struct pipe_shader_buffer geometry_buffers[PS5_COMPUTE_STORAGE_SLOTS];
    bool fragment_bindings_invalid;
+   bool geometry_bindings_invalid;
    struct pipe_image_view compute_images[PS5_COMPUTE_IMAGE_SLOTS];
    struct pipe_image_view fragment_images[PS5_COMPUTE_IMAGE_SLOTS];
    bool fragment_images_invalid;
@@ -467,7 +469,8 @@ ps5_streamout_buffer_stream(unsigned stream_buffer_mask, unsigned buffer);
  * Advertise enough backing storage for the 1024 user components required by
  * OpenGL 3.3 after that reservation. */
 #define PS5_MAX_DEFAULT_CONSTANT_BUFFER_SIZE 0x1080u
-#define PS5_CONSTANT_DATA_OFFSET 0x800u
+#define PS5_GEOMETRY_STORAGE_OFFSET 0x800u
+#define PS5_CONSTANT_DATA_OFFSET 0xa00u
 #define PS5_FRAGMENT_UBO_OFFSET (PS5_COMPUTE_STORAGE_SLOTS * 16u + PS5_COMPUTE_IMAGE_SLOTS * 32u)
 #define PS5_FRAGMENT_TEXTURE_OFFSET (PS5_FRAGMENT_UBO_OFFSET + PS5_MAX_CONSTANT_BUFFERS * 16u)
 #define PS5_DESCRIPTOR_STORAGE_BYTES \
@@ -698,6 +701,14 @@ _Static_assert(PS5_TEXTURE_DESCRIPTOR_BYTES +
                   2u * PS5_MAX_CONSTANT_BUFFERS * 16u <=
                PS5_CONSTANT_DATA_OFFSET,
                "merged VS/GS descriptors overlap copied data");
+_Static_assert(PS5_GEOMETRY_STORAGE_OFFSET +
+                  PS5_COMPUTE_STORAGE_SLOTS * 16u <=
+               PS5_CONSTANT_DATA_OFFSET,
+               "geometry storage descriptors overlap copied data");
+_Static_assert(PS5_FRAGMENT_TEXTURE_OFFSET +
+                  PS5_MAX_TEXTURE_UNITS * PS5_TEXTURE_DESCRIPTOR_STRIDE <=
+               PS5_CONSTANT_DATA_OFFSET,
+               "fragment descriptors overlap copied data");
 _Static_assert(PS5_MERGED_TEXTURE_UNITS <= PSBC_GALLIUM_UBO_BINDING_BASE,
                "merged VS/GS samplers overlap UBO bindings");
 _Static_assert(PSBC_GALLIUM_UBO_BINDING_BASE +
@@ -2471,6 +2482,64 @@ ps5_prepare_fragment_storage(struct ps5_context *context, uint32_t *user_data,
 }
 
 static bool
+ps5_prepare_geometry_storage(struct ps5_context *context,
+                             const PsbcShaderMetadata *metadata,
+                             uint32_t *user_data, unsigned user_data_count)
+{
+   const unsigned count = ps5_shader_storage_count(context->gs);
+   struct ps5_resource *table =
+      (struct ps5_resource *)context->descriptor_storage[0];
+   const PsbcDescriptorBinding *bank = NULL;
+
+   if (!count)
+      return true;
+   if (count > PS5_COMPUTE_STORAGE_SLOTS || context->geometry_bindings_invalid ||
+       context->gs->nir->info.num_images || !table || !table->data ||
+       table->size < PS5_GEOMETRY_STORAGE_OFFSET +
+                        PS5_COMPUTE_STORAGE_SLOTS * 16u ||
+       !metadata->descriptor_set0_valid ||
+       metadata->descriptor_set0_user_data_dword >= user_data_count ||
+       (uintptr_t)table->data >> 32 != metadata->address32_hi)
+      return false;
+   for (unsigned i = 0; i < metadata->descriptor_binding_count; ++i) {
+      const PsbcDescriptorBinding *candidate = &metadata->descriptor_bindings[i];
+      if (candidate->binding ==
+          PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_GEOMETRY)) {
+         if (bank)
+            return false;
+         bank = candidate;
+      }
+   }
+   if (!bank || bank->set || bank->type != PSBC_DESCRIPTOR_STORAGE_BUFFER ||
+       bank->array_size != PS5_COMPUTE_STORAGE_SLOTS ||
+       bank->offset != PS5_GEOMETRY_STORAGE_OFFSET || bank->stride != 16)
+      return false;
+
+   memset(table->data + bank->offset, 0, bank->array_size * bank->stride);
+   for (unsigned i = 0; i < count; ++i) {
+      const struct pipe_shader_buffer *bound = &context->geometry_buffers[i];
+      const struct ps5_resource *resource =
+         (const struct ps5_resource *)bound->buffer;
+      if (!resource || resource->base.screen != context->base.screen ||
+          !resource->data || bound->buffer_offset > resource->size ||
+          bound->buffer_size > resource->size - bound->buffer_offset)
+         return false;
+      uintptr_t address = (uintptr_t)resource->data + bound->buffer_offset;
+      uint32_t *srd = (uint32_t *)(table->data + bank->offset) + i * 4;
+      srd[0] = address;
+      srd[1] = address >> 32;
+      srd[2] = bound->buffer_size;
+      srd[3] = UINT32_C(0x31016fac);
+      ps5_flush_gpu_data((void *)address, bound->buffer_size);
+   }
+   user_data[metadata->descriptor_set0_user_data_dword] =
+      (uintptr_t)table->data;
+   ps5_flush_gpu_data(table->data + bank->offset,
+                      bank->array_size * bank->stride);
+   return true;
+}
+
+static bool
 ps5_prepare_constant(struct ps5_context *context,
                      const struct ps5_shader *shader, unsigned slot,
                      uint32_t *user_data, unsigned user_data_count,
@@ -2484,6 +2553,7 @@ ps5_prepare_constant(struct ps5_context *context,
    unsigned expected_ubo_count;
    unsigned expected_texture_count;
    bool merged_geometry;
+   bool merged_geometry_storage;
    const bool storage_fs = slot == 1 && ps5_shader_uses_storage(shader);
 
    if (!shader || !shader->active || slot >= 2)
@@ -2492,6 +2562,8 @@ ps5_prepare_constant(struct ps5_context *context,
                                    &shader->active->output.metadata;
    merged_geometry = ps5_uses_merged_geometry_metadata(context, shader,
                                                        metadata);
+   merged_geometry_storage = merged_geometry &&
+                             ps5_shader_storage_count(context->gs);
    expected_ubo_count = shader->nir->info.num_ubos +
       (merged_geometry ? context->gs->nir->info.num_ubos : 0u);
    expected_texture_count = ps5_texture_count(context, shader, metadata);
@@ -2508,7 +2580,9 @@ ps5_prepare_constant(struct ps5_context *context,
                            ? PS5_DESCRIPTOR_STORAGE_BYTES
                            : PS5_DIRECT_ALIGNMENT) ||
        metadata->descriptor_binding_count !=
-          (storage_fs ? 2u + (shader->nir->info.num_images != 0) : expected_ubo_count) + expected_texture_count ||
+          (storage_fs ? 2u + (shader->nir->info.num_images != 0) :
+                        expected_ubo_count + merged_geometry_storage) +
+             expected_texture_count ||
        !metadata->descriptor_set0_valid ||
        metadata->descriptor_set0_user_data_dword >= user_data_count)
       return false;
@@ -2623,6 +2697,7 @@ ps5_prepare_texture(struct ps5_context *context,
    unsigned expected_texture_count;
    unsigned expected_ubo_count;
    bool merged_geometry;
+   bool merged_geometry_storage;
    const bool storage_fs = slot == 1 && ps5_shader_uses_storage(shader);
 
    if (!shader || !shader->active || slot >= PS5_DESCRIPTOR_STAGE_COUNT)
@@ -2631,6 +2706,8 @@ ps5_prepare_texture(struct ps5_context *context,
                                    &shader->active->output.metadata;
    merged_geometry = ps5_uses_merged_geometry_metadata(context, shader,
                                                        metadata);
+   merged_geometry_storage = merged_geometry &&
+                             ps5_shader_storage_count(context->gs);
    expected_texture_count = ps5_texture_count(context, shader, metadata);
    if (!expected_texture_count)
       return true;
@@ -2646,7 +2723,10 @@ ps5_prepare_texture(struct ps5_context *context,
        !metadata->descriptor_set0_valid ||
        metadata->descriptor_set0_user_data_dword >= user_data_count ||
        metadata->descriptor_binding_count !=
-          (storage_fs ? 1u + (shader->nir->info.num_images != 0) + (expected_ubo_count != 0) : expected_ubo_count) + expected_texture_count ||
+          (storage_fs ? 1u + (shader->nir->info.num_images != 0) +
+                           (expected_ubo_count != 0) :
+                        expected_ubo_count + merged_geometry_storage) +
+             expected_texture_count ||
        !table)
       return false;
 
@@ -7969,6 +8049,13 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       context->last_draw_status = -15;
       return;
    }
+   if (context->gs &&
+       !ps5_prepare_geometry_storage(context, vertex_metadata, user_data,
+                                     user_data_count)) {
+      printf("[ps5-gallium] resource-prepare reject=geometry-storage\n");
+      context->last_draw_status = -15;
+      return;
+   }
    if (!ps5_prepare_fragment_storage(context, pixel_user_data, pixel_user_data_count)) {
       context->last_draw_status = -15;
       return;
@@ -9156,6 +9243,17 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
          const struct ps5_resource *resource = (const struct ps5_resource *)bound->buffer;
          if (resource)
             ps5_flush_gpu_data(resource->data + bound->buffer_offset, bound->buffer_size);
+      }
+   if (!context->last_draw_status)
+      for (unsigned i = 0;
+           i < MIN2(ps5_shader_storage_count(context->gs),
+                    PS5_COMPUTE_STORAGE_SLOTS); ++i) {
+         const struct pipe_shader_buffer *bound = &context->geometry_buffers[i];
+         const struct ps5_resource *resource =
+            (const struct ps5_resource *)bound->buffer;
+         if (resource)
+            ps5_flush_gpu_data(resource->data + bound->buffer_offset,
+                               bound->buffer_size);
       }
    if (!context->last_draw_status && context->fs)
       for (unsigned i = 0; i < MIN2(context->fs->nir->info.num_images, PS5_COMPUTE_IMAGE_SLOTS); ++i) {
@@ -10842,6 +10940,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
    unsigned merged_textures;
    unsigned vertex_ubos;
    unsigned geometry_ubos;
+   unsigned geometry_ssbos;
    bool texture_offset_valid = true;
    uint32_t ring_itemsize;
    uint32_t streamout_ring_itemsize;
@@ -10867,6 +10966,24 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
              context->vs->nir->info.num_ubos);
       return false;
    }
+   geometry_ssbos = context->gs->nir->info.num_ssbos;
+   if (context->gs->nir->info.num_images ||
+       geometry_ssbos > PS5_COMPUTE_STORAGE_SLOTS ||
+       (geometry_ssbos &&
+        options.descriptor_binding_count >= PSBC_MAX_DESCRIPTOR_BINDINGS))
+      return false;
+   if (geometry_ssbos) {
+      options.gallium_buffer_arrays = true;
+      options.descriptor_bindings[options.descriptor_binding_count++] =
+         (PsbcDescriptorBinding){
+            .binding =
+               PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_GEOMETRY),
+            .type = PSBC_DESCRIPTOR_STORAGE_BUFFER,
+            .array_size = PS5_COMPUTE_STORAGE_SLOTS,
+            .offset = PS5_GEOMETRY_STORAGE_OFFSET,
+            .stride = 16,
+         };
+   }
    merged_textures = ps5_shader_texture_count(context->vs);
    for (unsigned binding = 0; binding < PS5_MAX_TEXTURE_UNITS; ++binding) {
       if (!BITSET_TEST(context->gs->nir->info.textures_used, binding))
@@ -10883,7 +11000,8 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
                              context, context->vs,
                              &context->geometry_output.metadata) ||
        options.descriptor_binding_count !=
-          merged_textures + context->vs->nir->info.num_ubos) {
+          merged_textures + context->vs->nir->info.num_ubos +
+             (geometry_ssbos != 0)) {
       printf("[ps5-gallium] geometry-select reject=texture-count vertex=%u geometry=%u merged=%u descriptors=%u\n",
              context->vs->nir->info.num_textures,
              context->gs->nir->info.num_textures, merged_textures,
@@ -11228,13 +11346,26 @@ ps5_set_shader_buffers(struct pipe_context *base, mesa_shader_stage stage,
                         const struct pipe_shader_buffer *buffers, unsigned writable)
 {
    struct ps5_context *context = (struct ps5_context *)base;
+   bool *invalid;
+   struct pipe_shader_buffer *bound_buffers;
+
    (void)writable; /* Conservatively flush every retained buffer for now. */
-   if (stage != MESA_SHADER_COMPUTE && stage != MESA_SHADER_FRAGMENT)
+   switch (stage) {
+   case MESA_SHADER_COMPUTE:
+      invalid = &context->compute_bindings_invalid;
+      bound_buffers = context->compute_buffers;
+      break;
+   case MESA_SHADER_FRAGMENT:
+      invalid = &context->fragment_bindings_invalid;
+      bound_buffers = context->fragment_buffers;
+      break;
+   case MESA_SHADER_GEOMETRY:
+      invalid = &context->geometry_bindings_invalid;
+      bound_buffers = context->geometry_buffers;
+      break;
+   default:
       return;
-   bool *invalid = stage == MESA_SHADER_COMPUTE ? &context->compute_bindings_invalid :
-                                                &context->fragment_bindings_invalid;
-   struct pipe_shader_buffer *bound_buffers = stage == MESA_SHADER_COMPUTE ?
-      context->compute_buffers : context->fragment_buffers;
+   }
    *invalid = true;
    if (start > PS5_COMPUTE_STORAGE_SLOTS || count > PS5_COMPUTE_STORAGE_SLOTS - start)
       return;
@@ -11248,7 +11379,7 @@ ps5_set_shader_buffers(struct pipe_context *base, mesa_shader_stage stage,
          return;
    }
    /* Validate the entire update before releasing any previously owned buffer. */
-   if (stage == MESA_SHADER_FRAGMENT)
+   if (stage != MESA_SHADER_COMPUTE)
       ps5_draw_batch_drain();
    for (unsigned i = 0; i < count; ++i) {
       struct pipe_shader_buffer *bound = &bound_buffers[start + i];
@@ -12469,6 +12600,8 @@ ps5_context_destroy(struct pipe_context *base)
       pipe_resource_reference(&context->compute_buffers[index].buffer, NULL);
    for (index = 0; index < PS5_COMPUTE_STORAGE_SLOTS; ++index)
       pipe_resource_reference(&context->fragment_buffers[index].buffer, NULL);
+   for (index = 0; index < PS5_COMPUTE_STORAGE_SLOTS; ++index)
+      pipe_resource_reference(&context->geometry_buffers[index].buffer, NULL);
    for (index = 0; index < PS5_COMPUTE_IMAGE_SLOTS; ++index)
       pipe_resource_reference(&context->compute_images[index].resource, NULL);
    for (index = 0; index < PS5_COMPUTE_IMAGE_SLOTS; ++index)
@@ -12946,6 +13079,7 @@ ps5_screen_create(void)
       gs_caps->max_outputs = 32;
       gs_caps->max_texture_samplers = PS5_MAX_TEXTURE_UNITS;
       gs_caps->max_sampler_views = PS5_MAX_TEXTURE_UNITS;
+      gs_caps->max_shader_buffers = PS5_COMPUTE_STORAGE_SLOTS;
    }
    if (PS5_ENABLE_TESSELLATION_CANDIDATE) {
       *tcs_caps = *vs_caps;
