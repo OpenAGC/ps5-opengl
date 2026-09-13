@@ -7,6 +7,7 @@
 #include <execinfo.h>
 #include <locale.h>
 #include <nl_types.h>
+#include <pthread.h>
 #include <runetype.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -18,6 +19,52 @@
 #include <wchar.h>
 #include <wctype.h>
 #include <xlocale.h>
+
+struct ps5_thread_destructor {
+  void (*function)(void *);
+  void *object;
+  struct ps5_thread_destructor *next;
+};
+
+static pthread_key_t ps5_thread_destructor_key;
+static pthread_once_t ps5_thread_destructor_once = PTHREAD_ONCE_INIT;
+static int ps5_thread_destructor_error;
+
+static void ps5_run_thread_destructors(void *opaque) {
+  struct ps5_thread_destructor *entry = opaque;
+  pthread_setspecific(ps5_thread_destructor_key, NULL);
+  while (entry != NULL) {
+    struct ps5_thread_destructor *next = entry->next;
+    entry->function(entry->object);
+    free(entry);
+    entry = next;
+  }
+}
+
+static void ps5_create_thread_destructor_key(void) {
+  ps5_thread_destructor_error = pthread_key_create(
+      &ps5_thread_destructor_key, ps5_run_thread_destructors);
+}
+
+int __cxa_thread_atexit_impl(void (*function)(void *), void *object,
+                             void *dso_handle) {
+  (void)dso_handle; /* The native title does not unload its executable DSO. */
+  pthread_once(&ps5_thread_destructor_once, ps5_create_thread_destructor_key);
+  if (ps5_thread_destructor_error != 0)
+    return -1;
+
+  struct ps5_thread_destructor *entry = malloc(sizeof(*entry));
+  if (entry == NULL)
+    return -1;
+  entry->function = function;
+  entry->object = object;
+  entry->next = pthread_getspecific(ps5_thread_destructor_key);
+  if (pthread_setspecific(ps5_thread_destructor_key, entry) != 0) {
+    free(entry);
+    return -1;
+  }
+  return 0;
+}
 
 static _RuneLocale ps5_cts_runes;
 static int ps5_cts_runes_ready;

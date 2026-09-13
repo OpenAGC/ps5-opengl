@@ -58,13 +58,13 @@ or unconfirmed completion instead terminates the application before buffer
 cleanup or exit handlers can reuse potentially in-flight memory. This fail-stop
 path is tested with host mocks, never by deliberately faulting the console.
 
-Build the official bounded Khronos GL33 CTS runner into the same title ID with:
+Build the bounded Khronos OpenGL CTS runner into the same title ID with:
 
 ```sh
 bash tools/build-native-cts-app.sh
 ```
 
-Its default `/app0/cts-args.txt` runs only `KHR-GL33.info.*`. Later bounded
+Its default `/app0/cts-args.txt` runs only `KHR-GL46.info.*`. Later bounded
 shards replace that file in `/data/homebrew/PPSA99005`, then relaunch the
 folder app. Results are written to `/download0/ps5-opengl-cts.qpa` and
 `/download0/ps5-opengl-cts.status`.

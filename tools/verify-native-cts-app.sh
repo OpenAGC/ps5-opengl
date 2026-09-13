@@ -3,7 +3,7 @@
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-# Verify the PPSA99005 Khronos GL33 CTS native-title payload.
+# Verify the PPSA99005 Khronos OpenGL CTS native-title payload.
 
 set -euo pipefail
 
@@ -16,6 +16,7 @@ converted="$stage/build/eboot.elf"
 for artifact in "$dist/eboot.bin" "$dist/sce_module/libc.prx" \
     "$dist/sce_sys/param.json" "$dist/cts-args.txt" \
     "$dist/gl_cts/data/mustpass/gl/khronos_mustpass/main/gl33-main.txt" \
+    "$dist/gl_cts/data/mustpass/gl/khronos_mustpass/main/gl46-main.txt" \
     "$linked" "$converted"; do
     test -s "$artifact" || {
         printf 'missing native CTS artifact: %s\n' "$artifact" >&2
@@ -46,21 +47,22 @@ for index in range(program_count):
         assert offset % alignment == address % alignment
 PY
 
-grep -aFq '[ps5-opengl-cts] starting GL33 CTS runner' "$linked"
+grep -aFq '[ps5-opengl-cts] starting OpenGL CTS runner' "$linked"
 grep -aFq '[ps5-opengl-cts] finished' "$linked"
 grep -aFq '/download0/ps5-opengl-cts.status' "$linked"
 grep -aFq 'KHR-GL33' "$linked"
+grep -aFq 'KHR-GL46' "$linked"
 grep -Fqx -- '--deqp-terminate-on-device-lost=disable' "$dist/cts-args.txt"
-if grep -Fq -- '--deqp-case=KHR-GL33.info.*' "$dist/cts-args.txt"; then
+if grep -Eq -- '--deqp-case=KHR-GL(33|46)\.info\.\*' "$dist/cts-args.txt"; then
     :
 elif grep -Fxq -- '--deqp-case=CTS-Configs.gl33' "$dist/cts-args.txt"; then
     grep -aFq 'CTS-Configs' "$linked"
 elif grep -Fq -- '--deqp-caselist-file=/app0/cts-shard.txt' \
         "$dist/cts-args.txt" && test -s "$dist/cts-shard.txt" &&
-        ! grep -Ev '^KHR-GL33\.[^[:space:]]+$' "$dist/cts-shard.txt"; then
+        ! grep -Ev '^KHR-GL(33|46)\.[^[:space:]]+$' "$dist/cts-shard.txt"; then
     :
 else
-    printf 'native CTS arguments select no valid GL33 cases\n' >&2
+    printf 'native CTS arguments select no valid OpenGL cases\n' >&2
     exit 1
 fi
 

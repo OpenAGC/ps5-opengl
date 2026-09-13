@@ -63,7 +63,7 @@ for patch in "$overlay"/patches/*.patch; do
         0001-*) marker='add_library(ps5-gl33-package STATIC' ;;
         0002-*) marker='add_library(ps5-gl33-runner STATIC' ;;
         0003-*) marker='NOT DEQP_TARGET_NAME STREQUAL "PS5 OpenGL"' ;;
-        0004-*) marker='add_library(ps5-gl33-support STATIC' ;;
+        0004-*) marker='glcts-gl glcts-es31 glcts-esext deqp-gles31${MODULE_LIB_TARGET_POSTFIX}' ;;
         *) marker= ;;
     esac
     if [[ -n $marker ]] && git -C "$cts" grep -Fq "$marker" -- \
