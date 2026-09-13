@@ -824,6 +824,19 @@ int main(void) {
     assert(descriptor[0]==(uint32_t)((uintptr_t)pixels>>8));
     assert(descriptor[2]==(4u|(2u<<14)|0x80000000u));
     assert(descriptor[3]==0x90000204 && descriptor[4]==63 && descriptor[5]==0x400000);
+    _Alignas(256) uint8_t image_buffer_data[64];
+    struct ps5_resource image_buffer={.base={.screen=&screen,.target=PIPE_BUFFER,
+        .format=PIPE_FORMAT_R8_UNORM,.width0=sizeof(image_buffer_data),
+        .bind=PIPE_BIND_SHADER_IMAGE},.data=image_buffer_data,
+        .size=sizeof(image_buffer_data),.allocation_size=sizeof(image_buffer_data)};
+    pipe_reference_init(&image_buffer.base.reference,1);
+    struct pipe_image_view image_buffer_view={.resource=&image_buffer.base,
+        .format=PIPE_FORMAT_R32_UINT,.access=PIPE_IMAGE_ACCESS_READ};
+    image_buffer_view.u.buf.size=sizeof(image_buffer_data);
+    ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,1,0,&image_buffer_view);
+    assert(!context.compute_images_invalid && image_buffer.base.reference.count==2);
+    ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,0,1,NULL);
+    assert(image_buffer.base.reference.count==1);
     /* Mesa default_bindings: ordinary R32F uses SAMPLER_VIEW|RENDER_TARGET,
      * without SHADER_IMAGE. Both descriptors must address canonical bytes. */
     _Alignas(65536) static uint8_t canonical_pixels[131072];

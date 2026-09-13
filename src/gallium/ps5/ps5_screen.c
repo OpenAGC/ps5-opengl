@@ -11678,7 +11678,8 @@ ps5_set_shader_images(struct pipe_context *base, mesa_shader_stage stage,
       uint32_t descriptor[8];
       if (!v->resource)
          continue;
-      if (v->resource->screen != base->screen || v->format != v->resource->format ||
+      if (v->resource->screen != base->screen ||
+          (v->resource->target != PIPE_BUFFER && v->format != v->resource->format) ||
           !(v->access & PIPE_IMAGE_ACCESS_READ_WRITE) ||
           ((v->access | v->shader_access) & ~(PIPE_IMAGE_ACCESS_READ_WRITE |
               PIPE_IMAGE_ACCESS_COHERENT | PIPE_IMAGE_ACCESS_VOLATILE)))
