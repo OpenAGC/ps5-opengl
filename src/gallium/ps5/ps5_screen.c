@@ -1953,13 +1953,7 @@ ps5_encode_graphics_state(const struct ps5_context *context,
        (context->rasterizer->offset_point ||
         context->rasterizer->offset_line ||
         context->rasterizer->offset_tri)) {
-      if (!ps5_float_is_finite(context->rasterizer->offset_scale) ||
-          !ps5_float_is_finite(context->rasterizer->offset_units) ||
-          !ps5_float_is_finite(context->rasterizer->offset_clamp))
-         return false;
       polygon_scale = context->rasterizer->offset_scale * 16.0f;
-      if (!ps5_float_is_finite(polygon_scale))
-         return false;
 
       /* GFX10 D32F: -23 depth bits plus floating-point format. */
       native->polygon_offset[0] = UINT32_C(0x000001e9);
