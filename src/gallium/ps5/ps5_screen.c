@@ -5646,7 +5646,17 @@ ps5_color_view_format_compatible(enum pipe_format storage,
                                  enum pipe_format view)
 {
    return storage == view ||
-          util_format_linear(storage) == util_format_linear(view);
+          util_format_linear(storage) == util_format_linear(view) ||
+          /* CopyImage uses canonical color views to preserve the stored bits,
+           * not convert between the resources' original numeric formats. */
+          (!util_format_is_depth_or_stencil(storage) &&
+           !util_format_is_depth_or_stencil(view) &&
+           util_format_get_blockwidth(storage) == 1 &&
+           util_format_get_blockheight(storage) == 1 &&
+           util_format_get_blockwidth(view) == 1 &&
+           util_format_get_blockheight(view) == 1 &&
+           util_format_get_blocksize(storage) != 0 &&
+           util_format_get_blocksize(storage) == util_format_get_blocksize(view));
 }
 
 static void

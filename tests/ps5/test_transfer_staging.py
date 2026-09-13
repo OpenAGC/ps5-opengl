@@ -26,6 +26,8 @@ color_blit = (blit[:blit.index("   ps5_draw_batch_drain();")] +
               blit[blit.index("   if (!info || !info->src.resource"):])
 scissor = source[source.index("static void\nps5_blit_scissor_bounds("):
                  source.index("static bool\nps5_color_view_format_compatible(")]
+view_policy = source[source.index("static bool\nps5_color_view_format_compatible("):
+                     source.index("static void\nps5_resolve_color_msaa4(")]
 code = r'''
 #define _GNU_SOURCE
 #include <assert.h>
@@ -46,7 +48,7 @@ code = r'''
 #define MIN2(a,b) ((a) < (b) ? (a) : (b))
 #define CLAMP(v,lo,hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
 enum { PIPE_BUFFER, PIPE_TEXTURE_2D, PIPE_TEXTURE_3D, PIPE_TEXTURE_2D_ARRAY };
-enum pipe_format { COLOR, PIPE_FORMAT_Z32_FLOAT, PIPE_FORMAT_Z32_FLOAT_S8X24_UINT, COLOR_UINT };
+enum pipe_format { COLOR, PIPE_FORMAT_Z32_FLOAT, PIPE_FORMAT_Z32_FLOAT_S8X24_UINT, COLOR_UINT, COLOR16, COMPRESSED };
 enum { PIPE_MAP_READ=1, PIPE_MAP_WRITE=2, PIPE_BIND_RENDER_TARGET=4, PIPE_BIND_DEPTH_STENCIL=8 };
 struct pipe_resource { unsigned bind, target, format, width0, height0, depth0,
     array_size, last_level, nr_samples; };
@@ -66,8 +68,11 @@ struct pipe_blit_info {
 union pipe_color_union { unsigned ui[4]; float f[4]; };
 ''' + structs + r'''
 static unsigned ps5_texture_format_size(unsigned f) { return f == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT ? 8 : 4; }
-static unsigned util_format_get_blockwidth(unsigned f) { (void)f; return 1; }
+static unsigned util_format_get_blockwidth(unsigned f) { return f == COMPRESSED ? 4 : 1; }
 static unsigned util_format_get_blockheight(unsigned f) { (void)f; return 1; }
+static unsigned util_format_get_blocksize(unsigned f) { return f == COLOR16 ? 2 : ps5_texture_format_size(f); }
+static unsigned util_format_linear(unsigned f) { return f; }
+static bool util_format_is_depth_or_stencil(unsigned f) { return f == PIPE_FORMAT_Z32_FLOAT || f == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT; }
 static unsigned ps5_texture_level_layers(const struct pipe_resource *r, unsigned l) { assert(!l); return r->array_size; }
 static size_t ps5_tiled_depth_surface_size(unsigned w, unsigned h, unsigned s) { assert(s == 1); return (size_t)w*h*4; }
 static size_t ps5_tiled_stencil_surface_size(unsigned w, unsigned h) { return (size_t)w*h; }
@@ -78,7 +83,6 @@ static unsigned ps5_tiled_rgba8_width(const struct ps5_resource *r) { return r->
 static bool force_tiled;
 static bool ps5_linear_sampled_layout(const struct pipe_resource *r) { return !force_tiled && (!r->bind || r->last_level); }
 static bool ps5_render_target_format(unsigned f) { return f == COLOR || f == COLOR_UINT; }
-static bool ps5_color_view_format_compatible(unsigned a, unsigned b) { return a == b; }
 static bool util_format_is_pure_uint(unsigned f) { return f == COLOR_UINT; }
 static bool util_format_is_pure_sint(unsigned f) { (void)f; return false; }
 static bool util_format_is_pure_integer(unsigned f) { return f == COLOR_UINT; }
@@ -150,13 +154,34 @@ static int cpu_unmap(void *p, size_t n) {
 #define free small_free
 #define mmap cpu_map
 #define munmap cpu_unmap
-''' + bounds + transfers + scissor + color_blit + r'''
+''' + bounds + transfers + scissor + view_policy + color_blit + r'''
 #undef malloc
 #undef calloc
 #undef free
 #undef mmap
 #undef munmap
 static void idle(void) { assert(!heap_live && !mapped_live && maps == unmaps); }
+static void check_reinterpreted_copy(bool tiled) {
+    uint32_t input[]={0x60000000,0xffffffff,0x12345678,0x89abcdef}, output[16];
+    memset(output,0xa5,sizeof(output));
+    struct ps5_resource src={.base={.target=PIPE_TEXTURE_2D,.format=COLOR,
+        .width0=2,.height0=2,.array_size=1,.bind=tiled ? PIPE_BIND_RENDER_TARGET : 0},
+        .level_stride={8},.layer_stride=sizeof(input),.data=(uint8_t *)input,
+        .size=sizeof(input),.allocation_size=sizeof(input)};
+    struct ps5_resource dst={.base={.target=PIPE_TEXTURE_2D,.format=COLOR_UINT,
+        .width0=4,.height0=4,.array_size=1,.bind=tiled ? PIPE_BIND_RENDER_TARGET : 0},
+        .level_stride={16},.layer_stride=sizeof(output),.data=(uint8_t *)output,
+        .size=sizeof(output),.allocation_size=sizeof(output)};
+    struct pipe_blit_info b={.src={&src.base,0,COLOR_UINT,{0,0,0,2,2,1}},
+        .dst={&dst.base,0,COLOR_UINT,{1,1,0,2,2,1}},.mask=PIPE_MASK_RGBA,.filter=PIPE_TEX_FILTER_NEAREST};
+    ps5_blit(NULL,&b); idle();
+    for (unsigned y=0;y<4;++y) for (unsigned x=0;x<4;++x)
+        assert(output[y*4+x] == (x>=1 && x<3 && y>=1 && y<3 ? input[(y-1)*2+x-1] : 0xa5a5a5a5));
+    assert(!ps5_color_view_format_compatible(COLOR,COLOR16));
+    assert(!ps5_color_view_format_compatible(COLOR,COMPRESSED));
+    assert(!ps5_color_view_format_compatible(COLOR,PIPE_FORMAT_Z32_FLOAT));
+    assert(!ps5_color_view_format_compatible(PIPE_FORMAT_Z32_FLOAT,COLOR));
+}
 static void check_swizzle(unsigned filter, bool integer, bool tiled) {
     uint8_t input[2*2*4], output[6*6*4];
     for (unsigned i=0;i<sizeof(input);++i) input[i]=35+(i%4)*32;
@@ -321,6 +346,9 @@ static void check(unsigned format, unsigned width, unsigned height, unsigned lay
     free(r.data); free(r.stencil_data);
 }
 int main(void) {
+    check_reinterpreted_copy(false);
+    check_reinterpreted_copy(true);
+    puts("transfer-reinterpreted-copy: PASS raw bits, tiled/linear and format guards");
     struct ps5_transfer t={0};
     assert(!ps5_transfer_alloc_staging(&t,0));
     assert(!ps5_transfer_alloc_staging(&t,SIZE_MAX));
