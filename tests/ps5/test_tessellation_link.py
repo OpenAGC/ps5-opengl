@@ -256,6 +256,47 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
            out.tes.metadata.user_sgpr_count);
     assert(out.runtime.final_offchip_layout);
     psbc_free_tessellation_output(&out); ralloc_free(gs);
+    /* Gallium supplies lowered built-in outputs as well as position. Keep
+     * these alive in the final GS so ACO must actually compile the exports. */
+    const unsigned builtin_slots[]={VARYING_SLOT_PSIZ,VARYING_SLOT_LAYER,
+                                    VARYING_SLOT_VIEWPORT,VARYING_SLOT_CLIP_DIST0};
+    for(unsigned n=0;n<ARRAY_SIZE(builtin_slots);++n) {
+        gs=build(MESA_SHADER_GEOMETRY,false,ci);
+        nir_lower_io(gs,nir_var_shader_in|nir_var_shader_out,type_size_vec4,0);
+        nir_remove_dead_variables(gs,nir_var_shader_in|nir_var_shader_out,NULL);
+        gs->info.io_lowered=true;
+        nir_builder b=nir_builder_at(nir_before_impl(nir_shader_get_entrypoint(gs)));
+        unsigned slot=builtin_slots[n];
+        bool integer=slot==VARYING_SLOT_LAYER || slot==VARYING_SLOT_VIEWPORT;
+        nir_store_output(&b,integer ? nir_imm_int(&b,1) : nir_imm_float(&b,1),
+                         nir_imm_int(&b,0),.base=1,.write_mask=1,
+                         .src_type=integer ? nir_type_int32 : nir_type_float32,
+                         .io_semantics={.location=slot,.num_slots=1});
+        if(slot==VARYING_SLOT_CLIP_DIST0) gs->info.clip_distance_array_size=1;
+        nir_shader_gather_info(gs,nir_shader_get_entrypoint(gs));
+        nir_validate_shader(gs,"lowered tessellation built-in export");
+        gs_result=psbc_compile_nir_tessellation_pipeline(
+            inputs[0],inputs[1],inputs[2],gs,&options,&out);
+        printf("four-stage builtin slot=%u result=%d\n",slot,gs_result);
+        fflush(stdout);
+        assert(gs_result==PSBC_RESULT_OK);
+        psbc_free_tessellation_output(&out);
+        nir_foreach_block(block,nir_shader_get_entrypoint(gs)) {
+            nir_foreach_instr(instr,block) {
+                if(instr->type!=nir_instr_type_intrinsic) continue;
+                nir_intrinsic_instr* intr=nir_instr_as_intrinsic(instr);
+                if(intr->intrinsic!=nir_intrinsic_store_output ||
+                   nir_intrinsic_io_semantics(intr).location!=slot) continue;
+                /* The new built-ins do not bypass the single-slot bound. */
+                nir_io_semantics semantics=nir_intrinsic_io_semantics(intr);
+                semantics.num_slots=2;
+                nir_intrinsic_set_io_semantics(intr,semantics);
+            }
+        }
+        assert(psbc_compile_nir_tessellation_pipeline(
+            inputs[0],inputs[1],inputs[2],gs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+        expect_empty(&out); ralloc_free(gs);
+    }
     mesa_shader_stage stage=inputs[0]->info.stage;
     inputs[0]->info.stage=MESA_SHADER_FRAGMENT;
     assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_UNSUPPORTED_STAGE);
