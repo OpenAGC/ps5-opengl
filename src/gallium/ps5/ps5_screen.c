@@ -199,6 +199,9 @@ struct ps5_constant_state {
 #define PS5_MAX_VIEWPORTS 16
 struct ps5_compute_shader {
    PsbcShaderOutput output;
+   unsigned ssbos;
+   unsigned ubos;
+   unsigned images;
    unsigned textures;
    unsigned buffer_textures;
    unsigned filtered_textures;
@@ -11424,6 +11427,9 @@ ps5_create_compute_state(struct pipe_context *base,
    }
    shader = calloc(1, sizeof(*shader));
    if (shader) {
+      shader->ssbos = nir->info.num_ssbos;
+      shader->ubos = nir->info.num_ubos;
+      shader->images = nir->info.num_images;
       shader->textures = textures;
       shader->buffer_textures = texture_buffers;
       shader->filtered_textures = filtered;
@@ -11711,9 +11717,12 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
    uint32_t groups[3];
    unsigned buffer_count = 0;
    context->last_compute_status = -1;
-   if (!context->cs || !context->compute_descriptors || context->compute_bindings_invalid ||
-       context->compute_constants_invalid || context->compute_images_invalid ||
-       context->compute_views_invalid || context->compute_samplers_invalid || !grid ||
+   if (!context->cs || !context->compute_descriptors ||
+       (context->cs->ssbos && context->compute_bindings_invalid) ||
+       (context->compute_constants_invalid & BITFIELD_MASK(context->cs->ubos)) ||
+       (context->cs->images && context->compute_images_invalid) ||
+       (context->cs->textures && context->compute_views_invalid) ||
+       (context->cs->filtered_textures && context->compute_samplers_invalid) || !grid ||
        grid->work_dim > 3 || grid->variable_shared_mem || grid->num_globals ||
        grid->draw_count || grid->indirect_draw_count) {
       printf("[ps5-gallium] compute rejected cs=%u descriptors=%u buffers=%u constants=%x images=%u views=%u samplers=%u grid=%u\n",

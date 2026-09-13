@@ -118,7 +118,7 @@ struct ps5_resource {
     unsigned level_stride[PIPE_MAX_TEXTURE_LEVELS];
     size_t level_offset[PIPE_MAX_TEXTURE_LEVELS];
 };
-struct ps5_compute_shader { PsbcShaderOutput output; unsigned textures, buffer_textures, filtered_textures, texture_lod[PS5_COMPUTE_TEXTURE_SLOTS], array_textures; };
+struct ps5_compute_shader { PsbcShaderOutput output; unsigned ssbos, ubos, images, textures, buffer_textures, filtered_textures, texture_lod[PS5_COMPUTE_TEXTURE_SLOTS], array_textures; };
 struct ps5_sampler_state { struct pipe_sampler_state base; };
 struct test_nir { struct { unsigned num_ssbos, num_images, num_ubos, num_textures; bool first_ubo_is_default_ubo; } info; };
 struct test_variant { PsbcShaderOutput output; };
@@ -635,7 +635,7 @@ int main(void) {
     struct ps5_resource table={.data=table_data};
     struct ps5_resource buffer={.base={.screen=&screen,.target=PIPE_BUFFER,.width0=256},.data=output};
     pipe_reference_init(&buffer.base.reference, 1);
-    struct ps5_compute_shader cs={0};
+    struct ps5_compute_shader cs={.ssbos=16,.ubos=15,.images=8};
     cs.output.metadata.compute_workgroup_size[0]=16;
     cs.output.metadata.compute_workgroup_size[1]=cs.output.metadata.compute_workgroup_size[2]=1;
     struct ps5_context context={.base={.screen=&screen},.cs=&cs,.compute_descriptors=&table.base};
