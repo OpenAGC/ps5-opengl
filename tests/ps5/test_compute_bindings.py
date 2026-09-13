@@ -37,6 +37,11 @@ format_at = source.index("static bool\nps5_core_sampled_texture_format(")
 linear_helpers += source[format_at:source.index("static bool\nps5_packed_vertex_format(", format_at)]
 linear_at = source.index("static bool\nps5_linear_sampled_layout(")
 linear_helpers += source[linear_at:source.index("static bool\nps5_color_render_target(", linear_at)]
+for helper, following in (("ps5_cube_texture_target", "ps5_sampled_texture_target"),
+                          ("ps5_color_render_target", "ps5_depth_render_target"),
+                          ("ps5_render_staging_required", "ps5_depth_staging_required")):
+    start = source.index("static bool\n" + helper + "(")
+    linear_helpers += source[start:source.index("static bool\n" + following + "(", start)]
 encoding_at = source.index("static bool\nps5_texture_descriptor_format(")
 format_encoding = source[encoding_at:source.index("static bool\nps5_texture_descriptor_swizzle(", encoding_at)]
 barrier_at = source.index("static void\nps5_memory_barrier(")
@@ -75,6 +80,8 @@ code = r'''
 #define PS5_ENABLE_UBO_CANDIDATE 1
 #define PS5_ENABLE_GLSL_430_CANDIDATE 1
 #define PS5_ENABLE_RENDER_TO_TEXTURE_CANDIDATE 1
+#define PS5_ENABLE_LAYERED_RENDER_TARGET_CANDIDATE 1
+#define PS5_ENABLE_TEXTURE_CUBE_ARRAY_CANDIDATE 1
 #define PS5_ENABLE_DYNAMIC_COLOR_TARGET_CANDIDATE 1
 #define PS5_ENABLE_CORE_RENDER_FORMATS_CANDIDATE 1
 #define PS5_ENABLE_CORE_TEXTURE_FORMATS_CANDIDATE 1
@@ -921,6 +928,12 @@ int main(void) {
         assert((descriptor[3]&0xf0000000u)==sampled_types[target]);
         assert(descriptor[4]==(target==1 || target==2 ? 3 : target==3 ? 63 : 0));
         assert(ps5_resource_storage_image_descriptor(&dimensional.base,0,descriptor)<0);
+        /* Mesa attaches a render-target hint even to dimensions for which
+         * resource creation deliberately allocates no render staging. */
+        if (target != 2) {
+            dimensional.base.bind |= PIPE_BIND_RENDER_TARGET;
+            assert(!ps5_resource_sampled_image_descriptor(&dimensional.base,0,0,descriptor));
+        }
         struct ps5_resource bad=dimensional;
         bad.allocation_size=bad.size-1;
         assert(ps5_resource_sampled_image_descriptor(&bad.base,0,0,descriptor)<0);
@@ -936,6 +949,21 @@ int main(void) {
         }
     }
     /* Actual Mesa-generated table/driver encoding: RGBA16=65, RGBA8=56. */
+    for (unsigned target=0; target<2; ++target) {
+        _Alignas(256) uint8_t pixels[16*256];
+        struct ps5_resource array=canonical;
+        array.base.target=target ? PIPE_TEXTURE_2D_ARRAY : PIPE_TEXTURE_1D_ARRAY;
+        array.base.height0=1; array.base.array_size=16;
+        array.data=pixels; array.size=array.allocation_size=sizeof(pixels);
+        array.layer_stride=256;
+        assert(!ps5_resource_sampled_image_descriptor(&array.base,0,0,descriptor));
+        assert(descriptor[4]==15);
+        assert(ps5_resource_storage_image_descriptor(&array.base,0,descriptor)<0);
+        --array.size;
+        assert(ps5_resource_sampled_image_descriptor(&array.base,0,0,descriptor)<0);
+        ++array.size; array.base.array_size=17;
+        assert(ps5_resource_sampled_image_descriptor(&array.base,0,0,descriptor)<0);
+    }
     const enum pipe_format normalized_formats[]={PIPE_FORMAT_R16G16B16A16_UNORM,PIPE_FORMAT_R8G8B8A8_UNORM};
     for(unsigned f=0;f<ARRAY_SIZE(normalized_formats);++f) {
     struct ps5_resource normalized=canonical;

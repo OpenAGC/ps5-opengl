@@ -4217,7 +4217,7 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
        (one_d && base->height0 != 1) ||
        (volume ? (!base->depth0 || base->depth0 > PS5_MAX_TEXTURE_3D_SIZE ||
                   base->width0 > PS5_MAX_TEXTURE_3D_SIZE || base->height0 > PS5_MAX_TEXTURE_3D_SIZE) : base->depth0 != 1) ||
-       !base->array_size || base->array_size > 8 ||
+       !base->array_size || base->array_size > (sampled ? 16u : 8u) ||
        (!array && base->array_size != 1) || base->last_level >= PIPE_MAX_TEXTURE_LEVELS ||
        ((rectangle || volume) && base->last_level) ||
        base->last_level > 15 || first_level > last_level || last_level > base->last_level ||
@@ -4268,7 +4268,7 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
        * hint. Their linear data remains authoritative: draws stage it in/out,
        * and compute submission drains pending graphics before using this SRD.
        * Never resolve staging here: it may predate the latest compute write. */
-      if (base->bind & PIPE_BIND_RENDER_TARGET) {
+      if (ps5_render_staging_required(base)) {
          if (!(base->bind & PIPE_BIND_SAMPLER_VIEW) || !resource->render_staging_size ||
              resource->render_staging_offset < resource->size ||
              (resource->render_staging_offset & (PS5_COLOR_TARGET_ALIGNMENT - 1u)) ||
@@ -4295,7 +4295,7 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
          return -1;
    }
    /* Same reverse-ordered linear mip storage and layer encoding as graphics.
-    * ponytail: full arrays of at most eight layers; sublayers/other tiled formats remain gated. */
+    * ponytail: full sampled arrays up to 16 layers (storage eight); sublayers/other tiled formats remain gated. */
    const uintptr_t address = (uintptr_t)resource->data;
    const unsigned pitch = resource->level_stride[0] / texel_size;
    const unsigned channels = ps5_storage_image_channels(base->format);
