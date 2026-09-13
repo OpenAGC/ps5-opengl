@@ -11370,6 +11370,10 @@ ps5_create_compute_state(struct pipe_context *base,
    /* Mesa binds user blocks after CB0 even without default uniforms.
     * Normalize both forms before checking the reserved-slot capacity. */
    nir_lower_uniforms_to_ubo(nir, false, false);
+   const nir_lower_compute_system_values_options cs_options = {
+      .lower_local_invocation_index = true,
+   };
+   nir_lower_compute_system_values(nir, &cs_options);
    if (nir->info.num_ubos > PS5_COMPUTE_CONSTANT_SLOTS ||
        nir->info.num_images > PS5_COMPUTE_IMAGE_SLOTS ||
        nir->info.num_textures > PS5_COMPUTE_TEXTURE_SLOTS ||

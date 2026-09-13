@@ -43,7 +43,7 @@ static nir_def *resource(nir_builder *b, PsbcStage stage, nir_def *slot,
         .desc_type=ubo ? nir_descriptor_type_uniform_buffer : nir_descriptor_type_storage_buffer,
         .resource_type=ubo ? nir_resource_type_uniform_buffer : nir_resource_type_read_write_storage_buffer);
 }
-static nir_shader *shader(PsbcStage stage, bool manual, bool dynamic) {
+static nir_shader *shader(PsbcStage stage, bool manual, bool dynamic, unsigned fixed_slot) {
     nir_builder b = nir_builder_init_simple_shader((mesa_shader_stage)(stage-1),
         psbc_get_nir_options(stage), "buffer-bank-contract");
     b.shader->info.workgroup_size[0]=16;
@@ -51,7 +51,7 @@ static nir_shader *shader(PsbcStage stage, bool manual, bool dynamic) {
     b.shader->info.num_ubos=15;
     b.shader->info.num_ssbos=16;
     nir_def *slot = dynamic ? nir_iand_imm(&b,
-        nir_channel(&b, nir_load_workgroup_id(&b), 0), 1) : nir_imm_int(&b, 1);
+        nir_channel(&b, nir_load_workgroup_id(&b), 0), 1) : nir_imm_int(&b, fixed_slot);
     nir_def *u = resource(&b, stage, slot, true, manual);
     nir_def *s = resource(&b, stage, slot, false, manual);
     nir_def *zero=nir_imm_int(&b, 0), *one=nir_imm_int(&b, 1);
@@ -71,7 +71,7 @@ static void structural(void) {
     unsigned keys=0;
     for (PsbcStage stage=PSBC_STAGE_VERTEX; stage<=PSBC_STAGE_COMPUTE; ++stage) {
         PsbcCompileOptions opts=options(stage);
-        nir_shader *nir=shader(stage, false, false);
+        nir_shader *nir=shader(stage, false, false, 1);
         struct gallium_buffer_state state={.options=&opts, .valid=true};
         assert(nir_shader_instructions_pass(nir, lower_gallium_buffer_index,
             nir_metadata_control_flow, &state) && state.valid);
@@ -97,10 +97,10 @@ static void structural(void) {
         ralloc_free(nir);
     }
 }
-static void compiled(bool dynamic) {
+static void compiled(bool dynamic, unsigned fixed_slot, PsbcShaderOutput *saved) {
     PsbcCompileOptions opts=options(PSBC_STAGE_COMPUTE);
-    nir_shader *scalar=shader(opts.stage, false, dynamic);
-    nir_shader *manual=shader(opts.stage, true, dynamic);
+    nir_shader *scalar=shader(opts.stage, false, dynamic, fixed_slot);
+    nir_shader *manual=shader(opts.stage, true, dynamic, fixed_slot);
     PsbcShaderOutput a={0}, b={0};
     assert(psbc_compile_nir(scalar, &opts, &a)==PSBC_RESULT_OK);
     opts.gallium_buffer_arrays=false;
@@ -112,13 +112,14 @@ static void compiled(bool dynamic) {
     assert(!a.metadata.scratch_valid);
     printf("buffer arrays: dynamic=%u code=%zu matches explicit resource tuples\n",
         dynamic, a.machine_code_size);
-    psbc_free_output(&a); psbc_free_output(&b);
+    if (saved) *saved=a; else psbc_free_output(&a);
+    psbc_free_output(&b);
     ralloc_free(scalar); ralloc_free(manual);
 }
 static void invalid(void) {
     for (unsigned fault=0; fault<6; ++fault) {
         PsbcCompileOptions opts=options(PSBC_STAGE_COMPUTE);
-        nir_shader *nir=shader(opts.stage, false, false);
+        nir_shader *nir=shader(opts.stage, false, false, 1);
         if (fault==0) {
             opts.gallium_buffer_arrays=false; /* Valid flat UBO, unsupported scalar SSBO. */
             opts.descriptor_bindings[0].binding=PSBC_GALLIUM_UBO_BINDING_BASE+1;
@@ -275,7 +276,12 @@ static void fragment_storage(void) {
     }
 }
 int main(void) {
-    psbc_init(); structural(); compiled(false); compiled(true); invalid(); image_contract(); fragment_storage(); psbc_shutdown();
+    PsbcShaderOutput fixed[2]={{0}};
+    psbc_init(); structural(); compiled(false,0,&fixed[0]); compiled(false,1,&fixed[1]);
+    assert(fixed[0].machine_code_size==fixed[1].machine_code_size &&
+           memcmp(fixed[0].machine_code,fixed[1].machine_code,fixed[0].machine_code_size));
+    psbc_free_output(&fixed[0]); psbc_free_output(&fixed[1]);
+    compiled(true,0,NULL); invalid(); image_contract(); fragment_storage(); psbc_shutdown();
 }
 '''
 with tempfile.TemporaryDirectory() as directory:
