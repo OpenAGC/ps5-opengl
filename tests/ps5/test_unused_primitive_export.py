@@ -214,6 +214,42 @@ static void consumer(unsigned varyings, bool mixed) {
     }
     ralloc_free(b.shader);
 }
+static void point_consumer(unsigned varyings, unsigned point_attribute) {
+    nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
+        psbc_get_nir_options(PSBC_STAGE_FRAGMENT),"point-varying-linkage");
+    b.shader->info.io_lowered=true;
+    nir_def *zero=nir_imm_int(&b,0);
+    nir_def *bary=nir_load_barycentric_pixel(&b,32,.interp_mode=INTERP_MODE_SMOOTH);
+    nir_def *point=nir_load_interpolated_input(&b,2,32,bary,zero,
+        .base=point_attribute,.dest_type=nir_type_float32,
+        .io_semantics={.location=VARYING_SLOT_PNTC,.num_slots=1});
+    nir_def *value=nir_fmul(&b,nir_channel(&b,point,0),nir_channel(&b,point,1));
+    for(unsigned i=0;i<varyings;++i) {
+        nir_def *v=nir_load_interpolated_input(&b,1,32,bary,zero,
+            .base=i+(i>=point_attribute),.dest_type=nir_type_float32,
+            .io_semantics={.location=VARYING_SLOT_VAR0+i,.num_slots=1});
+        value=nir_fadd(&b,value,v);
+    }
+    nir_store_output(&b,nir_vec4(&b,value,value,value,nir_imm_float(&b,1)),zero,
+        .src_type=nir_type_float32,.io_semantics={.location=FRAG_RESULT_DATA0,.num_slots=1});
+    nir_shader_gather_info(b.shader,nir_shader_get_entrypoint(b.shader));
+    PsbcCompileOptions options={.target=PSBC_TARGET_PS5,.stage=PSBC_STAGE_FRAGMENT,
+        .optimise=true,.primitive_type=1,.spi_shader_col_format=4};
+    PsbcShaderOutput out={0};
+    assert(psbc_compile_nir(b.shader,&options,&out)==PSBC_RESULT_OK);
+    assert(out.metadata.input_semantic_count==varyings+1);
+    assert(out.metadata.input_semantics[point_attribute]==PSBC_SEMANTIC_POINT_COORD);
+    for(unsigned i=0;i<varyings;++i)
+        assert(out.metadata.input_semantics[i+(i>=point_attribute)]==15u+i);
+    package(&out);
+    psbc_free_output(&out);
+    if(varyings) {
+        nir_intrinsic_set_base(nir_instr_as_intrinsic(nir_def_instr(point)),point_attribute?0:1);
+        assert(psbc_compile_nir(b.shader,&options,&out)==PSBC_RESULT_INTERNAL_ERROR);
+        assert(!out.machine_code);
+    }
+    ralloc_free(b.shader);
+}
 static void geometry(bool inputs, bool buffer_arrays) {
     nir_builder v = nir_builder_init_simple_shader(MESA_SHADER_VERTEX,
         psbc_get_nir_options(PSBC_STAGE_VERTEX), "geometry-lds-producer");
@@ -322,6 +358,9 @@ static void geometry(bool inputs, bool buffer_arrays) {
 }
 int main(void) {
     psbc_init();
+    runtime_point_inputs();
+    for(unsigned varyings=0;varyings<=2;++varyings)
+        for(unsigned point=0;point<=varyings;++point) point_consumer(varyings,point);
     geometry(true, false);
     geometry(false, false);
     geometry(true, true);
@@ -335,6 +374,36 @@ int main(void) {
     psbc_shutdown();
 }
 '''
+native = (ROOT / "src/platform/ps5_agc_native_runtime.c").read_text()
+start = native.index("typedef struct agc_register {")
+runtime = native[start:native.index("} agc_register_t;", start) + len("} agc_register_t;")]
+runtime += "\nstatic uint32_t runtime_point_coord_input;\n"
+start = native.index("int ps5_agc_gate2_set_point_coord_input(")
+runtime += native[start:native.index("\n}", start) + 3]
+start = native.index("    if (runtime_point_coord_input) {")
+runtime += "\nstatic bool patch_point_input(uint8_t *memory) {\n"
+runtime += native[start:native.index("\n#endif", start)].replace("goto receipt;", "return false;")
+runtime += r'''
+    return true;
+}
+static void runtime_point_inputs(void) {
+    _Alignas(8) uint8_t memory[0x5100]={0};
+    agc_register_t *input=(agc_register_t *)(memory+0x5000);
+    for(unsigned selected=0;selected<=32;++selected) {
+        for(unsigned i=0;i<32;++i) input[i]=(agc_register_t){.offset=0x191+i,.value=0x10000+i};
+        assert(!ps5_agc_gate2_set_point_coord_input(selected));
+        assert(ps5_agc_gate2_set_point_coord_input(33)==-1 && runtime_point_coord_input==selected);
+        assert(patch_point_input(memory));
+        for(unsigned i=0;i<32;++i)
+            assert(input[i].value==(selected==i+1 ? 0x30000u : 0x10000u+i));
+        if(selected) {
+            input[selected-1].offset=0;
+            assert(!patch_point_input(memory));
+        }
+    }
+}
+'''
+code = code.replace("static void point_consumer(", runtime + "\nstatic void point_consumer(", 1)
 with tempfile.TemporaryDirectory() as temporary:
     executable = str(Path(temporary) / "primitive-export")
     obj = str(Path(temporary) / "primitive-export.o")
@@ -367,3 +436,4 @@ assert "user_data[vertex_metadata->ngg_lds_layout_user_data_dword] =" in source
 assert "vertex_metadata->ngg_lds_layout_user_data_dword >= user_data_count" in source
 assert "vertex_metadata->ngg_lds_layout > UINT16_MAX" in source
 print("PASS: PrimitiveID exports/consumers, mixed interpolation, provoking vertex, packages, cache keys; scratch rejected")
+print("PASS: point-coordinate semantics preserve neighboring varyings in six attribute layouts; aliased inputs rejected")

@@ -7644,6 +7644,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
    uint32_t hull_user_data[32] = {0};
    uint32_t *input_user_data;
    uint32_t pixel_user_data[32] = {0};
+   unsigned point_coord_input = 0;
    struct ps5_vertex_layout vertex_layout;
    struct ps5_vertex_layout fragment_layout = {0};
    struct ps5_fragment_exports fragment_exports;
@@ -8299,6 +8300,17 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       return;
    }
 
+   if (PS5_ENABLE_POINT_COORD_CANDIDATE) {
+      const PsbcShaderMetadata *pixel = &context->fs->active->output.metadata;
+      for (unsigned i = 0; i < pixel->input_semantic_count; ++i)
+         if ((pixel->input_semantics[i] & 0xffu) == PSBC_SEMANTIC_POINT_COORD)
+            point_coord_input = i + 1u;
+      if (!!point_coord_input != !!(context->fs->nir->info.inputs_read & VARYING_BIT_PNTC)) {
+         context->last_draw_status = -10;
+         return;
+      }
+   }
+
    if (PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDATE &&
        ps5_agc_gate2_set_streamout(
           streamout_active ? vertex_package : NULL,
@@ -8327,7 +8339,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
            graphics.interp_control, graphics.interp_control_valid) != 0) ||
        (PS5_ENABLE_POINT_COORD_CANDIDATE &&
         ps5_agc_gate2_set_point_coord_input(
-           !!(context->fs->nir->info.inputs_read & VARYING_BIT_PNTC)) != 0) ||
+           point_coord_input) != 0) ||
        (PS5_ENABLE_BORDER_COLOR_CANDIDATE &&
         ps5_agc_gate2_set_border_color_table(
            ((struct ps5_resource *)context->border_color_storage)->data,

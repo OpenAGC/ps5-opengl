@@ -424,7 +424,8 @@ int ps5_agc_gate2_set_interp_control(uint32_t control, uint32_t valid)
 
 int ps5_agc_gate2_set_point_coord_input(uint32_t enabled)
 {
-    if (enabled > 1u)
+    /* Zero disables; otherwise one-based PS attribute index (32 inputs). */
+    if (enabled > 32u)
         return -1;
     runtime_point_coord_input = enabled;
     return 0;
@@ -2816,12 +2817,13 @@ int main(void)
 #ifdef AGC_RUNTIME_PACKAGES
     if (runtime_point_coord_input) {
         agc_register_t *input = (agc_register_t *)(memory + 0x5000);
+        unsigned attribute = runtime_point_coord_input - 1u;
 
-        if (input[0].offset != 0x0191)
+        if (input[attribute].offset != 0x0191 + attribute)
             goto receipt;
         /* Radeon GFX10: point coordinates select the generated S/T pair.
          * Clear the parameter-export offset and set PT_SPRITE_TEX. */
-        input[0].value = (input[0].value & ~UINT32_C(0x3f)) |
+        input[attribute].value = (input[attribute].value & ~UINT32_C(0x3f)) |
                          UINT32_C(1) << 17;
     }
 #endif
