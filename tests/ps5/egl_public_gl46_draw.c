@@ -152,7 +152,7 @@ main(void)
    glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
    glEnable(GL_POLYGON_OFFSET_FILL);
    polygon_offset_clamp(1.0f, 1.0f, 0.25f);
-   multi_draw_count(GL_TRIANGLES, NULL, 0, 3, sizeof(GLuint) * 4);
+   multi_draw_count(GL_TRIANGLES, NULL, 0, 2, sizeof(GLuint) * 4);
    glFinish();
    status = ps5_egl_current_draw_status(&draws);
    glReadPixels((int)(WIDTH * 0.3f), HEIGHT / 2, 1, 1, GL_RGBA,
