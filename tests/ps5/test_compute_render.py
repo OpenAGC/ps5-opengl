@@ -419,12 +419,13 @@ int main(void) {
         assert(!rejected.machine_code);
         psbc_free_output(&rejected); ralloc_free(missing);
     }
-    for(unsigned dimensional=0;dimensional<4;++dimensional) for(unsigned filtered_op=0;filtered_op<2;++filtered_op) {
+    for(unsigned dimensional=0;dimensional<6;++dimensional) for(unsigned filtered_op=0;filtered_op<2;++filtered_op) {
         nir_shader *nir=compute_dimensional(dimensional,filtered_op);
         assert(prepare_compute_nir(nir));
         unsigned used=0,buffers=0,filtered=0,lods[16],arrays=0;
         assert(ps5_compute_texture_usage(nir,&used,&buffers,&filtered,lods,&arrays,(uint8_t[16]){0}));
-        assert(used==1 && !buffers && filtered==(dimensional==3 || filtered_op) && arrays==(dimensional==1));
+        assert(used==1 && !buffers && filtered==(dimensional<4 && (dimensional==3 || filtered_op)) &&
+               arrays==(dimensional==1 || dimensional==5));
         compile(nir,&all_slots);
     }
     const unsigned layer_counts[]={1,3,8};

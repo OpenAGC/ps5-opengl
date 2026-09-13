@@ -749,9 +749,12 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
                   uint32_t expected[8];
                   const bool texel = (sampled || image) &&
                      !ps5_resource_texel_buffer_descriptor_owned(buffers[j], srd);
+                  /* MSAA uses the SRD mip fields for log2(samples), not view
+                   * levels. Reconstruct level zero, then compare all words. */
                   int rc = texel ? 0 :
                      sampled ? ps5_resource_sampled_image_descriptor(buffers[j],
-                        (srd[3] >> 12) & 15u, (srd[3] >> 16) & 15u, expected) :
+                        (srd[3] >> 28) >= 14 ? 0 : (srd[3] >> 12) & 15u,
+                        (srd[3] >> 28) >= 14 ? 0 : (srd[3] >> 16) & 15u, expected) :
                      ps5_resource_storage_image_descriptor(buffers[j],
                         (srd[3] >> 12) & 15u, expected);
                   if (!rc && (texel || !memcmp(srd, expected, sizeof(expected))))

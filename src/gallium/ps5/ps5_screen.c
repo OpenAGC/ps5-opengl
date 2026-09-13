@@ -4203,6 +4203,7 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
    uint32_t format;
    const unsigned texel_size = base ? ps5_storage_image_texel_size(base->format) : 0;
    const bool sampled = required_bind == PIPE_BIND_SAMPLER_VIEW;
+   const bool multisampled = base && sampled && base->nr_samples == 4 && base->nr_storage_samples == 4;
    const bool one_d = base && sampled &&
       (base->target == PIPE_TEXTURE_1D || base->target == PIPE_TEXTURE_1D_ARRAY);
    const bool volume = base && sampled && base->target == PIPE_TEXTURE_3D;
@@ -4220,7 +4221,7 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
        (!array && base->array_size != 1) || base->last_level >= PIPE_MAX_TEXTURE_LEVELS ||
        ((rectangle || volume) && base->last_level) ||
        base->last_level > 15 || first_level > last_level || last_level > base->last_level ||
-       base->nr_samples > 1 || base->nr_storage_samples > 1 ||
+       (!multisampled && (base->nr_samples > 1 || base->nr_storage_samples > 1)) ||
        (!(base->bind & required_bind) &&
         !(required_bind == PIPE_BIND_SHADER_IMAGE && (base->bind & PIPE_BIND_SAMPLER_VIEW))) ||
        (base->bind & (PIPE_BIND_DEPTH_STENCIL | PIPE_BIND_DISPLAY_TARGET)) ||
@@ -4230,7 +4231,23 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
        !ps5_texture_descriptor_format(base->format, &format))
       return -1;
    const bool tiled = !ps5_linear_sampled_layout(base);
-   if (tiled) {
+   if (multisampled) {
+      const size_t logical_layer = (size_t)base->width0 * base->height0 * texel_size;
+      /* For the admitted 4/16-byte formats, 4x MSAA halves both axes of
+       * the existing 64 KiB color tile. Keep the same checked footprint. */
+      const size_t physical_layer = ps5_tiled_color_surface_size(base->format, base->width0 * 2, base->height0 * 2);
+      const unsigned binds = PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET;
+      if (!tiled || (base->target != PIPE_TEXTURE_2D && base->target != PIPE_TEXTURE_2D_ARRAY) ||
+          (base->format != PIPE_FORMAT_R32_FLOAT && base->format != PIPE_FORMAT_R32G32B32A32_FLOAT) ||
+          base->last_level || (base->bind & binds) != binds || (base->bind & ~binds) ||
+          resource->render_staging_size || resource->render_staging_offset ||
+          ((uintptr_t)resource->data & (PS5_COLOR_TARGET_ALIGNMENT - 1u)) ||
+          resource->level_offset[0] || resource->level_stride[0] != base->width0 * texel_size ||
+          resource->size != logical_layer * 4 * base->array_size ||
+          resource->layer_stride != (array ? physical_layer : logical_layer) ||
+          !physical_layer || physical_layer > resource->allocation_size / base->array_size)
+         return -1;
+   } else if (tiled) {
       /* Reuse the single-level RGBA8 color SRD already used by graphics.
        * No depth, MSAA, compression metadata, aliases or staging are admitted. */
       const unsigned binds = PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET;
@@ -4287,13 +4304,14 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
       address >> 8,
       format | (((base->width0 - 1u) & 3u) << 30) | (uint32_t)(address >> 40),
       ((base->width0 - 1u) >> 2) | ((base->height0 - 1u) << 14) | UINT32_C(0x80000000),
-      (tiled ? UINT32_C(0x91b00000) : volume ? UINT32_C(0xa0000000) :
+      (multisampled ? (array ? UINT32_C(0xf1b20000) : UINT32_C(0xe1b20000)) :
+       tiled ? UINT32_C(0x91b00000) : volume ? UINT32_C(0xa0000000) :
        one_d ? (array ? UINT32_C(0xc0000000) : UINT32_C(0x80000000)) :
        array ? UINT32_C(0xd0000000) : UINT32_C(0x90000000)) | swizzle |
          (first_level << 12) | (last_level << 16),
-      tiled ? 0 : volume ? base->depth0 - 1 : array ? base->array_size - 1 :
+      multisampled ? (array ? base->array_size - 1 : 0) : tiled ? 0 : volume ? base->depth0 - 1 : array ? base->array_size - 1 :
          !one_d && !base->last_level && pitch > base->width0 ? pitch - 1u : 0,
-      UINT32_C(0x00400000) | (base->last_level << 4), 0, 0,
+      UINT32_C(0x00400000) | ((multisampled ? 2u : base->last_level) << 4), 0, 0,
    };
    memcpy(descriptor, srd, sizeof(srd));
    return 0;
@@ -11359,6 +11377,32 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                *used |= mask;
                *buffers |= mask;
                binding_size[tex->texture_index] = array_size;
+               continue;
+            }
+            if (tex->sampler_dim == GLSL_SAMPLER_DIM_MS) {
+               if (tex->op != nir_texop_txf_ms || tex->is_shadow ||
+                   tex->texture_index >= PS5_COMPUTE_TEXTURE_SLOTS || tex->def.bit_size != 32 ||
+                   tex->num_srcs != 2 || tex->coord_components != 2 + tex->is_array)
+                  return false;
+               unsigned coords = 0, samples = 0;
+               for (unsigned i = 0; i < tex->num_srcs; ++i) {
+                  nir_src src = tex->src[i].src;
+                  if (src.ssa->bit_size != 32) return false;
+                  if (tex->src[i].src_type == nir_tex_src_coord) {
+                     if (src.ssa->num_components != tex->coord_components) return false;
+                     ++coords;
+                  } else if (tex->src[i].src_type == nir_tex_src_ms_index) {
+                     if (src.ssa->num_components != 1 || !nir_src_is_const(src) || nir_src_as_uint(src) > 3)
+                        return false;
+                     ++samples;
+                  } else return false;
+               }
+               if (coords != 1 || samples != 1) return false;
+               const unsigned bit = 1u << tex->texture_index;
+               if ((*used & bit) && (((*arrays & bit) != 0) != tex->is_array)) return false;
+               *used |= bit;
+               if (tex->is_array) *arrays |= bit;
+               binding_size[tex->texture_index] = 1;
                continue;
             }
             const unsigned dimensions = tex->sampler_dim == GLSL_SAMPLER_DIM_1D ? 1 :

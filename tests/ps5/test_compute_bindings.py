@@ -999,6 +999,33 @@ int main(void) {
     /* Exact graphics-compatible tiled RGBA8 SRD, with a physical footprint
      * larger than the logical texels. Malformed backing must remain rejected. */
     static _Alignas(65536) uint8_t tiled_pixels[262144];
+    for(unsigned vector=0;vector<2;++vector) for(unsigned array=0;array<2;++array) {
+        struct ps5_resource ms=canonical;
+        ms.base.format=vector ? PIPE_FORMAT_R32G32B32A32_FLOAT : PIPE_FORMAT_R32_FLOAT;
+        ms.base.target=array ? PIPE_TEXTURE_2D_ARRAY : PIPE_TEXTURE_2D;
+        ms.base.nr_samples=ms.base.nr_storage_samples=4;
+        ms.base.array_size=array ? 2 : 1;
+        ms.base.bind=PIPE_BIND_SAMPLER_VIEW|PIPE_BIND_RENDER_TARGET;
+        const unsigned texel=vector ? 16 : 4;
+        ms.data=tiled_pixels; ms.allocation_size=65536*ms.base.array_size;
+        ms.level_stride[0]=17*texel; ms.size=17*3*texel*4*ms.base.array_size;
+        ms.layer_stride=array ? 65536 : 17*3*texel;
+        assert(!ps5_resource_sampled_image_descriptor(&ms.base,0,0,descriptor));
+        assert(descriptor[3]==((array ? 0xf1b20000u : 0xe1b20000u)|(vector ? 0xfac : 0x204)));
+        assert(descriptor[4]==array && descriptor[5]==0x00400020);
+        assert(ps5_resource_storage_image_descriptor(&ms.base,0,descriptor)<0);
+        for(unsigned fault=0;fault<7;++fault) {
+            struct ps5_resource bad=ms;
+            if(fault==0) --bad.allocation_size;
+            if(fault==1) ++bad.layer_stride;
+            if(fault==2) ++bad.size;
+            if(fault==3) bad.base.nr_storage_samples=2;
+            if(fault==4) bad.base.last_level=1;
+            if(fault==5) bad.base.target=PIPE_TEXTURE_3D;
+            if(fault==6) bad.base.bind=PIPE_BIND_SAMPLER_VIEW;
+            assert(ps5_resource_sampled_image_descriptor(&bad.base,0,0,descriptor)<0);
+        }
+    }
     struct ps5_resource tiled=canonical;
     tiled.base.format=PIPE_FORMAT_R8G8B8A8_UNORM;
     tiled.base.bind=PIPE_BIND_SAMPLER_VIEW|PIPE_BIND_RENDER_TARGET;

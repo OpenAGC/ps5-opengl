@@ -34,9 +34,12 @@ static int ps5_resource_storage_image_descriptor(struct pipe_resource *r,unsigne
     const uint32_t srd[8]={(uintptr_t)r->data>>8,0,0x80000000,0x90000204,63,0x400000,0,0};
     memcpy(d,srd,sizeof(srd)); return 0;
 }
+static bool sampled_msaa;
 static int ps5_resource_sampled_image_descriptor(struct pipe_resource *r,unsigned first,unsigned last,uint32_t d[8]) {
     if(first || last) return -1;
-    return ps5_resource_storage_image_descriptor(r,0,d);
+    int rc=ps5_resource_storage_image_descriptor(r,0,d);
+    if(!rc && sampled_msaa) { d[3]=0xe1b20204; d[4]=0; d[5]=0x400020; }
+    return rc;
 }
 static int ps5_resource_texel_buffer_descriptor_owned(struct pipe_resource *r,const uint32_t d[4]) {
     if(!r || r->image || !d) return -1;
@@ -290,6 +293,16 @@ static void submission_contract(PsbcShaderOutput *out) {
     sampled[9]=0; sampled[10]=0x0c000000;
     assert(ps5_agc_compute_execute(&screen,out,&table,all,47,groups)<0);
     sampled[8]=sampled[9]=sampled[10]=0;
+    sampled_msaa=true;
+    assert(!ps5_resource_sampled_image_descriptor(&image,0,0,sampled));
+    assert(!ps5_agc_compute_execute(&screen,out,&table,all,47,groups));
+    for(unsigned word=0;word<8;++word) {
+        sampled[word]^=1;
+        assert(ps5_agc_compute_execute(&screen,out,&table,all,47,groups)<0);
+        sampled[word]^=1;
+    }
+    sampled_msaa=false;
+    memcpy(sampled,expected,32);
     const unsigned sampled_submissions=submissions;
     for(unsigned word=0;word<12;++word) {
         sampled[word]^=1;
