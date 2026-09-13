@@ -517,7 +517,7 @@ for default_extension in (
             f"Mesa default extension changed: {default_extension}")
 
 for cap in (
-    "caps->glsl_feature_level = PS5_ENABLE_GLSL_450_CANDIDATE ? 450 :",
+    "caps->glsl_feature_level = PS5_ENABLE_GLSL_460_CANDIDATE ? 460 :",
     "PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :",
     "caps->doubles = PS5_ENABLE_FP64_CANDIDATE",
     "caps->cube_map_array = PS5_ENABLE_TEXTURE_CUBE_ARRAY_CANDIDATE",
@@ -550,6 +550,7 @@ require("#define PS5_ENABLE_DUAL_SOURCE_BLEND_CANDIDATE 0" in SCREEN and
         "PS5_ENABLE_DUAL_SOURCE_BLEND_CANDIDATE ? 1 : 0" in SCREEN,
         "dual-source capability is not conservatively gated")
 require("caps->glsl_feature_level_compatibility =" in SCREEN and
+        "PS5_ENABLE_GLSL_460_CANDIDATE ? 460 :" in SCREEN and
         "PS5_ENABLE_GLSL_450_CANDIDATE ? 450 :" in SCREEN and
         "PS5_ENABLE_GLSL_440_CANDIDATE ? 440 :" in SCREEN and
         "PS5_ENABLE_GLSL_420_CANDIDATE ? 420 :" in SCREEN and
@@ -572,6 +573,14 @@ require("context->base.texture_barrier = ps5_memory_barrier" in SCREEN and
         "caps->texture_query_samples = PS5_ENABLE_GLSL_450_CANDIDATE" in SCREEN and
         "caps->texture_barrier = PS5_ENABLE_GLSL_450_CANDIDATE" in SCREEN,
         "OpenGL 4.5 capability group lost its candidate gate or barrier")
+require(all(f"caps->{cap}" in SCREEN for cap in (
+            "gl_spirv", "multi_draw_indirect", "multi_draw_indirect_params",
+            "polygon_offset_clamp", "draw_parameters", "shader_group_vote",
+            "anisotropic_filter", "query_so_overflow")) and
+        "caps->max_texture_anisotropy = PS5_ENABLE_GLSL_460_CANDIDATE ? 16.0f" in SCREEN and
+        "input_user_data[draw_id_dword] = drawid_offset" in SCREEN and
+        "active_streamout_overflow_query[i]->value = 1" in SCREEN,
+        "OpenGL 4.6 capability group lost its candidate gate or runtime behavior")
 require("fs_caps->max_shader_buffers = PS5_COMPUTE_STORAGE_SLOTS" in SCREEN and
         "fs_caps->max_shader_images = PS5_COMPUTE_IMAGE_SLOTS" in SCREEN and
         "caps->max_shader_buffer_size = 1u << 27" in SCREEN,
@@ -759,7 +768,8 @@ require("PS5_MAX_TEXTURE_2D_SIZE PS5_MAX_RENDER_SIZE" in SCREEN and
 require("PIPE_TEX_WRAP_REPEAT: *clamp = 0" in SCREEN and
         "PIPE_TEX_WRAP_MIRROR_REPEAT: *clamp = 1" in SCREEN and
         "PIPE_TEX_WRAP_CLAMP_TO_EDGE: *clamp = 2" in SCREEN and
-        "PIPE_TEX_FILTER_LINEAR: *native = 1" in SCREEN and
+        "*native = max_anisotropy > 1 ? 3 : 1" in SCREEN and
+        "ps5_texture_descriptor_anisotropy" in SCREEN and
         "(filter[1] << 20) | (filter[0] << 22)" in SCREEN,
         "sampled texture wrap/filter descriptor lowering regressed")
 require("PS5_ENABLE_TEXTURE_SNORM_CANDIDATE" in SCREEN and

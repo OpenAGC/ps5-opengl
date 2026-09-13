@@ -15,7 +15,7 @@
 
 #if defined(PS5_FP64_VERTEX_TEST)
 #define TEST_NAME "ps5-egl-fp64-vertex"
-#define GLSL_VERSION "#version 450 core\n"
+#define GLSL_VERSION "#version 460 core\n"
 #define VERTEX_PROBE ""
 #define VERTEX_ID "gl_VertexID-3"
 #define GREEN_BODY "c=vec4(0,1,0,1);"
@@ -179,7 +179,7 @@ main(void)
 #if defined(PS5_GLSL_400_TEST) || defined(PS5_VIEWPORT_ARRAY_TEST) || \
     defined(PS5_FP64_VERTEX_TEST)
 #ifdef PS5_FP64_VERTEX_TEST
-      EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 5,
+      EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 6,
 #else
       EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 0,
 #endif
@@ -314,7 +314,7 @@ main(void)
        || !has_extension("GL_ARB_gpu_shader_fp64")
 #endif
 #ifdef PS5_FP64_VERTEX_TEST
-       || !glsl || strncmp(glsl, "4.50", 4) ||
+       || !glsl || strncmp(glsl, "4.60", 4) ||
           max_texture < 16384 || max_renderbuffer < 16384 ||
           max_cube < 16384 || max_3d < 2048 || max_layers < 2048 ||
           !has_extension("GL_ARB_gpu_shader_fp64") ||
@@ -341,7 +341,16 @@ main(void)
           !has_extension("GL_ARB_cull_distance") ||
           !has_extension("GL_ARB_derivative_control") ||
           !has_extension("GL_ARB_shader_texture_image_samples") ||
-          !has_extension("GL_NV_texture_barrier")
+          !has_extension("GL_NV_texture_barrier") ||
+          !has_extension("GL_ARB_gl_spirv") ||
+          !has_extension("GL_ARB_spirv_extensions") ||
+          !has_extension("GL_ARB_indirect_parameters") ||
+          !has_extension("GL_ARB_polygon_offset_clamp") ||
+          !has_extension("GL_ARB_shader_atomic_counter_ops") ||
+          !has_extension("GL_ARB_shader_draw_parameters") ||
+          !has_extension("GL_ARB_shader_group_vote") ||
+          !has_extension("GL_ARB_texture_filter_anisotropic") ||
+          !has_extension("GL_ARB_transform_feedback_overflow_query")
 #endif
 #ifdef PS5_VIEWPORT_ARRAY_TEST
        || !viewport_array

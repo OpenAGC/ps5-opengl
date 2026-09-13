@@ -249,6 +249,7 @@ ps5_screen_core33.o: $(DRIVER)/ps5_screen.c $(DRIVER)/ps5_screen.h \
 		-DPS5_ENABLE_GLSL_430_CANDIDATE=1 \
 		-DPS5_ENABLE_GLSL_440_CANDIDATE=1 \
 		-DPS5_ENABLE_GLSL_450_CANDIDATE=1 \
+		-DPS5_ENABLE_GLSL_460_CANDIDATE=1 \
 		-DPS5_ENABLE_FP64_CANDIDATE=1 \
 		-DPS5_ENABLE_VIEWPORT_ARRAY_CANDIDATE=1 \
 		-DPS5_ENABLE_TEXTURE_CUBE_ARRAY_CANDIDATE=1 \
@@ -724,6 +725,13 @@ egl_public_gl43_stencil_texture.o: egl_public_gl43_stencil_texture.c \
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
 
 egl_public_gl44_state.o: egl_public_gl44_state.c
+	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
+
+egl_public_gl46_draw.o: egl_public_gl46_draw.c
+	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
+
+egl_public_gl46_spirv.o: egl_public_gl46_spirv.c \
+		gl46_spirv_vert.inc gl46_spirv_frag.inc
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
 
 egl_public_glsl400.o: egl_public_glsl400.c egl_public_draw_indirect.c

@@ -83,8 +83,8 @@ main(void)
       EGL_NONE,
    };
    const EGLint context_attributes[] = {
-      EGL_CONTEXT_MAJOR_VERSION_KHR, 3,
-      EGL_CONTEXT_MINOR_VERSION_KHR, 3,
+      EGL_CONTEXT_MAJOR_VERSION_KHR, 4,
+      EGL_CONTEXT_MINOR_VERSION_KHR, 6,
       EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR,
       EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR,
       EGL_NONE,
@@ -95,7 +95,7 @@ main(void)
    EGLContext context = EGL_NO_CONTEXT;
    EGLint major = 0, minor = 0, count = 0;
    GLuint vs = 0, fs = 0, program = 0, vao = 0, vbo = 0, output = 0;
-   GLuint query[2] = {0}, query_result[2] = {0};
+   GLuint query[3] = {0}, query_result[3] = {0};
    GLuint initial[OUTPUT_BYTES / sizeof(GLuint)];
    const GLubyte *mapped = NULL;
    float first[3] = {0}, last[3] = {0};
@@ -128,7 +128,7 @@ main(void)
 
    glGetIntegerv(GL_MAJOR_VERSION, &context_major);
    glGetIntegerv(GL_MINOR_VERSION, &context_minor);
-   if (context_major != 3 || context_minor != 3 ||
+   if (context_major != 4 || context_minor != 6 ||
        compile_shader(GL_VERTEX_SHADER, vertex_source, &vs) != 0 ||
        compile_shader(GL_FRAGMENT_SHADER, fragment_source, &fs) != 0)
       goto cleanup;
@@ -158,19 +158,22 @@ main(void)
    glBindBufferRange(GL_TRANSFORM_FEEDBACK_BUFFER, 0, output, CAPTURE_OFFSET,
                      CAPTURE_BYTES);
 
-   glGenQueries(2, query);
+   glGenQueries(3, query);
    glBeginQuery(GL_PRIMITIVES_GENERATED, query[0]);
    glBeginQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN, query[1]);
+   glBeginQuery(GL_TRANSFORM_FEEDBACK_OVERFLOW, query[2]);
    glViewport(0, 0, WIDTH, HEIGHT);
    glBeginTransformFeedback(GL_TRIANGLES);
    glDrawArrays(GL_TRIANGLES, 0, 9);
    draw_status = ps5_egl_current_draw_status(&draw_calls);
    glEndTransformFeedback();
+   glEndQuery(GL_TRANSFORM_FEEDBACK_OVERFLOW);
    glEndQuery(GL_TRANSFORM_FEEDBACK_PRIMITIVES_WRITTEN);
    glEndQuery(GL_PRIMITIVES_GENERATED);
    glFinish();
    glGetQueryObjectuiv(query[0], GL_QUERY_RESULT, &query_result[0]);
    glGetQueryObjectuiv(query[1], GL_QUERY_RESULT, &query_result[1]);
+   glGetQueryObjectuiv(query[2], GL_QUERY_RESULT, &query_result[2]);
 
    glBindBuffer(GL_TRANSFORM_FEEDBACK_BUFFER, output);
    mapped = glMapBufferRange(GL_TRANSFORM_FEEDBACK_BUFFER, 0, OUTPUT_BYTES,
@@ -188,16 +191,18 @@ main(void)
              sizeof(last));
    }
    if (prefix_ok && values_ok && suffix_ok && query_result[0] == 3 &&
-       query_result[1] == 2 && draw_status == 0 && draw_calls == 1 &&
+       query_result[1] == 2 && query_result[2] == GL_TRUE &&
+       draw_status == 0 && draw_calls == 1 &&
        error == GL_NO_ERROR)
       passed = 1;
 
    printf("[ps5-egl-xfb-overflow] core=%d.%d offset=%d bytes=%zu "
-          "canary=%d/%d values_ok=%d queries=%u/%u "
+          "canary=%d/%d values_ok=%d queries=%u/%u overflow=%u "
           "first=%g,%g,%g last=%g,%g,%g "
           "draw_status=%d submissions=%u error=0x%x\n",
           context_major, context_minor, CAPTURE_OFFSET, CAPTURE_BYTES,
           prefix_ok, suffix_ok, values_ok, query_result[0], query_result[1],
+          query_result[2],
           first[0], first[1], first[2], last[0], last[1], last[2],
           draw_status, draw_calls, error);
    if (mapped && glUnmapBuffer(GL_TRANSFORM_FEEDBACK_BUFFER) != GL_TRUE)
@@ -207,8 +212,8 @@ main(void)
       passed = 0;
 
 cleanup:
-   if (query[0] || query[1])
-      glDeleteQueries(2, query);
+   if (query[0] || query[1] || query[2])
+      glDeleteQueries(3, query);
    if (output)
       glDeleteBuffers(1, &output);
    if (vbo)

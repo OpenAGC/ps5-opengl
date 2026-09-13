@@ -267,6 +267,7 @@ struct ps5_context {
    struct ps5_query *active_occlusion_query;
    struct ps5_query *active_primitives_generated_query;
    struct ps5_query *active_primitives_emitted_query;
+   struct ps5_query *active_streamout_overflow_query[2];
    struct ps5_query *render_condition_query;
    unsigned sample_mask;
    bool queries_enabled;
@@ -399,6 +400,16 @@ ps5_active_primitive_query(struct ps5_context *context, unsigned type)
       return &context->active_primitives_generated_query;
    if (type == PIPE_QUERY_PRIMITIVES_EMITTED)
       return &context->active_primitives_emitted_query;
+   return NULL;
+}
+
+static struct ps5_query **
+ps5_active_streamout_overflow_query(struct ps5_context *context, unsigned type)
+{
+   if (type == PIPE_QUERY_SO_OVERFLOW_PREDICATE)
+      return &context->active_streamout_overflow_query[0];
+   if (type == PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE)
+      return &context->active_streamout_overflow_query[1];
    return NULL;
 }
 
@@ -553,6 +564,9 @@ ps5_render_condition_passes(const struct ps5_context *context);
 #endif
 #ifndef PS5_ENABLE_GLSL_450_CANDIDATE
 #define PS5_ENABLE_GLSL_450_CANDIDATE 0
+#endif
+#ifndef PS5_ENABLE_GLSL_460_CANDIDATE
+#define PS5_ENABLE_GLSL_460_CANDIDATE 0
 #endif
 #ifndef PS5_ENABLE_FP64_CANDIDATE
 #define PS5_ENABLE_FP64_CANDIDATE 0
@@ -1522,12 +1536,24 @@ ps5_texture_descriptor_wrap(unsigned wrap, uint32_t *clamp)
    }
 }
 
+static uint32_t
+ps5_texture_descriptor_anisotropy(unsigned max_anisotropy)
+{
+   return max_anisotropy < 2 ? 0 : max_anisotropy < 4 ? 1 :
+          max_anisotropy < 8 ? 2 : max_anisotropy < 16 ? 3 : 4;
+}
+
 static bool
-ps5_texture_descriptor_filter(unsigned filter, uint32_t *native)
+ps5_texture_descriptor_filter(unsigned filter, unsigned max_anisotropy,
+                              uint32_t *native)
 {
    switch (filter) {
-   case PIPE_TEX_FILTER_NEAREST: *native = 0; return true;
-   case PIPE_TEX_FILTER_LINEAR: *native = 1; return true;
+   case PIPE_TEX_FILTER_NEAREST:
+      *native = max_anisotropy > 1 ? 2 : 0;
+      return true;
+   case PIPE_TEX_FILTER_LINEAR:
+      *native = max_anisotropy > 1 ? 3 : 1;
+      return true;
    default: return false;
    }
 }
@@ -2641,6 +2667,7 @@ ps5_prepare_texture(struct ps5_context *context,
       uint32_t min_lod;
       uint32_t max_lod;
       uint32_t lod_bias;
+      uint32_t anisotropy;
       unsigned format_size;
       unsigned descriptor_format_size;
       unsigned descriptor_stride;
@@ -2834,7 +2861,7 @@ ps5_prepare_texture(struct ps5_context *context,
            (!depth_texture || stencil_texture ||
             sampler->compare_func > PIPE_FUNC_ALWAYS)) ||
           sampler->unnormalized_coords ||
-          sampler->max_anisotropy > 1 ||
+          sampler->max_anisotropy > 16 ||
           !ps5_float_is_finite(sampler->min_lod) ||
           !ps5_float_is_finite(sampler->max_lod) ||
           !ps5_float_is_finite(sampler->lod_bias) ||
@@ -2842,8 +2869,10 @@ ps5_prepare_texture(struct ps5_context *context,
           !ps5_texture_descriptor_wrap(sampler->wrap_t, &wrap[1]) ||
           !ps5_texture_descriptor_wrap(sampler->wrap_r, &wrap[2]) ||
           !ps5_texture_descriptor_filter(sampler->min_img_filter,
+                                         sampler->max_anisotropy,
                                          &filter[0]) ||
           !ps5_texture_descriptor_filter(sampler->mag_img_filter,
+                                         sampler->max_anisotropy,
                                          &filter[1]) ||
           !ps5_texture_descriptor_mip_filter(sampler->min_mip_filter,
                                              &mip_filter) ||
@@ -2867,6 +2896,8 @@ ps5_prepare_texture(struct ps5_context *context,
       min_lod = ps5_texture_descriptor_unsigned_lod(sampler->min_lod);
       max_lod = ps5_texture_descriptor_unsigned_lod(sampler->max_lod);
       lod_bias = ps5_texture_descriptor_lod_bias(sampler->lod_bias);
+      anisotropy = ps5_texture_descriptor_anisotropy(
+         sampler->max_anisotropy);
 
       texture_address = (uintptr_t)(stencil_texture ? texture->stencil_data
                                                     : texture->data) +
@@ -2946,13 +2977,17 @@ ps5_prepare_texture(struct ps5_context *context,
       descriptor[5] = UINT32_C(0x00400000) |
                       ((multisampled ? 2u : descriptor_last_level) << 4);
       descriptor[8] = wrap[0] | (wrap[1] << 3) | (wrap[2] << 6) |
+                      (anisotropy << 9) | ((anisotropy >> 1) << 16) |
+                      (anisotropy << 21) |
                       (sampler->compare_mode ?
                          sampler->compare_func << 12 : 0) |
                       ((PS5_ENABLE_SEAMLESS_CUBE_CANDIDATE &&
                         !sampler->seamless_cube_map) << 28);
-      descriptor[9] = min_lod | (max_lod << 12);
+      descriptor[9] = min_lod | (max_lod << 12) |
+                      ((anisotropy ? anisotropy + 6u : 0u) << 24);
       descriptor[10] = lod_bias | (filter[1] << 20) | (filter[0] << 22) |
-                       (mip_filter << 26);
+                       (mip_filter << 26) |
+                       (anisotropy ? 1u << 29 : 0u);
       descriptor[11] = sampler_state->border_color_ptr |
                        ((uint32_t)sampler_state->border_color_type << 30);
       if (sampler->compare_mode) {
@@ -6701,6 +6736,7 @@ ps5_create_query(struct pipe_context *base, unsigned type, unsigned index)
    bool timer_query;
    bool occlusion_query;
    bool primitive_query;
+   bool overflow_query;
 
    timer_query = PS5_ENABLE_TIMER_QUERY_CANDIDATE &&
       (type == PIPE_QUERY_TIMESTAMP ||
@@ -6714,7 +6750,11 @@ ps5_create_query(struct pipe_context *base, unsigned type, unsigned index)
    primitive_query = PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDATE &&
       (type == PIPE_QUERY_PRIMITIVES_GENERATED ||
        type == PIPE_QUERY_PRIMITIVES_EMITTED);
-   if (index || (!timer_query && !occlusion_query && !primitive_query))
+   overflow_query = PS5_ENABLE_GLSL_460_CANDIDATE &&
+      (type == PIPE_QUERY_SO_OVERFLOW_PREDICATE ||
+       type == PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE);
+   if (index || (!timer_query && !occlusion_query && !primitive_query &&
+                 !overflow_query))
       return NULL;
    query = calloc(1, sizeof(*query));
    if (!query)
@@ -6753,6 +6793,9 @@ ps5_destroy_query(struct pipe_context *base, struct pipe_query *pipe_query)
       context->active_primitives_generated_query = NULL;
    if (context->active_primitives_emitted_query == query)
       context->active_primitives_emitted_query = NULL;
+   for (unsigned i = 0; i < 2; ++i)
+      if (context->active_streamout_overflow_query[i] == query)
+         context->active_streamout_overflow_query[i] = NULL;
    if (context->render_condition_query == query)
       context->render_condition_query = NULL;
    pipe_resource_reference(&query->buffer, NULL);
@@ -6765,6 +6808,7 @@ ps5_begin_query(struct pipe_context *base, struct pipe_query *pipe_query)
    struct ps5_context *context = (struct ps5_context *)base;
    struct ps5_query *query = (struct ps5_query *)pipe_query;
    struct ps5_query **primitive_query;
+   struct ps5_query **overflow_query;
 
    ps5_draw_batch_drain();
    if (!query || query->active)
@@ -6777,6 +6821,16 @@ ps5_begin_query(struct pipe_context *base, struct pipe_query *pipe_query)
       query->active = true;
       query->ready = false;
       *primitive_query = query;
+      return true;
+   }
+   overflow_query = ps5_active_streamout_overflow_query(context, query->type);
+   if (overflow_query) {
+      if (!PS5_ENABLE_GLSL_460_CANDIDATE || *overflow_query)
+         return false;
+      query->value = 0;
+      query->active = true;
+      query->ready = false;
+      *overflow_query = query;
       return true;
    }
    if (query->type == PIPE_QUERY_OCCLUSION_COUNTER ||
@@ -6806,6 +6860,7 @@ ps5_end_query(struct pipe_context *base, struct pipe_query *pipe_query)
    struct ps5_context *context = (struct ps5_context *)base;
    struct ps5_query *query = (struct ps5_query *)pipe_query;
    struct ps5_query **primitive_query;
+   struct ps5_query **overflow_query;
 
    ps5_draw_batch_drain();
    if (!query)
@@ -6815,6 +6870,15 @@ ps5_end_query(struct pipe_context *base, struct pipe_query *pipe_query)
       if (!query->active || *primitive_query != query)
          return false;
       *primitive_query = NULL;
+      query->active = false;
+      query->ready = true;
+      return true;
+   }
+   overflow_query = ps5_active_streamout_overflow_query(context, query->type);
+   if (overflow_query) {
+      if (!query->active || *overflow_query != query)
+         return false;
+      *overflow_query = NULL;
       query->active = false;
       query->ready = true;
       return true;
@@ -6865,6 +6929,9 @@ ps5_get_query_result(struct pipe_context *base,
    } else if (query->type == PIPE_QUERY_PRIMITIVES_GENERATED ||
               query->type == PIPE_QUERY_PRIMITIVES_EMITTED) {
       result->u64 = query->value;
+   } else if (query->type == PIPE_QUERY_SO_OVERFLOW_PREDICATE ||
+              query->type == PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE) {
+      result->b = query->value != 0;
    } else {
       result->u64 = query->end - query->start;
    }
@@ -7353,6 +7420,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
    bool provoking_vtx_last;
    bool poly_line_smooth;
    bool tessellation_active;
+   bool draw_id_used;
    uint32_t vs_out_control = 0;
    uint32_t vs_out_control_valid = 0;
 
@@ -7698,6 +7766,24 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       return;
    }
    input_user_data[input_metadata->base_vertex_user_data_dword] = base_vertex;
+   draw_id_used =
+      (context->vs && BITSET_TEST(context->vs->nir->info.system_values_read,
+                                  SYSTEM_VALUE_DRAW_ID)) ||
+      (context->tcs && BITSET_TEST(context->tcs->nir->info.system_values_read,
+                                   SYSTEM_VALUE_DRAW_ID)) ||
+      (context->tes && BITSET_TEST(context->tes->nir->info.system_values_read,
+                                   SYSTEM_VALUE_DRAW_ID)) ||
+      (context->gs && BITSET_TEST(context->gs->nir->info.system_values_read,
+                                  SYSTEM_VALUE_DRAW_ID));
+   if (draw_id_used) {
+      unsigned draw_id_dword = input_metadata->base_vertex_user_data_dword + 1u;
+
+      if (draw_id_dword >= input_user_data_count) {
+         context->last_draw_status = -10;
+         return;
+      }
+      input_user_data[draw_id_dword] = drawid_offset;
+   }
    if (info->start_instance) {
       if (!input_metadata->start_instance_valid ||
           input_metadata->start_instance_user_data_dword >=
@@ -8389,6 +8475,8 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       unsigned vertices_per_primitive =
          ps5_streamout_vertices_per_primitive(
             context->stream_output_primitive);
+      uint64_t emitted_primitives = vertices_per_primitive
+         ? streamout_written_vertices / vertices_per_primitive : 0;
 
       for (unsigned index = 0;
            index < context->stream_output_target_count; ++index) {
@@ -8404,7 +8492,11 @@ ps5_draw_vbo_locked(struct pipe_context *base,
           context->active_primitives_emitted_query &&
           vertices_per_primitive)
          context->active_primitives_emitted_query->value +=
-            streamout_written_vertices / vertices_per_primitive;
+            emitted_primitives;
+      if (context->queries_enabled && emitted_primitives < generated_primitives)
+         for (unsigned i = 0; i < 2; ++i)
+            if (context->active_streamout_overflow_query[i])
+               context->active_streamout_overflow_query[i]->value = 1;
    }
    if (context->queries_enabled && context->last_draw_status == 0 &&
        (!context->gs || streamout_active) &&
@@ -11197,25 +11289,34 @@ ps5_set_compute_sampler_states(struct pipe_context *base, unsigned start, unsign
       if (!states[i]) continue;
       const struct pipe_sampler_state *s = &((const struct ps5_sampler_state *)states[i])->base;
       uint32_t wrap, min_filter, mag_filter, mip_filter;
+      uint32_t anisotropy = ps5_texture_descriptor_anisotropy(s->max_anisotropy);
       /* ponytail: matching-axis wrap modes; independent axes need qualification. */
       if ((s->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE && s->wrap_s != PIPE_TEX_WRAP_REPEAT &&
            s->wrap_s != PIPE_TEX_WRAP_MIRROR_REPEAT) || s->wrap_t != s->wrap_s ||
           s->wrap_r != s->wrap_s || s->compare_mode || s->unnormalized_coords ||
-          s->max_anisotropy > 1 || !ps5_float_is_finite(s->min_lod) ||
+          s->max_anisotropy > 16 || !ps5_float_is_finite(s->min_lod) ||
           !ps5_float_is_finite(s->max_lod) ||
           !(s->min_lod >= 0 && s->max_lod >= s->min_lod) ||
           s->lod_bias != 0 || !ps5_texture_descriptor_mip_filter(s->min_mip_filter, &mip_filter) ||
           !ps5_texture_descriptor_wrap(s->wrap_s, &wrap) ||
-          !ps5_texture_descriptor_filter(s->min_img_filter, &min_filter) ||
-          !ps5_texture_descriptor_filter(s->mag_img_filter, &mag_filter))
+          !ps5_texture_descriptor_filter(s->min_img_filter, s->max_anisotropy,
+                                         &min_filter) ||
+          !ps5_texture_descriptor_filter(s->mag_img_filter, s->max_anisotropy,
+                                         &mag_filter))
          return;
-      descriptors[i][0] = wrap | (wrap << 3) | (wrap << 6);
+      descriptors[i][0] = wrap | (wrap << 3) | (wrap << 6) |
+                          (anisotropy << 9) |
+                          ((anisotropy >> 1) << 16) |
+                          (anisotropy << 21);
       /* Mesa's default max LOD is 1000. Validate before the existing encoder
        * saturates finite bounds to the supported levels 0..15. */
       descriptors[i][1] = ps5_texture_descriptor_unsigned_lod(s->min_lod) |
-                         (ps5_texture_descriptor_unsigned_lod(s->max_lod) << 12);
+                         (ps5_texture_descriptor_unsigned_lod(s->max_lod) << 12) |
+                         ((anisotropy ? anisotropy + 6u : 0u) << 24);
       descriptors[i][2] = ps5_texture_descriptor_lod_bias(s->lod_bias) |
-                         (mag_filter << 20) | (min_filter << 22) | (mip_filter << 26);
+                         (mag_filter << 20) | (min_filter << 22) |
+                         (mip_filter << 26) |
+                         (anisotropy ? 1u << 29 : 0u);
    }
    for (unsigned i = 0; i < count; ++i) {
       memcpy(context->compute_samplers[start + i], descriptors[i], sizeof(descriptors[i]));
@@ -12542,7 +12643,8 @@ ps5_screen_create(void)
       PS5_ENABLE_FRAMEBUFFER_SRGB_CANDIDATE;
    caps->blend_equation_separate = true;
    caps->doubles = PS5_ENABLE_FP64_CANDIDATE;
-   caps->glsl_feature_level = PS5_ENABLE_GLSL_450_CANDIDATE ? 450 :
+   caps->glsl_feature_level = PS5_ENABLE_GLSL_460_CANDIDATE ? 460 :
+                              PS5_ENABLE_GLSL_450_CANDIDATE ? 450 :
                               PS5_ENABLE_GLSL_440_CANDIDATE ? 440 :
                               PS5_ENABLE_GLSL_430_CANDIDATE ? 430 :
                               PS5_ENABLE_GLSL_420_CANDIDATE ? 420 :
@@ -12551,6 +12653,7 @@ ps5_screen_create(void)
                               PS5_ENABLE_GLSL_330_CANDIDATE ? 330 :
                               PS5_ENABLE_GEOMETRY_CANDIDATE ? 150 : 140;
    caps->glsl_feature_level_compatibility =
+      PS5_ENABLE_GLSL_460_CANDIDATE ? 460 :
       PS5_ENABLE_GLSL_450_CANDIDATE ? 450 :
       PS5_ENABLE_GLSL_440_CANDIDATE ? 440 :
       PS5_ENABLE_GLSL_430_CANDIDATE ? 430 :
@@ -12685,6 +12788,15 @@ ps5_screen_create(void)
    caps->fs_fine_derivative = PS5_ENABLE_GLSL_450_CANDIDATE;
    caps->texture_query_samples = PS5_ENABLE_GLSL_450_CANDIDATE;
    caps->texture_barrier = PS5_ENABLE_GLSL_450_CANDIDATE;
+   caps->gl_spirv = PS5_ENABLE_GLSL_460_CANDIDATE;
+   caps->multi_draw_indirect = PS5_ENABLE_GLSL_460_CANDIDATE;
+   caps->multi_draw_indirect_params = PS5_ENABLE_GLSL_460_CANDIDATE;
+   caps->polygon_offset_clamp = PS5_ENABLE_GLSL_460_CANDIDATE;
+   caps->draw_parameters = PS5_ENABLE_GLSL_460_CANDIDATE;
+   caps->shader_group_vote = PS5_ENABLE_GLSL_460_CANDIDATE;
+   caps->anisotropic_filter = PS5_ENABLE_GLSL_460_CANDIDATE;
+   caps->max_texture_anisotropy = PS5_ENABLE_GLSL_460_CANDIDATE ? 16.0f : 0.0f;
+   caps->query_so_overflow = PS5_ENABLE_GLSL_460_CANDIDATE;
    caps->gl_begin_end_buffer_size = 512 * 1024;
    caps->min_map_buffer_alignment = 64;
    vs_caps = (struct pipe_shader_caps *)
