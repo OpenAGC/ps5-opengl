@@ -599,7 +599,8 @@ static void geometry_storage_contract(void) {
 }
 static void texel_buffer_descriptor_contract(void) {
     _Alignas(256) uint8_t data[64]={0};
-    struct ps5_resource resource={.base={.target=PIPE_BUFFER,.width0=sizeof(data)},
+    struct ps5_resource resource={.base={.target=PIPE_BUFFER,.width0=sizeof(data),
+        .bind=PIPE_BIND_SHADER_IMAGE},
         .data=data,.size=sizeof(data)};
     struct pipe_sampler_view view={.texture=&resource.base,.target=PIPE_BUFFER,
         .format=PIPE_FORMAT_R32_SINT,.swizzle_r=PIPE_SWIZZLE_X,
@@ -617,6 +618,15 @@ static void texel_buffer_descriptor_contract(void) {
     assert(ps5_resource_texel_buffer_descriptor_owned(&resource.base,descriptor));
     view.u.buf.offset=17;
     assert(!ps5_texel_buffer_descriptor(&view,(uintptr_t)data>>32,descriptor));
+    struct pipe_image_view image={.resource=&resource.base,.format=PIPE_FORMAT_R32_SINT,
+        .access=PIPE_IMAGE_ACCESS_READ_WRITE};
+    image.u.buf.offset=16; image.u.buf.size=32;
+    uint32_t image_descriptor[8];
+    assert(ps5_image_buffer_descriptor(&image,(uintptr_t)data>>32,image_descriptor));
+    assert(!ps5_resource_texel_buffer_descriptor_owned(&resource.base,image_descriptor));
+    for(unsigned i=4;i<8;++i) assert(!image_descriptor[i]);
+    resource.base.bind=0;
+    assert(!ps5_image_buffer_descriptor(&image,(uintptr_t)data>>32,image_descriptor));
 }
 int main(void) {
     atomic_handoff_contract();

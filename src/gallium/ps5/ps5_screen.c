@@ -2187,6 +2187,29 @@ ps5_texel_buffer_descriptor(const struct pipe_sampler_view *view,
    return true;
 }
 
+static bool
+ps5_image_buffer_descriptor(const struct pipe_image_view *view,
+                            uint32_t address32_hi, uint32_t descriptor[8])
+{
+   struct pipe_sampler_view sampled = {
+      .texture = view ? view->resource : NULL,
+      .format = view ? view->format : PIPE_FORMAT_NONE,
+      .target = PIPE_BUFFER,
+      .swizzle_r = PIPE_SWIZZLE_X,
+      .swizzle_g = PIPE_SWIZZLE_Y,
+      .swizzle_b = PIPE_SWIZZLE_Z,
+      .swizzle_a = PIPE_SWIZZLE_W,
+   };
+
+   if (!view || !view->resource || view->resource->target != PIPE_BUFFER ||
+       !(view->resource->bind & PIPE_BIND_SHADER_IMAGE))
+      return false;
+   sampled.u.buf.offset = view->u.buf.offset;
+   sampled.u.buf.size = view->u.buf.size;
+   memset(descriptor, 0, 8 * sizeof(*descriptor));
+   return ps5_texel_buffer_descriptor(&sampled, address32_hi, descriptor);
+}
+
 int
 ps5_resource_texel_buffer_descriptor_owned(struct pipe_resource *base,
                                             const uint32_t descriptor[4])
@@ -2531,10 +2554,17 @@ ps5_prepare_fragment_storage(struct ps5_context *context, uint32_t *user_data,
    for (unsigned i = 0; i < images; ++i) {
       const struct pipe_image_view *view = &context->fragment_images[i];
       const struct ps5_resource *resource = (const struct ps5_resource *)view->resource;
-      if (!resource || ps5_resource_storage_image_descriptor(view->resource, view->u.tex.level,
-            (uint32_t *)(table->data + PS5_COMPUTE_STORAGE_SLOTS * 16 + i * 32)))
+      uint32_t *descriptor = (uint32_t *)(table->data +
+         PS5_COMPUTE_STORAGE_SLOTS * 16 + i * 32);
+      if (!resource || (resource->base.target == PIPE_BUFFER ?
+          !ps5_image_buffer_descriptor(view, metadata->address32_hi, descriptor) :
+          ps5_resource_storage_image_descriptor(view->resource, view->u.tex.level,
+                                                descriptor)))
          return false;
-      ps5_flush_gpu_data(resource->data, resource->size);
+      if (resource->base.target == PIPE_BUFFER)
+         ps5_flush_gpu_data(resource->data + view->u.buf.offset, view->u.buf.size);
+      else
+         ps5_flush_gpu_data(resource->data, resource->size);
    }
    user_data[metadata->descriptor_set0_user_data_dword] = (uintptr_t)table->data;
    ps5_flush_gpu_data(table->data, table_bytes);
@@ -11377,13 +11407,18 @@ ps5_create_compute_state(struct pipe_context *base,
       .lower_local_invocation_index = true,
    };
    nir_lower_compute_system_values(nir, &cs_options);
+   const bool texture_usage_ok = ps5_compute_texture_usage(nir, &textures,
+      &texture_buffers, &filtered, max_lod, &arrays);
    if (nir->info.num_ubos > PS5_COMPUTE_CONSTANT_SLOTS ||
        nir->info.num_images > PS5_COMPUTE_IMAGE_SLOTS ||
        nir->info.num_textures > PS5_COMPUTE_TEXTURE_SLOTS ||
        nir->info.num_ssbos > PS5_COMPUTE_STORAGE_SLOTS ||
-       !ps5_compute_texture_usage(nir, &textures, &texture_buffers, &filtered,
-                                  max_lod, &arrays))
+       !texture_usage_ok) {
+      printf("[ps5-gallium] compute compile gated ubos=%u images=%u textures=%u ssbos=%u texture_usage=%u\n",
+             nir->info.num_ubos, nir->info.num_images, nir->info.num_textures,
+             nir->info.num_ssbos, texture_usage_ok);
       goto cleanup;
+   }
    if (!context->compute_descriptors) {
       struct pipe_resource desc = {
          .target = PIPE_BUFFER, .format = PIPE_FORMAT_R8_UNORM,
@@ -11437,8 +11472,13 @@ ps5_create_compute_state(struct pipe_context *base,
       memcpy(shader->texture_lod, max_lod, sizeof(max_lod));
       uint8_t *package = NULL;
       size_t package_size = 0;
-      if (psbc_compile_nir(nir, &options, &shader->output) != PSBC_RESULT_OK ||
-          ps5_agc_package_build(&shader->output, 0, &package, &package_size)) {
+      const PsbcResult compile_result = psbc_compile_nir(nir, &options,
+                                                        &shader->output);
+      const int package_result = compile_result == PSBC_RESULT_OK ?
+         ps5_agc_package_build(&shader->output, 0, &package, &package_size) : -1;
+      if (compile_result != PSBC_RESULT_OK || package_result) {
+         printf("[ps5-gallium] compute compile failed psbc=%d package=%d\n",
+                compile_result, package_result);
          psbc_free_output(&shader->output);
          free(shader);
          shader = NULL;
@@ -11599,8 +11639,15 @@ ps5_set_shader_images(struct pipe_context *base, mesa_shader_stage stage,
       if (v->resource->screen != base->screen || v->format != v->resource->format ||
           !(v->access & PIPE_IMAGE_ACCESS_READ_WRITE) ||
           ((v->access | v->shader_access) & ~(PIPE_IMAGE_ACCESS_READ_WRITE |
-              PIPE_IMAGE_ACCESS_COHERENT | PIPE_IMAGE_ACCESS_VOLATILE)) ||
-          v->u.tex.first_layer || v->u.tex.last_layer != v->resource->array_size - 1 ||
+              PIPE_IMAGE_ACCESS_COHERENT | PIPE_IMAGE_ACCESS_VOLATILE)))
+         return;
+      if (v->resource->target == PIPE_BUFFER) {
+         if (!ps5_image_buffer_descriptor(v,
+               (uintptr_t)((struct ps5_resource *)v->resource)->data >> 32,
+               descriptor))
+            return;
+      } else if (v->u.tex.first_layer ||
+          v->u.tex.last_layer != v->resource->array_size - 1 ||
           /* Mesa marks ordinary, non-layered 2D images as single-layer views. */
           (v->u.tex.single_layer_view && v->resource->target != PIPE_TEXTURE_2D) ||
           (v->resource->target == PIPE_TEXTURE_3D && v->u.tex.is_2d_view_of_3d) ||
@@ -11781,12 +11828,21 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
       buffers[buffer_count++] = bound->buffer;
    }
    for (unsigned i = 0; i < PS5_COMPUTE_IMAGE_SLOTS; ++i) {
-      struct pipe_resource *resource = context->compute_images[i].resource;
+      const struct pipe_image_view *view = &context->compute_images[i];
+      struct pipe_resource *resource = view->resource;
       if (!resource)
          continue;
-      if (ps5_resource_storage_image_descriptor(resource, context->compute_images[i].u.tex.level,
-            (uint32_t *)(table->data + PS5_COMPUTE_BUFFER_SLOTS * 16 + i * 32)))
+      uint32_t *descriptor = (uint32_t *)(table->data +
+         PS5_COMPUTE_BUFFER_SLOTS * 16 + i * 32);
+      if (resource->target == PIPE_BUFFER ?
+          !ps5_image_buffer_descriptor(view, context->cs->output.metadata.address32_hi,
+                                       descriptor) :
+          ps5_resource_storage_image_descriptor(resource, view->u.tex.level,
+                                                descriptor))
          return;
+      const struct ps5_resource *native = (const struct ps5_resource *)resource;
+      if (resource->target == PIPE_BUFFER)
+         ps5_flush_gpu_data(native->data + view->u.buf.offset, view->u.buf.size);
       buffers[buffer_count++] = resource;
    }
    for (unsigned i = 0; i < PS5_COMPUTE_TEXTURE_SLOTS; ++i) {
