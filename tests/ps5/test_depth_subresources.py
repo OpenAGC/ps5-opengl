@@ -67,8 +67,8 @@ static unsigned util_format_get_blockheight(unsigned f) { (void)f; return 1; }
 /* Any unexpected color dispatch fails; this test covers only depth/stencil. */
 static bool ps5_linear_sampled_layout(const struct pipe_resource *r) { (void)r; abort(); }
 static bool ps5_render_target_format(unsigned f) { (void)f; abort(); }
-static size_t ps5_tiled_color_offset(unsigned f,unsigned x,unsigned y,unsigned w) {
-    (void)f; (void)x; (void)y; (void)w; abort();
+static size_t ps5_tiled_color_offset(unsigned f,unsigned x,unsigned y,unsigned w,unsigned layer) {
+    (void)f; (void)x; (void)y; (void)w; (void)layer; abort();
 }
 static unsigned drains, flush_count;
 static struct pipe_resource *expected_drain;

@@ -100,14 +100,14 @@ static void check(const struct format_case *test, unsigned w, unsigned h) {
     /* Fixed format geometry and coordinate probes are independent of the
      * driver's size/offset helpers. RGBA16F also XORs odd tile rows by 0x800. */
     assert(r.allocation_size == (size_t)tiles_x*((h+test->tile_h-1)/test->tile_h)*65536);
-    assert(ps5_tiled_color_offset(format,0,0,w) == 0);
-    assert(ps5_tiled_color_offset(format,1,0,w) == bpp);
-    assert(ps5_tiled_color_offset(format,0,1,w) == 0x10);
-    assert(ps5_tiled_color_offset(format,3,5,w) == test->probe_3_5);
-    assert(ps5_tiled_color_offset(format,test->tile_w,0,w) == 65536);
-    assert(ps5_tiled_color_offset(format,0,test->tile_h,w) ==
+    assert(ps5_tiled_color_offset(format,0,0,w,0) == 0);
+    assert(ps5_tiled_color_offset(format,1,0,w,0) == bpp);
+    assert(ps5_tiled_color_offset(format,0,1,w,0) == 0x10);
+    assert(ps5_tiled_color_offset(format,3,5,w,0) == test->probe_3_5);
+    assert(ps5_tiled_color_offset(format,test->tile_w,0,w,0) == 65536);
+    assert(ps5_tiled_color_offset(format,0,test->tile_h,w,0) ==
            (size_t)tiles_x*65536+(bpp == 8 ? 0x800 : 0));
-    assert(ps5_tiled_color_offset(format,0,2*test->tile_h,w) == (size_t)2*tiles_x*65536);
+    assert(ps5_tiled_color_offset(format,0,2*test->tile_h,w,0) == (size_t)2*tiles_x*65536);
     r.data=malloc(r.allocation_size);
     uint8_t *expected=malloc(r.allocation_size), *seen=calloc(1,r.allocation_size);
     uint8_t *upload=malloc((size_t)stride*h);
@@ -115,7 +115,7 @@ static void check(const struct format_case *test, unsigned w, unsigned h) {
     memset(r.data,0xa5,r.allocation_size); memset(expected,0xa5,r.allocation_size);
     memset(upload,0x17,(size_t)stride*h);
     for (unsigned y=0;y<h;++y) for (unsigned x=0;x<w;++x) {
-        size_t offset=ps5_tiled_color_offset(format,x,y,w);
+        size_t offset=ps5_tiled_color_offset(format,x,y,w,0);
         assert(offset+bpp<=r.allocation_size && !(offset%bpp));
         assert(offset/65536 == (size_t)(y/test->tile_h)*tiles_x+x/test->tile_w);
         /* A byte bitmap proves injectivity without assuming RGBA8 addressing;
@@ -144,7 +144,7 @@ static void check(const struct format_case *test, unsigned w, unsigned h) {
     p=ps5_transfer_map(&ctx,&r.base,0,PIPE_MAP_READ|PIPE_MAP_WRITE,&box,&t);
     assert(p && t);
     for (unsigned y=0;y<(unsigned)box.height;++y) for (unsigned x=0;x<(unsigned)box.width;++x) {
-        size_t offset=ps5_tiled_color_offset(format,x+box.x,y+box.y,w);
+        size_t offset=ps5_tiled_color_offset(format,x+box.x,y+box.y,w,0);
         for (unsigned c=0;c<bpp;++c) {
             assert(p[y*t->stride+x*bpp+c]==expected[offset+c]);
             p[y*t->stride+x*bpp+c]^=0x7d; expected[offset+c]^=0x7d;

@@ -73,7 +73,7 @@ static size_t ps5_tiled_depth_surface_size(unsigned w, unsigned h, unsigned s) {
 static size_t ps5_tiled_stencil_surface_size(unsigned w, unsigned h) { return (size_t)w*h; }
 static size_t ps5_tiled_depth_offset(unsigned x, unsigned y, unsigned w, unsigned layer) { (void)layer; return ((size_t)y*w+x)*4; }
 static size_t ps5_tiled_stencil_offset(unsigned x, unsigned y, unsigned w, unsigned layer) { (void)layer; return (size_t)y*w+x; }
-static size_t ps5_tiled_color_offset(unsigned f, unsigned x, unsigned y, unsigned w) { assert(f == COLOR || f == COLOR_UINT); return ((size_t)y*w+x)*4; }
+static size_t ps5_tiled_color_offset(unsigned f, unsigned x, unsigned y, unsigned w, unsigned layer) { assert(f == COLOR || f == COLOR_UINT); (void)layer; return ((size_t)y*w+x)*4; }
 static unsigned ps5_tiled_rgba8_width(const struct ps5_resource *r) { return r->base.width0; }
 static bool force_tiled;
 static bool ps5_linear_sampled_layout(const struct pipe_resource *r) { return !force_tiled && (!r->bind || r->last_level); }

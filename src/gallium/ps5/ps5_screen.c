@@ -4821,7 +4821,7 @@ ps5_tiled_stencil_msaa4_offset(unsigned x, unsigned y, unsigned sample,
 
 static size_t
 ps5_tiled_color_offset(enum pipe_format format, unsigned x, unsigned y,
-                       unsigned width)
+                       unsigned width, unsigned layer)
 {
    /* Exhaustive GPU coordinate ramps in the 2026-08-30 tile-layout receipt
     * validated every address in one 64 KiB swizzle-27 tile. */
@@ -4901,6 +4901,10 @@ ps5_tiled_color_offset(enum pipe_format format, unsigned x, unsigned y,
    default:
       return SIZE_MAX;
    }
+   /* GFX10 16-pipe 64KB_R_X puts Z3..Z0 in address bits 8..11
+    * for every supported single-sample texel size. */
+   local ^= ((layer & 1u) << 11) | ((layer & 2u) << 9) |
+            ((layer & 4u) << 7) | ((layer & 8u) << 5);
    return ((((size_t)y / tile_height) *
                ((width + tile_width - 1u) / tile_width) +
             x / tile_width) << 16) + local;
@@ -5130,7 +5134,7 @@ ps5_stage_color_surface(const struct pipe_surface *surface, bool to_staging)
     * Reuse those terms; add tile bases, XOR only the local 64 KiB address.
     * Ownership, copies, bounds and cache maintenance remain unchanged. */
    for (unsigned x = 0; x < MIN2(width, ARRAY_SIZE(x_offsets)); ++x) {
-      x_offsets[x] = ps5_tiled_color_offset(surface->format, x, 0, width);
+      x_offsets[x] = ps5_tiled_color_offset(surface->format, x, 0, width, 0);
       if (x_offsets[x] == SIZE_MAX)
          return false;
    }
@@ -5147,7 +5151,8 @@ ps5_stage_color_surface(const struct pipe_surface *surface, bool to_staging)
          for (unsigned first_x = 0; first_x < width;
               first_x += ARRAY_SIZE(x_offsets)) {
             size_t row = tiled_base +
-               ps5_tiled_color_offset(surface->format, first_x, y, width);
+               ps5_tiled_color_offset(surface->format, first_x, y, width,
+                                      layer - surface->first_layer);
             unsigned count = MIN2(width - first_x, ARRAY_SIZE(x_offsets));
             for (unsigned x = 0; x < count;) {
                /* Four 32-bit pixels are contiguous: X bits 0/1 map to
@@ -5494,7 +5499,7 @@ ps5_transfer_map(struct pipe_context *context, struct pipe_resource *base,
                size_t tiled = layer_base + ps5_tiled_color_offset(
                   resource->base.format,
                   (unsigned)box->x + x, (unsigned)box->y + y,
-                  ps5_tiled_rgba8_width(resource));
+                  ps5_tiled_rgba8_width(resource), (unsigned)box->z);
 
                if (tiled > resource->allocation_size ||
                    resource->allocation_size - tiled < format_size) {
@@ -5602,7 +5607,7 @@ ps5_transfer_unmap(struct pipe_context *context,
                resource->base.format,
                (unsigned)transfer->box.x + x,
                (unsigned)transfer->box.y + y,
-               ps5_tiled_rgba8_width(resource));
+               ps5_tiled_rgba8_width(resource), (unsigned)transfer->box.z);
 
             if (tiled <= resource->allocation_size &&
                 resource->allocation_size - tiled >= format_size)
@@ -6634,7 +6639,7 @@ ps5_blit(struct pipe_context *context, const struct pipe_blit_info *info)
                dst_resource->base.format,
                (unsigned)info->dst.box.x + x,
                (unsigned)info->dst.box.y + y,
-               ps5_tiled_rgba8_width(dst_resource));
+               ps5_tiled_rgba8_width(dst_resource), (unsigned)info->dst.box.z);
 
             if (tiled > dst_resource->allocation_size ||
                 dst_resource->allocation_size - tiled < dst_pixel_size) {
@@ -10152,7 +10157,7 @@ ps5_clear(struct pipe_context *base, unsigned buffers,
                           (size_t)y * target->level_stride[surface->level] +
                           (size_t)x * format_size
                      : layer_base + ps5_tiled_color_offset(
-                          target->base.format, x, y, width);
+                          target->base.format, x, y, width, layer);
                   size_t limit = target->render_staging_size
                                     ? target->size : target->allocation_size;
 

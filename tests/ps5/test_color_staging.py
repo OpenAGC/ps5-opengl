@@ -56,7 +56,7 @@ static void reference(const struct pipe_surface *s, bool to_staging) {
                 size_t a=layer*r->layer_stride+r->level_offset[s->level]+
                          y*r->level_stride[s->level]+(size_t)x*bpp;
                 size_t b=r->render_staging_offset+(layer-s->first_layer)*tiled_size+
-                         ps5_tiled_color_offset(s->format,x,y,w);
+                         ps5_tiled_color_offset(s->format,x,y,w,layer-s->first_layer);
                 assert(a+bpp<=r->size && b+bpp<=r->allocation_size);
                 if (to_staging) memcpy(r->data+b,r->data+a,bpp);
                 else memcpy(r->data+a,r->data+b,bpp);
