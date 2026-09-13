@@ -12746,6 +12746,8 @@ ps5_screen_create(void)
       PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDATE ? 4 : 0;
    caps->max_stream_output_interleaved_components =
       PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDATE ? 64 : 0;
+   caps->max_vertex_streams =
+      PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDATE ? PIPE_MAX_VERTEX_STREAMS : 0;
    caps->max_geometry_output_vertices =
       PS5_ENABLE_GEOMETRY_CANDIDATE ? 256 : 0;
    caps->max_geometry_total_output_components =
