@@ -35,6 +35,11 @@ static int ps5_resource_storage_image_descriptor(struct pipe_resource *r,unsigne
     memcpy(d,srd,sizeof(srd)); return 0;
 }
 static bool sampled_msaa;
+static int ps5_resource_storage_image_descriptor_owned(struct pipe_resource *r,const uint32_t d[8]) {
+    uint32_t expected[8];
+    return ps5_resource_storage_image_descriptor(r,(d[3]>>12)&15u,expected) ||
+        memcmp(expected,d,sizeof(expected)) ? -1 : 0;
+}
 static int ps5_resource_sampled_image_descriptor(struct pipe_resource *r,unsigned first,unsigned last,uint32_t d[8]) {
     if(first || last) return -1;
     int rc=ps5_resource_storage_image_descriptor(r,0,d);

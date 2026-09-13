@@ -755,9 +755,8 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
                      sampled ? ps5_resource_sampled_image_descriptor(buffers[j],
                         (srd[3] >> 28) >= 14 ? 0 : (srd[3] >> 12) & 15u,
                         (srd[3] >> 28) >= 14 ? 0 : (srd[3] >> 16) & 15u, expected) :
-                     ps5_resource_storage_image_descriptor(buffers[j],
-                        (srd[3] >> 12) & 15u, expected);
-                  if (!rc && (texel || !memcmp(srd, expected, sizeof(expected))))
+                     ps5_resource_storage_image_descriptor_owned(buffers[j], srd);
+                  if (!rc && (texel || image || !memcmp(srd, expected, sizeof(expected))))
                      owned = true;
                }
                if (!owned)

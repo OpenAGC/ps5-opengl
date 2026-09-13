@@ -33,7 +33,7 @@ int ps5_shader_state_info(void *state, size_t *machine_code_size,
                           unsigned *unresolved_fields);
 int ps5_resource_info(struct pipe_resource *resource, void **address,
                       size_t *logical_size, size_t *allocation_size);
-/* Internal base-level linear R32 UINT/SINT/FLOAT image, validated before use. */
+/* Internal typed-image descriptors and exact owned-view validation. */
 int ps5_resource_storage_image_descriptor(struct pipe_resource *resource,
                                           unsigned level,
                                           uint32_t descriptor[8]);
@@ -42,6 +42,8 @@ int ps5_resource_sampled_image_descriptor(struct pipe_resource *resource,
                                           uint32_t descriptor[8]);
 int ps5_resource_texel_buffer_descriptor_owned(struct pipe_resource *resource,
                                                 const uint32_t descriptor[4]);
+int ps5_resource_storage_image_descriptor_owned(struct pipe_resource *resource,
+                                                const uint32_t descriptor[8]);
 int ps5_resource_stencil_info(struct pipe_resource *resource, void **address,
                               size_t *allocation_size);
 struct pipe_resource *ps5_display_target_alias(struct pipe_resource *owner,

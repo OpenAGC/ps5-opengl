@@ -992,6 +992,16 @@ int main(void) {
         assert(!ps5_storage_image_view_descriptor(&v,descriptor));
         assert(descriptor[0]==(uint32_t)((uintptr_t)(pixels+7*512)>>8));
         assert((descriptor[3]>>28)==9 && descriptor[4]==63);
+        uint32_t whole[8];
+        assert(!ps5_resource_storage_image_descriptor(&cube.base,0,whole));
+        assert(memcmp(whole,descriptor,sizeof(whole))); /* Previous submission check rejected this view. */
+        assert(!ps5_resource_storage_image_descriptor_owned(&cube.base,descriptor));
+        assert(ps5_resource_storage_image_descriptor_owned(&canonical.base,descriptor)<0);
+        for(unsigned word=0;word<8;++word) {
+            descriptor[word]^=1;
+            assert(ps5_resource_storage_image_descriptor_owned(&cube.base,descriptor)<0);
+            descriptor[word]^=1;
+        }
         for(unsigned stage=0;stage<2;++stage) {
             mesa_shader_stage which=stage ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
             ps5_set_shader_images(&context.base,which,0,1,0,&v);
@@ -1271,6 +1281,7 @@ int main(void) {
             assert(!ps5_storage_image_view_descriptor(&v,descriptor));
             assert(descriptor[3]==(0xa0000204u|(level<<12)|(level<<16)));
             assert(descriptor[4]==3 && descriptor[5]==0x400030);
+            assert(!ps5_resource_storage_image_descriptor_owned(&volume.base,descriptor));
             for(unsigned stage=0;stage<2;++stage) {
                 mesa_shader_stage which=stage ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
                 ps5_set_shader_images(&context.base,which,7,1,0,&v);
@@ -1420,6 +1431,7 @@ int main(void) {
             assert(!ps5_storage_image_view_descriptor(&view,descriptor));
             assert(descriptor[0]==(uint32_t)(((uintptr_t)v.data+v.layer_stride)>>8));
             assert(descriptor[4]==6);
+            assert(!ps5_resource_storage_image_descriptor_owned(&v.base,descriptor));
             view.u.tex.first_layer=8;
             ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,1,0,&view);
             assert(context.compute_images_invalid && v.base.reference.count==2);

@@ -4381,6 +4381,40 @@ ps5_storage_image_view_descriptor(const struct pipe_image_view *view,
 }
 
 int
+ps5_resource_storage_image_descriptor_owned(struct pipe_resource *base,
+                                            const uint32_t descriptor[8])
+{
+   const struct ps5_resource *resource = (const struct ps5_resource *)base;
+   if (!base || !descriptor)
+      return -1;
+   struct pipe_image_view view = {.resource = base, .format = base->format};
+   view.u.tex.level = (descriptor[3] >> 12) & 15u;
+   view.u.tex.last_layer = base->target == PIPE_TEXTURE_3D
+      ? MAX2(base->depth0 >> view.u.tex.level, 1u) - 1u : 0;
+   if (base->target == PIPE_TEXTURE_1D_ARRAY || base->target == PIPE_TEXTURE_2D_ARRAY ||
+       ps5_cube_texture_target(base->target)) {
+      const uintptr_t address = ((uint64_t)descriptor[0] << 8) |
+                                ((uint64_t)(descriptor[1] & 255u) << 40);
+      const uintptr_t start = (uintptr_t)resource->data;
+      if (address < start || !resource->layer_stride ||
+          address - start >= resource->size || (address - start) % resource->layer_stride)
+         return -1;
+      const size_t first = (address - start) / resource->layer_stride;
+      if (first >= base->array_size)
+         return -1;
+      view.u.tex.first_layer = first;
+      const unsigned type = descriptor[3] >> 28;
+      view.u.tex.single_layer_view = type == 8 || type == 9;
+      if (!view.u.tex.single_layer_view && descriptor[4] >= base->array_size - first)
+         return -1;
+      view.u.tex.last_layer = first + (view.u.tex.single_layer_view ? 0 : descriptor[4]);
+   }
+   uint32_t expected[8];
+   return ps5_storage_image_view_descriptor(&view, expected) ||
+          memcmp(descriptor, expected, sizeof(expected)) ? -1 : 0;
+}
+
+int
 ps5_resource_sampled_image_descriptor(struct pipe_resource *base, unsigned first_level,
                                       unsigned last_level, uint32_t descriptor[8])
 {
