@@ -2597,6 +2597,11 @@ ps5_prepare_constant(struct ps5_context *context,
          descriptor[2] = state->size;
          descriptor[3] = UINT32_C(0x0004dfac) |
             S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_RAW);
+         if (merged_geometry)
+            printf("[ps5-gallium] geometry-ubo-bind binding=%u slot=%u descriptor=%p words=%08x/%08x/%08x/%08x data=%p size=%u copied=%u\n",
+                   binding->binding, state_slot, descriptor,
+                   descriptor[0], descriptor[1], descriptor[2], descriptor[3],
+                   (void *)data_address, state->size, state->copied);
       }
    }
    if (ubo_count != expected_ubo_count)
