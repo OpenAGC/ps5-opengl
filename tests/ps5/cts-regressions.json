@@ -51,6 +51,8 @@
     "KHR-GL33.texture_swizzle.smoke_access_idx_7_channel_idx_0"
   ],
   "gl46-compute": ["KHR-GL46.compute_shader.*"],
+  "gl46-info": ["KHR-GL46.info.*"],
+  "gl46-buffer-storage": ["KHR-GL46.buffer_storage.*"],
   "gl46-prerequisites": [
     "KHR-GL46.buffer_storage.*",
     "KHR-GL46.gl_spirv.*",

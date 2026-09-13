@@ -47,21 +47,30 @@ def plan(cases, history, smoke, budget=120, startup=15, margin=1.5, unknown=30):
                     "smoke" if name in smoke else "bulk")
             groups[lane].append(name)
         for lane, remaining in groups.items():
-            while remaining:
+            position = 0
+            while position < len(remaining):
                 if lane in {"long", "previous-failure"}:
-                    selected = remaining[:1]
+                    selected = remaining[position:position + 1]
                     seconds = timings.get(selected[0], unknown)
                 else:
-                    # Existing ordered splitter; no change to iterations, seeds or test bodies.
-                    selected, seconds = PREPARE.timed_prefix(
-                        remaining, {name: timings.get(name, unknown) for name in remaining}, capacity, unknown)
+                    # One ordered pass; rebuilding family timings per shard is quadratic.
+                    selected, seconds = [], 0.0
+                    end = position
+                    while end < len(remaining):
+                        name = remaining[end]
+                        cost = timings.get(name, unknown)
+                        if selected and seconds + cost > capacity:
+                            break
+                        selected.append(name)
+                        seconds += cost
+                        end += 1
                 observation = max(5, math.ceil(startup + margin * seconds))
                 shards.append(dict(configuration=config, lane=lane, cases=selected,
                     estimated_test_seconds=round(seconds, 6), observation_seconds=observation,
                     needs_duration_approval=observation > budget,
                     exceeds_runner_limit=observation > 3600,
                     unknown_timings=sum(name in fallback for name in selected)))
-                remaining = remaining[len(selected):]
+                position += len(selected)
     priorities = {"smoke": 0, "previous-failure": 1, "long": 2, "bulk": 3}
     shards.sort(key=lambda row: (priorities[row["lane"]], row["configuration"]))
     for config in range(len(PREPARE.CONFIGURATIONS)):
@@ -75,17 +84,21 @@ def plan(cases, history, smoke, budget=120, startup=15, margin=1.5, unknown=30):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--timings", type=Path, action="append", required=True,
+    parser.add_argument("--timings", type=Path, action="append", default=[],
                         help="inventory JSONs, oldest first; scheduling hints, never acceptance")
     parser.add_argument("--output", type=Path, required=True, help="new directory; never overwritten")
+    parser.add_argument("--mustpass", type=Path, default=MUSTPASS)
+    parser.add_argument("--smoke-suite", default="smoke")
+    parser.add_argument("--manifest-only", action="store_true",
+                        help="keep selections/hashes in plan.json; materialize only the next shard")
     parser.add_argument("--budget-seconds", type=float, default=120)
     parser.add_argument("--startup-seconds", type=float, default=15)
     parser.add_argument("--margin", type=float, default=1.5)
     args = parser.parse_args()
     try:
-        cases = MUSTPASS.read_text().splitlines()
+        cases = args.mustpass.read_text().splitlines()
         suites = json.loads((ROOT / "tests/ps5/cts-regressions.json").read_text())
-        smoke = PREPARE.select_cases(cases, suites["smoke"])
+        smoke = PREPARE.select_cases(cases, suites[args.smoke_suite])
         history, sources = {}, []
         for path in args.timings:
             raw = path.read_bytes()
@@ -101,12 +114,14 @@ def main():
         output.mkdir(parents=True, exist_ok=False)
         for row in shards:
             folder = output / "shards" / row["id"]
-            folder.mkdir(parents=True)
+            if not args.manifest_only:
+                folder.mkdir(parents=True)
             data = {"cts-shard.txt": ("\n".join(row["cases"]) + "\n").encode(),
                     "cts-args.txt": PREPARE.encode_arguments(row["configuration"])}
             row["input_sha256"] = {}
             for name, content in data.items():
-                (folder / name).write_bytes(content)
+                if not args.manifest_only:
+                    (folder / name).write_bytes(content)
                 row["input_sha256"][name] = hashlib.sha256(content).hexdigest()
         result = dict(format="ps5-opengl-cts-plan-v1",
             scope="pinned-inventory engineering rehearsal; NOT an official submission schedule",
@@ -115,11 +130,13 @@ def main():
                       "enumerate required EGL/window configurations and official runner summary",
                       "freeze current SDK and native app with matching names",
                       "obtain explicit duration exceptions for long cases"],
-            mustpass_sha256=hashlib.sha256(MUSTPASS.read_bytes()).hexdigest(),
+            mustpass_file=args.mustpass.name, manifest_only=args.manifest_only,
+            mustpass_sha256=hashlib.sha256(args.mustpass.read_bytes()).hexdigest(),
             unique_cases=len(cases), planned_executions=sum(len(row["cases"]) for row in shards),
             cts_revision=revision,
             budget_seconds=args.budget_seconds, startup_seconds=args.startup_seconds, margin=args.margin,
             historical_estimated_test_hours=sum(row["estimated_test_seconds"] for row in shards)/3600,
+            unknown_timing_executions=sum(row["unknown_timings"] for row in shards),
             observation_budget_hours=sum(row["observation_seconds"] for row in shards)/3600,
             note="Excludes deploy/readback/teardown/lock waits. Old timings are not a current-runtime benchmark.",
             timing_sources=sources, configurations=PREPARE.CONFIGURATIONS, shards=shards)
@@ -130,7 +147,8 @@ def main():
                  "**Not ready for console execution:** resolve the preflight in the local PLAN.md first.",
                  "", f'- Inventory: {len(cases):,} cases; {result["planned_executions"]:,} configuration/case pairs.',
                  f'- Frozen selections: {len(shards)} shards; zero cases omitted or duplicated.',
-                 f'- Historical test-time estimate: {result["historical_estimated_test_hours"]:.2f} hours.',
+                 f'- Unmeasured executions: {result["unknown_timing_executions"]:,}; placeholder budgets are not a runtime forecast.',
+                 f'- Scheduling test-time budget: {result["historical_estimated_test_hours"]:.2f} hours (includes unknown placeholders).',
                  f'- Observation budgets including margin: {result["observation_budget_hours"]:.2f} hours, plus external overhead.',
                  "- Completed on this candidate: **0**. Historical results supply timings only.", "",
                  "| Lane | Shards | Executions | Historical seconds |", "|---|---:|---:|---:|"]

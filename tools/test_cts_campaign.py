@@ -146,3 +146,21 @@ class CampaignTests(unittest.TestCase):
                 with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                     PLANNER.main()
                 self.assertEqual((output / "plan.json").read_bytes(), before)
+
+    def test_gl46_compact_inventory_without_history(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            inventory = root / 'gl46-main.txt'
+            inventory.write_text('KHR-GL46.info.version\nKHR-GL46.compute_shader.a\n')
+            output = root / 'queue'
+            argv = ['plan', '--mustpass', str(inventory), '--smoke-suite', 'gl46-info',
+                    '--manifest-only', '--output', str(output)]
+            with patch('sys.argv', argv), contextlib.redirect_stdout(io.StringIO()):
+                self.assertEqual(PLANNER.main(), 0)
+            result = json.loads((output / 'plan.json').read_text())
+            self.assertEqual(result['unique_cases'], 2)
+            self.assertEqual(result['planned_executions'], 8)
+            self.assertEqual(result['completed_executions'], 0)
+            self.assertFalse((output / 'shards').exists())
+            self.assertEqual(result['timing_sources'], [])
+            self.assertTrue(all(row['unknown_timings'] == len(row['cases']) for row in result['shards']))
