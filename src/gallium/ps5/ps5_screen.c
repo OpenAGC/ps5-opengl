@@ -4231,7 +4231,7 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
        (cube && (base->width0 != base->height0 || base->array_size % 6 ||
                  (base->target == PIPE_TEXTURE_CUBE && base->array_size != 6))) ||
        (!array && base->array_size != 1) || base->last_level >= PIPE_MAX_TEXTURE_LEVELS ||
-       ((rectangle || volume) && base->last_level) ||
+       (rectangle && base->last_level) ||
        base->last_level > 15 || first_level > last_level || last_level > base->last_level ||
        (!multisampled && (base->nr_samples > 1 || base->nr_storage_samples > 1)) ||
        (!(base->bind & required_bind) &&
@@ -4309,7 +4309,7 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
          return -1;
    }
    /* Same reverse-ordered linear mip storage and layer encoding as graphics.
-    * ponytail: full sampled arrays up to 16 layers (storage eight); sublayers/other tiled formats remain gated. */
+    * Sampled arrays remain capped at 16; storage views validate sublayers below. */
    const uintptr_t address = (uintptr_t)resource->data;
    const unsigned pitch = resource->level_stride[0] / texel_size;
    const unsigned channels = ps5_storage_image_channels(base->format);
