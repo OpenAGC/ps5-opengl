@@ -7,3 +7,6 @@ from pathlib import Path
 
 screen = (Path(__file__).resolve().parents[2] / "src/gallium/ps5/ps5_screen.c").read_text()
 assert "caps->max_vertex_streams =\n      PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDATE ? PIPE_MAX_VERTEX_STREAMS : 0;" in screen
+assert "active_streamout_overflow_query[PIPE_MAX_VERTEX_STREAMS + 1]" in screen
+assert "index < PIPE_MAX_VERTEX_STREAMS" in screen
+assert "i += PIPE_MAX_VERTEX_STREAMS" in screen

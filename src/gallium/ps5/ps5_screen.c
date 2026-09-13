@@ -268,7 +268,8 @@ struct ps5_context {
    struct ps5_query *active_occlusion_query;
    struct ps5_query *active_primitives_generated_query;
    struct ps5_query *active_primitives_emitted_query;
-   struct ps5_query *active_streamout_overflow_query[2];
+   struct ps5_query
+      *active_streamout_overflow_query[PIPE_MAX_VERTEX_STREAMS + 1];
    struct ps5_query *render_condition_query;
    unsigned sample_mask;
    bool queries_enabled;
@@ -386,6 +387,7 @@ struct ps5_fence {
 
 struct ps5_query {
    unsigned type;
+   unsigned index;
    uint64_t start;
    uint64_t end;
    uint64_t value;
@@ -405,12 +407,14 @@ ps5_active_primitive_query(struct ps5_context *context, unsigned type)
 }
 
 static struct ps5_query **
-ps5_active_streamout_overflow_query(struct ps5_context *context, unsigned type)
+ps5_active_streamout_overflow_query(struct ps5_context *context,
+                                    unsigned type, unsigned index)
 {
-   if (type == PIPE_QUERY_SO_OVERFLOW_PREDICATE)
-      return &context->active_streamout_overflow_query[0];
+   if (type == PIPE_QUERY_SO_OVERFLOW_PREDICATE &&
+       index < PIPE_MAX_VERTEX_STREAMS)
+      return &context->active_streamout_overflow_query[index];
    if (type == PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE)
-      return &context->active_streamout_overflow_query[1];
+      return &context->active_streamout_overflow_query[PIPE_MAX_VERTEX_STREAMS];
    return NULL;
 }
 
@@ -6751,13 +6755,18 @@ ps5_create_query(struct pipe_context *base, unsigned type, unsigned index)
    overflow_query = PS5_ENABLE_GLSL_460_CANDIDATE &&
       (type == PIPE_QUERY_SO_OVERFLOW_PREDICATE ||
        type == PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE);
-   if (index || (!timer_query && !occlusion_query && !primitive_query &&
-                 !overflow_query))
+   if ((!overflow_query && index) ||
+       (type == PIPE_QUERY_SO_OVERFLOW_PREDICATE &&
+        index >= PIPE_MAX_VERTEX_STREAMS) ||
+       (type == PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE && index) ||
+       (!timer_query && !occlusion_query && !primitive_query &&
+        !overflow_query))
       return NULL;
    query = calloc(1, sizeof(*query));
    if (!query)
       return NULL;
    query->type = type;
+   query->index = index;
    if (occlusion_query) {
       struct pipe_resource templ;
 
@@ -6791,7 +6800,7 @@ ps5_destroy_query(struct pipe_context *base, struct pipe_query *pipe_query)
       context->active_primitives_generated_query = NULL;
    if (context->active_primitives_emitted_query == query)
       context->active_primitives_emitted_query = NULL;
-   for (unsigned i = 0; i < 2; ++i)
+   for (unsigned i = 0; i <= PIPE_MAX_VERTEX_STREAMS; ++i)
       if (context->active_streamout_overflow_query[i] == query)
          context->active_streamout_overflow_query[i] = NULL;
    if (context->render_condition_query == query)
@@ -6821,7 +6830,8 @@ ps5_begin_query(struct pipe_context *base, struct pipe_query *pipe_query)
       *primitive_query = query;
       return true;
    }
-   overflow_query = ps5_active_streamout_overflow_query(context, query->type);
+   overflow_query = ps5_active_streamout_overflow_query(
+      context, query->type, query->index);
    if (overflow_query) {
       if (!PS5_ENABLE_GLSL_460_CANDIDATE || *overflow_query)
          return false;
@@ -6872,7 +6882,8 @@ ps5_end_query(struct pipe_context *base, struct pipe_query *pipe_query)
       query->ready = true;
       return true;
    }
-   overflow_query = ps5_active_streamout_overflow_query(context, query->type);
+   overflow_query = ps5_active_streamout_overflow_query(
+      context, query->type, query->index);
    if (overflow_query) {
       if (!query->active || *overflow_query != query)
          return false;
@@ -8509,7 +8520,8 @@ ps5_draw_vbo_locked(struct pipe_context *base,
          context->active_primitives_emitted_query->value +=
             emitted_primitives;
       if (context->queries_enabled && emitted_primitives < generated_primitives)
-         for (unsigned i = 0; i < 2; ++i)
+         for (unsigned i = 0; i <= PIPE_MAX_VERTEX_STREAMS;
+              i += PIPE_MAX_VERTEX_STREAMS)
             if (context->active_streamout_overflow_query[i])
                context->active_streamout_overflow_query[i]->value = 1;
    }
