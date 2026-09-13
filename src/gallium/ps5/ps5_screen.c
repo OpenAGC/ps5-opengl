@@ -7766,6 +7766,14 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       return;
    }
    input_user_data[input_metadata->base_vertex_user_data_dword] = base_vertex;
+   if (!input_metadata->is_indexed_draw_valid ||
+       input_metadata->is_indexed_draw_user_data_dword >=
+          input_user_data_count) {
+      context->last_draw_status = -10;
+      return;
+   }
+   input_user_data[input_metadata->is_indexed_draw_user_data_dword] =
+      info->index_size ? UINT32_MAX : 0;
    draw_id_used =
       (context->vs && BITSET_TEST(context->vs->nir->info.system_values_read,
                                   SYSTEM_VALUE_DRAW_ID)) ||

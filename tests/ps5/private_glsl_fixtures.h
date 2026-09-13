@@ -86,7 +86,7 @@
     "nir_intrinsics.h": "2d6f9e713863ce5a5fa51d4ed684896ce62fd347f289ae7a6c458d4b0069c8ee",
     "nir_opcodes.h": "c0614e3a5d421c17720e449d82f24087c9c855a9b3c0a7eec3a72dd193063922"
   },
-  "metadata_version": 13,
+  "metadata_version": 14,
   "options_values": {
     "avoid_ternary_with_fabs": 0,
     "avoid_ternary_with_two_constants": 0,
@@ -279,7 +279,7 @@
   "scope": "parsed GLSL + selected ST passes + extracted driver preparation; not st_link_shader or a stable NIR format",
   "serialization_audited_sha256": "0aecf87e19e14164981710895204b7a64414719a4343c99911a70a6e2789f12e",
   "source_sha256": {
-    "src/gallium/ps5/ps5_screen.c": "a7cef2d7db55e5516b34644610876df826c2abc4091d706a6ac1a97ca0752913",
+    "src/gallium/ps5/ps5_screen.c": "3ecb20a5e879646d2c7d9b606f071debf12ec79d8af0e93d2700089ce629e883",
     "tests/ps5/glsl_handoff/abi.c": "f97e326a3d612d72dfc7348c46bafc40f5da203c8c97479c9e5762d06bfff4cf",
     "tests/ps5/glsl_handoff/backend.c": "b79568805c1a8a933595dc21762942af89d1ad17a9b7b1d5b7253c2c595a9d4b",
     "tests/ps5/glsl_handoff/check_target_abi.py": "df9d77a410bf3443f3bb752bf36ba69068d4ff1cf3f1cf503172823df8d28e86",
@@ -295,8 +295,8 @@
     "third_party/mesa-26.2.0/src/compiler/shader_info.h": "b7c0ffcdc60db695854fa596171c8bffe7928598fe93d1cb17939114b7f4e74b",
     "third_party/mesa-26.2.0/src/mesa/program/prog_statevars.c": "3c5d09c2d5f5a0747ea77e3c413a2f5661e54d2787bd4183a61c602001537643",
     "third_party/mesa-26.2.0/src/mesa/state_tracker/st_glsl_to_nir.cpp": "f8e1695bd04d4f304be651aa49b9ae1150997aa025cce7a489127a0c718c7d2e",
-    "third_party/opengnm-psbc/libpsbc/psbc_compile.c": "35c32e86523ebedfb1533257f7e044fad68604888015703d7af10add0d3ddf3a",
-    "third_party/opengnm-psbc/libpsbc/psbc_compile.h": "e1f88e30dac3faadc6aa918631170d9828863d56a44d99670be0fe5017ee083c",
+    "third_party/opengnm-psbc/libpsbc/psbc_compile.c": "4bf8200167d3fed43f90e37433eaf879b18149c96331c210c58004629893cb4f",
+    "third_party/opengnm-psbc/libpsbc/psbc_compile.h": "f59652ae1b689bf04a9a5bae526d5da37364eecc7d4d341ddf642aa17bfd6f48",
     "third_party/opengnm-psbc/src/amd/common/nir/ac_nir.c": "bf93d76a158bfbf5fd955be5c3e01e198de20d0782404e7f4eba64a2d29f71bc",
     "third_party/opengnm-psbc/src/compiler/nir/nir_intrinsics.h": "2d6f9e713863ce5a5fa51d4ed684896ce62fd347f289ae7a6c458d4b0069c8ee",
     "third_party/opengnm-psbc/src/compiler/nir/nir_lower_uniforms_to_ubo.c": "0ec181f28aaf832ff12418672619e589f022d13f57307d5737a918d311295c7b",
@@ -312,11 +312,11 @@
   }
 }
 PS5_GLSL_RECEIPT_END */
-#define PS5_GLSL_RECEIPT_SHA256 "6bb0703438bcc4f7c7689d011e38050b735f0806320d1a510aa82cbbc95f9052"
+#define PS5_GLSL_RECEIPT_SHA256 "65fc61c8ed81e88d4f066b72b96eb6da1a396dcba9a1082155971714d8ffd911"
 #define PS5_GLSL_DEFAULT_BYTES 0u
 #define PS5_GLSL_ADDEND_OFFSET 0u
 _Static_assert(PS5_GLSL_DEFAULT_BYTES == 0, "private GLSL has no defaults");
-_Static_assert(PSBC_SHADER_METADATA_VERSION == 13u, "regenerate GLSL fixtures");
+_Static_assert(PSBC_SHADER_METADATA_VERSION == 14u, "regenerate GLSL fixtures");
 _Static_assert(sizeof(nir_shader) == 584u, "GLSL fixture ABI: sizeof(nir_shader)");
 _Static_assert(sizeof(nir_shader_compiler_options) == 320u, "GLSL fixture ABI: sizeof(nir_shader_compiler_options)");
 _Static_assert(sizeof(struct shader_info) == 424u, "GLSL fixture ABI: sizeof(struct shader_info)");

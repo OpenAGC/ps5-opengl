@@ -270,8 +270,10 @@ static void geometry(bool inputs, bool buffer_arrays) {
     assert(psbc_compile_nir_geometry_pipeline(v.shader, g.shader, &options, &out) == PSBC_RESULT_OK);
     package(&out);
     const PsbcShaderMetadata *m = &out.metadata;
-    assert(m->base_vertex_valid && m->vertex_buffer_table_valid == inputs);
+    assert(m->base_vertex_valid && m->is_indexed_draw_valid &&
+           m->vertex_buffer_table_valid == inputs);
     unsigned supplied = 1u << m->base_vertex_user_data_dword;
+    supplied |= 1u << m->is_indexed_draw_user_data_dword;
     if (inputs) supplied |= 1u << m->vertex_buffer_table_user_data_dword;
     assert(m->descriptor_set0_valid == buffer_arrays);
     if (buffer_arrays) {

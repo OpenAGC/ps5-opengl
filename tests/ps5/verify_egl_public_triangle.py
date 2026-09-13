@@ -779,10 +779,12 @@ require("PIPE_FORMAT_R16G16_SNORM" not in VERTEX_FORMAT,
         "PS5 direct vertex-format boundary no longer forces normalized widening")
 require("bool                 base_vertex_valid;" in PSBC_HEADER and
         "uint32_t             base_vertex_user_data_dword;" in PSBC_HEADER and
+        "bool                 is_indexed_draw_valid;" in PSBC_HEADER and
+        "uint32_t             is_indexed_draw_user_data_dword;" in PSBC_HEADER and
         "bool                 start_instance_valid;" in PSBC_HEADER and
         "uint32_t             start_instance_user_data_dword;" in PSBC_HEADER and
         "uint32_t         instance_divisor;" in PSBC_HEADER and
-        "#define PSBC_SHADER_METADATA_VERSION 13u" in PSBC_HEADER and
+        "#define PSBC_SHADER_METADATA_VERSION 14u" in PSBC_HEADER and
         "metadata->version = PSBC_SHADER_METADATA_VERSION;" in PSBC_COMPILE and
         "ctx->rargs->ac.base_vertex.used" in PSBC_COMPILE and
         "ctx->rargs->ac.start_instance.used" in PSBC_COMPILE and
@@ -793,6 +795,7 @@ require("bool                 base_vertex_valid;" in PSBC_HEADER and
 require("nir_load_first_vertex(b), nir_load_vertex_id_zero_base(b)" in RADV_INPUTS and
         "AC_UD_VS_BASE_VERTEX_START_INSTANCE" in RADV_ARGS and
         "case nir_intrinsic_load_first_vertex:" in AC_INTRINSICS and
+        "s->args->is_indexed_draw" in AC_INTRINSICS and
         "s->args->base_vertex" in AC_INTRINSICS,
         "vendored RADV/ACO base-vertex ABI route changed")
 require("ps5_lower_first_vertex" not in SCREEN and
@@ -803,8 +806,9 @@ require("ps5_lower_first_vertex" not in SCREEN and
         "effective_min = (int64_t)min_index + draws[0].index_bias;" in SCREEN and
         "effective_end = (int64_t)max_index + draws[0].index_bias + 1;" in SCREEN and
         "effective_min < 0 || effective_end > UINT32_MAX" in SCREEN and
-        "vertex_metadata->base_vertex_user_data_dword" in SCREEN and
-        "user_data[vertex_metadata->base_vertex_user_data_dword] = base_vertex;" in SCREEN,
+        "input_metadata->base_vertex_user_data_dword" in SCREEN and
+        "input_metadata->is_indexed_draw_user_data_dword" in SCREEN and
+        "info->index_size ? UINT32_MAX : 0" in SCREEN,
         "PS5 base-vertex preservation, bounds, or user-data route is incomplete")
 require("metadata->version != PSBC_SHADER_METADATA_VERSION" in PACKAGE,
         "PS5 package builder does not enforce the current PSBC metadata ABI")

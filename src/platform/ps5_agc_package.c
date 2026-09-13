@@ -163,6 +163,7 @@ compute_metadata_valid(const PsbcShaderMetadata *m)
    if (m->context_register_count || m->linkage_valid ||
        m->input_semantic_count || m->output_semantic_count ||
        m->vertex_buffer_table_valid || m->base_vertex_valid ||
+       m->is_indexed_draw_valid ||
        m->start_instance_valid || m->streamout_valid || m->ngg_lds_layout_valid ||
        (m->unresolved_fields & ~PSBC_UNRESOLVED_PROGRAM_CHECKSUM) ||
        m->shader_register_count != 8 ||

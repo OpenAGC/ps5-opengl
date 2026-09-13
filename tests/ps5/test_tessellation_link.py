@@ -348,6 +348,7 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
                 assert(!pair[i]->metadata.context_register_count);
                 assert(pair[i]->metadata.shader_register_count==2);
                 assert(pair[i]->metadata.base_vertex_valid);
+                assert(pair[i]->metadata.is_indexed_draw_valid);
                 assert(pair[i]->metadata.base_vertex_user_data_dword <
                        pair[i]->metadata.user_sgpr_count);
                 assert(pair[i]->metadata.shader_registers[0].offset==0x148);
@@ -467,7 +468,7 @@ int main(int argc,char **argv) {
     assert(hs->args.ac.ring_offsets.used && tes->args.ac.ring_offsets.used);
     assert(hs->args.ac.args[hs->args.ac.ring_offsets.arg_index].offset==0 &&
            tes->args.ac.args[tes->args.ac.ring_offsets.arg_index].offset==0);
-    assert(hs->args.num_user_sgprs==1 && tes->args.num_user_sgprs==1);
+    assert(hs->args.num_user_sgprs==2 && tes->args.num_user_sgprs==1);
     assert(tes->args.ac.args[tes->args.ngg_lds_layout.arg_index].offset==8);
     printf("ring ABI hs arg=%u off=%u users=%u tes arg=%u off=%u users=%u ngg-layout arg=%u off=%u ud=%d\n",
            hs->args.ac.ring_offsets.arg_index,

@@ -1487,8 +1487,9 @@ require("egl_public_core33_raster_semantics.o:" in MAKEFILE and
         "Core 3.3 raster semantics gate regressed")
 
 require("info->instance_count != 1" not in SCREEN and
-        "#define PSBC_SHADER_METADATA_VERSION 13u" in PSBC_H and
+        "#define PSBC_SHADER_METADATA_VERSION 14u" in PSBC_H and
         "uint32_t         instance_divisor;" in PSBC_H and
+        "bool                 is_indexed_draw_valid;" in PSBC_H and
         "bool                 start_instance_valid;" in PSBC_H and
         "gfx_state.vi.instance_rate_inputs" in PSBC_C and
         "gfx_state.vi.instance_rate_divisors" in PSBC_C and
