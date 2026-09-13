@@ -25,10 +25,11 @@ def table(name):
     return [(row.split(','), comment.strip()) for row, comment in
             re.findall(r'\{([^{}]+)\}\s*,\s*//([^\n]+)', body[1])]
 
-def reference_function(samples, bpe, name, tile):
+def reference_function(samples, bpe, name, tile, swizzle='Z', tile_height=None):
     """Shared independent oracle for address and actual-caller host tests."""
-    comment = f'16 pipes {bpe} bpe @ SW_64K_Z_X {samples}xaa @ Navi1x'
-    rows = [row for row, label in table(f'GFX10_SW_64K_Z_X_{samples}xaa_PATINFO') if label == comment]
+    tile_height = tile if tile_height is None else tile_height
+    comment = f'16 pipes {bpe} bpe @ SW_64K_{swizzle}_X {samples}xaa @ Navi1x'
+    rows = [row for row, label in table(f'GFX10_SW_64K_{swizzle}_X_{samples}xaa_PATINFO') if label == comment]
     assert len(rows) == 1
     indices = [int(v) for v in rows[0] if v.strip()]
     equations = []
@@ -50,7 +51,7 @@ def reference_function(samples, bpe, name, tile):
             unsigned sample, unsigned width, unsigned layer) {{
         (void)sample;
         size_t local = {' | '.join(expression)};
-        return ((size_t)(y / {tile}) * ((width + {tile - 1}) / {tile}) + x / {tile}) * 65536 + local;
+        return ((size_t)(y / {tile_height}) * ((width + {tile - 1}) / {tile}) + x / {tile}) * 65536 + local;
     }}\n'''
 
 

@@ -4907,7 +4907,7 @@ ps5_tiled_color_offset(enum pipe_format format, unsigned x, unsigned y,
 
 static size_t
 ps5_tiled_color_msaa4_offset(enum pipe_format format, unsigned x, unsigned y,
-                             unsigned sample, unsigned width)
+                             unsigned sample, unsigned width, unsigned layer)
 {
    static const uint16_t bpe1_x_masks[7] = {
       0x0001, 0x0002, 0x0004, 0x0140, 0x0200, 0x0800, 0x2400,
@@ -4947,6 +4947,13 @@ ps5_tiled_color_msaa4_offset(enum pipe_format format, unsigned x, unsigned y,
       0x0020, 0x0080, 0x1000, 0x4100, 0x0200, 0x0400, 0x0800,
    };
    static const uint16_t bpe16_sample_masks[2] = {0x0800, 0x0400};
+   /* GFX10 16-pipe R_X 4x array-slice terms from AddressLib nibble2
+    * entries 74, 117 and 118. Sample bits displace some slice bits. */
+   static const uint16_t layer_masks[3][4] = {
+      {0x0800, 0x0400, 0x0200, 0x0100},
+      {0x0800, 0x0200, 0x0100, 0},
+      {0x0200, 0x0100, 0, 0},
+   };
    const uint16_t *x_masks;
    const uint16_t *y_masks;
    const uint16_t *sample_masks;
@@ -5004,6 +5011,10 @@ ps5_tiled_color_msaa4_offset(enum pipe_format format, unsigned x, unsigned y,
       if (sample & BITFIELD_BIT(bit))
          local ^= sample_masks[bit];
    }
+   const unsigned bpe = util_format_get_blocksize(format);
+   for (unsigned bit = 0; bit < 4; ++bit)
+      if (layer & BITFIELD_BIT(bit))
+         local ^= layer_masks[bpe == 16 ? 2 : bpe == 8 ? 1 : 0][bit];
    return ((((size_t)y / tile_height) *
                ((width + tile_width - 1u) / tile_width) +
             x / tile_width) << 16) + local;
@@ -5736,7 +5747,7 @@ ps5_resolve_color_msaa4(struct pipe_context *context,
             size_t offset = source_layer_base +
                ps5_tiled_color_msaa4_offset(
                   info->src.format, source_x, source_y, sample,
-                  source->base.width0);
+                  source->base.width0, (unsigned)info->src.box.z);
 
             if (offset > source->allocation_size ||
                source->allocation_size - offset < src_pixel_size) {
@@ -9586,7 +9597,7 @@ ps5_clear_msaa4_color(struct ps5_context *context, unsigned buffers,
             for (unsigned x = min_x; x < max_x; ++x) {
                for (unsigned sample = 0; sample < 4; ++sample) {
                   size_t offset = layer_base + ps5_tiled_color_msaa4_offset(
-                     surface->format, x, y, sample, width);
+                     surface->format, x, y, sample, width, layer);
 
                   if (offset > target->allocation_size ||
                       target->allocation_size - offset < pixel_size)

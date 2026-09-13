@@ -55,6 +55,7 @@ test-depth-targets:
 test-staging:
 	python3 tests/ps5/test_depth_clear_fill.py
 	python3 tests/ps5/test_depth_layer_layout.py
+	python3 tests/ps5/test_color_msaa_layer_layout.py
 	python3 tests/ps5/test_depth_subresources.py
 	python3 tests/ps5/test_generate_mipmap.py
 	python3 tests/ps5/test_depth_staging_alignment.py
