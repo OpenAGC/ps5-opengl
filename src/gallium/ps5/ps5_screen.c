@@ -186,7 +186,7 @@ struct ps5_constant_state {
    bool valid;
 };
 
-#define PS5_COMPUTE_STORAGE_SLOTS 16
+#define PS5_COMPUTE_STORAGE_SLOTS PIPE_MAX_SHADER_BUFFERS
 #ifndef PS5_ENABLE_COMPUTE_API_TEST
 #define PS5_ENABLE_COMPUTE_API_TEST 0
 #endif
