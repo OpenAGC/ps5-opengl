@@ -100,12 +100,13 @@ static nir_shader *compute_buffer_array(void) {
     for(unsigned unit=0;unit<16;++unit) BITSET_SET(b.shader->info.textures_used,unit);
     nir_def *zero=nir_imm_int(&b,0);
     nir_def *index=nir_iand_imm(&b,nir_load_ubo(&b,1,32,zero,zero,.align_mul=4,.range=4),15);
-    nir_tex_instr *tex=nir_tex_instr_create(b.shader,3);
+    nir_tex_instr *tex=nir_tex_instr_create(b.shader,4);
     tex->op=nir_texop_txf; tex->sampler_dim=GLSL_SAMPLER_DIM_BUF;
     tex->coord_components=1; tex->dest_type=nir_type_uint32;
     tex->src[0]=nir_tex_src_for_ssa(nir_tex_src_coord,zero);
     tex->src[1]=nir_tex_src_for_ssa(nir_tex_src_lod,zero);
     tex->src[2]=nir_tex_src_for_ssa(nir_tex_src_texture_offset,index);
+    tex->src[3]=nir_tex_src_for_ssa(nir_tex_src_sampler_offset,index);
     nir_def_init(&tex->instr,&tex->def,4,32); nir_builder_instr_insert(&b,&tex->instr);
     nir_store_ssbo(&b,&tex->def,zero,zero,.write_mask=15,.align_mul=16);
     return b.shader;

@@ -11329,6 +11329,12 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                      if (ceiling >= PS5_COMPUTE_TEXTURE_SLOTS - tex->texture_index)
                         return false;
                      array_size = MAX2(array_size, ceiling + 1);
+                  } else if (tex->src[i].src_type == nir_tex_src_sampler_offset) {
+                     int texture_offset = nir_tex_instr_src_index(tex,
+                        nir_tex_src_texture_offset);
+                     if (texture_offset < 0 || source.ssa !=
+                         tex->src[texture_offset].src.ssa)
+                        return false;
                   } else {
                      return false;
                   }
