@@ -14,6 +14,7 @@
 #define PS5_GLSL_PRIVATE_TEST 0
 #endif
 #define PS5_AGC_COMPUTE_MAX_TEXTURES 16
+#define PS5_AGC_COMPUTE_MAX_IMAGES 8
 bool handoff_prepare(nir_shader *nir);
 void handoff_compile(nir_shader *nir, unsigned fixture);
 _Static_assert(sizeof(nir_instr_type)==1, "NIR enum packing");

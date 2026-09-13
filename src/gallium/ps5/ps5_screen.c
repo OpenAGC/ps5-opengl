@@ -207,6 +207,7 @@ struct ps5_compute_shader {
    unsigned filtered_textures;
    unsigned texture_lod[PS5_COMPUTE_TEXTURE_SLOTS];
    unsigned array_textures;
+   uint8_t texture_binding_size[PS5_COMPUTE_TEXTURE_SLOTS];
 };
 
 struct ps5_context {
@@ -11277,13 +11278,15 @@ static bool
 ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                           unsigned *filtered,
                           unsigned max_lod[PS5_COMPUTE_TEXTURE_SLOTS],
-                          unsigned *arrays)
+                          unsigned *arrays,
+                          uint8_t binding_size[PS5_COMPUTE_TEXTURE_SLOTS])
 {
    *used = 0;
    *buffers = 0;
    *filtered = 0;
    *arrays = 0;
    memset(max_lod, 0, PS5_COMPUTE_TEXTURE_SLOTS * sizeof(*max_lod));
+   memset(binding_size, 0, PS5_COMPUTE_TEXTURE_SLOTS * sizeof(*binding_size));
    nir_foreach_function_impl(impl, nir) {
       nir_foreach_block(block, impl) {
          nir_foreach_instr(instr, block) {
@@ -11297,7 +11300,7 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                    tex->texture_index >= PS5_COMPUTE_TEXTURE_SLOTS ||
                    tex->def.bit_size != 32)
                   return false;
-               unsigned coords = 0, lods = 0;
+               unsigned coords = 0, lods = 0, array_size = 1;
                for (unsigned i = 0; i < tex->num_srcs; ++i) {
                   nir_src source = tex->src[i].src;
                   if (tex->src[i].src_type == nir_tex_src_coord) {
@@ -11310,14 +11313,34 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                          !nir_src_is_const(source) || nir_src_as_uint(source))
                         return false;
                      ++lods;
+                  } else if (tex->src[i].src_type == nir_tex_src_texture_offset) {
+                     if (source.ssa->num_components != 1 || source.ssa->bit_size != 32)
+                        return false;
+                     unsigned ceiling;
+                     if (nir_src_is_const(source)) {
+                        ceiling = nir_src_as_uint(source);
+                     } else {
+                        struct hash_table *ranges = _mesa_pointer_hash_table_create(NULL);
+                        if (!ranges) return false;
+                        ceiling = nir_unsigned_upper_bound(nir, ranges,
+                           nir_get_scalar(source.ssa, 0));
+                        _mesa_hash_table_destroy(ranges, NULL);
+                     }
+                     if (ceiling >= PS5_COMPUTE_TEXTURE_SLOTS - tex->texture_index)
+                        return false;
+                     array_size = MAX2(array_size, ceiling + 1);
                   } else {
                      return false;
                   }
                }
                if (coords != (tex->op == nir_texop_txf) || lods != 1)
                   return false;
-               *used |= 1u << tex->texture_index;
-               *buffers |= 1u << tex->texture_index;
+               const unsigned mask = BITFIELD_RANGE(tex->texture_index, array_size);
+               if ((*used & mask) && binding_size[tex->texture_index] != array_size)
+                  return false;
+               *used |= mask;
+               *buffers |= mask;
+               binding_size[tex->texture_index] = array_size;
                continue;
             }
             if ((tex->op != nir_texop_txf && tex->op != nir_texop_txs && tex->op != nir_texop_txl) ||
@@ -11371,6 +11394,7 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                 (((*arrays & (1u << tex->texture_index)) != 0) != tex->is_array))
                return false;
             *used |= 1u << tex->texture_index;
+            binding_size[tex->texture_index] = 1;
             if (tex->is_array) *arrays |= 1u << tex->texture_index;
             if (tex->op == nir_texop_txl)
                *filtered |= 1u << tex->texture_index;
@@ -11394,6 +11418,7 @@ ps5_create_compute_state(struct pipe_context *base,
    nir_shader *nir = (nir_shader *)templ->prog; /* Gallium transfers ownership. */
    unsigned textures = 0, texture_buffers = 0, filtered = 0;
    unsigned max_lod[PS5_COMPUTE_TEXTURE_SLOTS], arrays = 0;
+   uint8_t texture_binding_size[PS5_COMPUTE_TEXTURE_SLOTS];
    if (nir->info.stage != MESA_SHADER_COMPUTE)
       goto cleanup;
    /* Ordinary compute texture() has no implicit derivatives. Normalize it
@@ -11407,8 +11432,16 @@ ps5_create_compute_state(struct pipe_context *base,
       .lower_local_invocation_index = true,
    };
    nir_lower_compute_system_values(nir, &cs_options);
+   if (exec_list_length(&nir->functions) != 1) {
+      nir_lower_variable_initializers(nir, nir_var_function_temp);
+      nir_lower_returns(nir);
+      nir_inline_functions(nir);
+      nir_opt_deref(nir);
+      nir_remove_non_entrypoints(nir);
+      nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   }
    const bool texture_usage_ok = ps5_compute_texture_usage(nir, &textures,
-      &texture_buffers, &filtered, max_lod, &arrays);
+      &texture_buffers, &filtered, max_lod, &arrays, texture_binding_size);
    if (nir->info.num_ubos > PS5_COMPUTE_CONSTANT_SLOTS ||
        nir->info.num_images > PS5_COMPUTE_IMAGE_SLOTS ||
        nir->info.num_textures > PS5_COMPUTE_TEXTURE_SLOTS ||
@@ -11455,10 +11488,13 @@ ps5_create_compute_state(struct pipe_context *base,
    for (unsigned i = 0; i < PS5_COMPUTE_TEXTURE_SLOTS; ++i) {
       if (!(textures & (1u << i)))
          continue;
+      const unsigned array_size = texture_binding_size[i];
       options.descriptor_bindings[options.descriptor_binding_count++] =
          (PsbcDescriptorBinding){.binding = i,
-            .type = PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER, .array_size = 1,
+            .type = PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,
+            .array_size = array_size,
             .stride = 48, .offset = PS5_COMPUTE_TEXTURE_OFFSET + i * 48};
+      i += array_size - 1;
    }
    shader = calloc(1, sizeof(*shader));
    if (shader) {
@@ -11470,6 +11506,8 @@ ps5_create_compute_state(struct pipe_context *base,
       shader->filtered_textures = filtered;
       shader->array_textures = arrays;
       memcpy(shader->texture_lod, max_lod, sizeof(max_lod));
+      memcpy(shader->texture_binding_size, texture_binding_size,
+             sizeof(texture_binding_size));
       uint8_t *package = NULL;
       size_t package_size = 0;
       const PsbcResult compile_result = psbc_compile_nir(nir, &options,
