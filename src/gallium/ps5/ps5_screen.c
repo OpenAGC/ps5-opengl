@@ -2202,8 +2202,7 @@ ps5_image_buffer_descriptor(const struct pipe_image_view *view,
       .swizzle_a = PIPE_SWIZZLE_W,
    };
 
-   if (!view || !view->resource || view->resource->target != PIPE_BUFFER ||
-       !(view->resource->bind & PIPE_BIND_SHADER_IMAGE))
+   if (!view || !view->resource || view->resource->target != PIPE_BUFFER)
       return false;
    sampled.u.buf.offset = view->u.buf.offset;
    sampled.u.buf.size = view->u.buf.size;

@@ -625,7 +625,7 @@ static void texel_buffer_descriptor_contract(void) {
     assert(ps5_image_buffer_descriptor(&image,(uintptr_t)data>>32,image_descriptor));
     assert(!ps5_resource_texel_buffer_descriptor_owned(&resource.base,image_descriptor));
     for(unsigned i=4;i<8;++i) assert(!image_descriptor[i]);
-    resource.base.bind=0;
+    resource.base.target=PIPE_TEXTURE_2D;
     assert(!ps5_image_buffer_descriptor(&image,(uintptr_t)data>>32,image_descriptor));
 }
 int main(void) {
@@ -826,8 +826,7 @@ int main(void) {
     assert(descriptor[3]==0x90000204 && descriptor[4]==63 && descriptor[5]==0x400000);
     _Alignas(256) uint8_t image_buffer_data[64];
     struct ps5_resource image_buffer={.base={.screen=&screen,.target=PIPE_BUFFER,
-        .format=PIPE_FORMAT_R8_UNORM,.width0=sizeof(image_buffer_data),
-        .bind=PIPE_BIND_SHADER_IMAGE},.data=image_buffer_data,
+        .format=PIPE_FORMAT_R8_UNORM,.width0=sizeof(image_buffer_data)},.data=image_buffer_data,
         .size=sizeof(image_buffer_data),.allocation_size=sizeof(image_buffer_data)};
     pipe_reference_init(&image_buffer.base.reference,1);
     struct pipe_image_view image_buffer_view={.resource=&image_buffer.base,
