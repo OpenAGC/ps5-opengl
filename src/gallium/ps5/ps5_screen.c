@@ -11523,6 +11523,15 @@ ps5_create_compute_state(struct pipe_context *base,
          psbc_free_output(&shader->output);
          free(shader);
          shader = NULL;
+      } else {
+         printf("[ps5-gallium] compute compiled ubos=%u ssbos=%u images=%u textures=%x code=%zu user-sgprs=%u descriptors=%u grid=%u private=%u scratch=%u\n",
+                shader->ubos, shader->ssbos, shader->images, shader->textures,
+                shader->output.machine_code_size,
+                shader->output.metadata.user_sgpr_count,
+                shader->output.metadata.descriptor_set0_user_data_dword,
+                shader->output.metadata.compute_grid_size_user_data_dword,
+                shader->output.metadata.compute_private_stride,
+                shader->output.metadata.scratch_bytes_per_wave);
       }
       free(package);
    }
@@ -11921,6 +11930,9 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
    }
    context->last_compute_status = ps5_agc_compute_execute(base->screen, &context->cs->output,
       context->compute_descriptors, buffers, buffer_count, groups);
+   if (context->last_compute_status)
+      printf("[ps5-gallium] compute submit failed status=%d resources=%u\n",
+             context->last_compute_status, buffer_count);
    if (!context->last_compute_status)
       ++context->dispatches;
 }
