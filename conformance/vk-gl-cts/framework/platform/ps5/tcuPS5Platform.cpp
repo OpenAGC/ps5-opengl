@@ -147,10 +147,12 @@ RenderContext::RenderContext(const glu::RenderConfig &config,
       m_display(EGL_NO_DISPLAY), m_surface(EGL_NO_SURFACE),
       m_context(EGL_NO_CONTEXT) {
   try {
-    if (!glu::isContextTypeGLCore(m_type) || m_type.getMajorVersion() != 3 ||
-        m_type.getMinorVersion() != 3)
+    const int major = m_type.getMajorVersion();
+    const int minor = m_type.getMinorVersion();
+    if (!glu::isContextTypeGLCore(m_type) ||
+        !((major == 3 && minor == 3) || (major == 4 && minor == 6)))
       throw tcu::NotSupportedError(
-          "PS5 CTS target supports OpenGL 3.3 core only");
+          "PS5 CTS target supports OpenGL 3.3 and 4.6 core only");
 
     const glu::ContextFlags unsupported =
         glu::ContextFlags(glu::CONTEXT_ROBUST | glu::CONTEXT_NO_ERROR);
@@ -217,9 +219,9 @@ RenderContext::RenderContext(const glu::RenderConfig &config,
       contextFlags |= EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR;
     const EGLint contextAttributes[] = {
         EGL_CONTEXT_MAJOR_VERSION_KHR,
-        3,
+        major,
         EGL_CONTEXT_MINOR_VERSION_KHR,
-        3,
+        minor,
         EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR,
         EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR,
         EGL_CONTEXT_FLAGS_KHR,

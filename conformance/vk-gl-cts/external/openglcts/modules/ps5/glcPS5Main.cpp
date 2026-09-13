@@ -175,7 +175,7 @@ bool loadArguments(Arguments &arguments) {
 
 int main(void) {
   writeStatus("starting", nullptr);
-  std::printf("[ps5-opengl-cts] starting GL33 CTS runner\n");
+  std::printf("[ps5-opengl-cts] starting OpenGL CTS runner\n");
   // Negative tests intentionally raise millions of GL errors. Suppress only
   // Mesa's stderr duplicates; glGetError, debug callbacks and QPA stay enabled.
   if (setenv("MESA_DEBUG", "silent", 1) != 0)

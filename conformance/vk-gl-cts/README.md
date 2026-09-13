@@ -1,6 +1,6 @@
 # Khronos OpenGL CTS for PS5
 
-This overlay runs `KHR-GL33` through public PS5 EGL/OpenGL entrypoints. It accepts
+This overlay runs `KHR-GL33` and `KHR-GL46` through public PS5 EGL/OpenGL entrypoints. It accepts
 the historical development pin `cf7edb26d3be2d8763595ed08fdc41f3c1b1966f` and the
 official `opengl-cts-4.6.8.1` release, commit
 `067e8832315e79817ede1c4863804e440f5d1c80`.
@@ -64,15 +64,16 @@ cmake --build third_party/VK-GL-CTS/build-ps5-gl33 \
   --target ps5-gl33-runner -j8
 ```
 
-`ps5-gl33-package` registers `KHR-GL33` and the upstream `CTS-Configs`
+`ps5-gl33-package` retains its historical target name but registers `KHR-GL33`,
+`KHR-GL46`, and the upstream `CTS-Configs`
 diagnostic; it excludes the monolithic GLES/EGL test registry from the app.
 `ps5-gl33-runner` adds the native-title entry point. It reads one bounded CTS
 argument per line from `/app0/cts-args.txt`, writes the full QPA log to
 `/download0/ps5-opengl-cts.qpa`, and writes a compact machine-readable status
 to `/download0/ps5-opengl-cts.status`.
 
-This is conformance infrastructure, not a claim of conformance. The official
-GL 3.3 must-pass list currently contains 9,886 cases. Results must be produced
+This is conformance infrastructure, not a claim of conformance. The pinned
+must-pass lists contain 9,886 GL 3.3 cases and 19,714 GL 4.6 cases. Results must be produced
 on hardware from the installed `PPSA99005` native folder application.
 
 Run one frozen shard with the lock-owning native-title wrapper:
