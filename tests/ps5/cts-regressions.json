@@ -49,5 +49,14 @@
     "KHR-GL33.texture_swizzle.smoke_access_idx_4_channel_idx_0",
     "KHR-GL33.texture_swizzle.smoke_access_idx_5_channel_idx_0",
     "KHR-GL33.texture_swizzle.smoke_access_idx_7_channel_idx_0"
+  ],
+  "gl46-prerequisites": [
+    "KHR-GL46.buffer_storage.*",
+    "KHR-GL46.gl_spirv.*",
+    "KHR-GL46.indirect_parameters_tests.*",
+    "KHR-GL46.polygon_offset_clamp.*",
+    "KHR-GL46.shader_draw_parameters_tests.*",
+    "KHR-GL46.texture_filter_anisotropic.*",
+    "KHR-GL46.transform_feedback_overflow_query_ARB.*"
   ]
 }
