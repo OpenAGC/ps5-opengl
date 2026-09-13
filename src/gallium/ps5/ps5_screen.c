@@ -1381,14 +1381,19 @@ ps5_depth_staging_required(const struct pipe_resource *resource)
 }
 
 static bool
-ps5_mutable_sampled_resource_bind(unsigned bind)
+ps5_sampled_resource_bind(const struct pipe_resource *resource)
 {
    /* Mesa derives mutable texture bindings from 2D format support, so cube,
     * array, and 3D resources can carry an advisory render-target bit even
     * though this backend only exposes those targets for sampling.
     */
-   return (bind & PIPE_BIND_SAMPLER_VIEW) &&
-          !(bind & ~(PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET));
+   if (!resource || !(resource->bind & PIPE_BIND_SAMPLER_VIEW))
+      return false;
+   if (!(resource->bind & ~(PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET)))
+      return true;
+   return (resource->format == PIPE_FORMAT_Z32_FLOAT ||
+           resource->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT) &&
+          !(resource->bind & ~(PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_DEPTH_STENCIL));
 }
 
 static unsigned
@@ -2654,6 +2659,7 @@ ps5_prepare_constant(struct ps5_context *context,
    unsigned expected_texture_count;
    bool merged_geometry;
    bool merged_geometry_storage;
+   bool indirect_ubo;
    const bool storage_fs = slot == 1 && ps5_shader_uses_storage(shader);
 
    if (!shader || !shader->active || slot >= 2)
@@ -2664,12 +2670,20 @@ ps5_prepare_constant(struct ps5_context *context,
                                                        metadata);
    merged_geometry_storage = merged_geometry &&
                              ps5_shader_storage_count(context->gs);
+   indirect_ubo = false;
+   if (!storage_fs && !merged_geometry)
+      for (index = 0; index < metadata->descriptor_binding_count; ++index)
+         indirect_ubo |= metadata->descriptor_bindings[index].type ==
+                            PSBC_DESCRIPTOR_UNIFORM_BUFFER &&
+                         metadata->descriptor_bindings[index].binding ==
+                            PSBC_GALLIUM_UBO_ARRAY_BINDING(
+                               slot ? PSBC_STAGE_FRAGMENT : PSBC_STAGE_VERTEX);
    expected_ubo_count = shader->nir->info.num_ubos +
       (merged_geometry ? context->gs->nir->info.num_ubos : 0u);
    expected_ubo_bindings = merged_geometry_storage
       ? (shader->nir->info.num_ubos != 0) +
            (context->gs->nir->info.num_ubos != 0)
-      : expected_ubo_count;
+      : indirect_ubo ? 1u : expected_ubo_count;
    expected_texture_count = ps5_texture_count(context, shader, metadata);
    if (!expected_ubo_count)
       return true;
@@ -2739,6 +2753,14 @@ ps5_prepare_constant(struct ps5_context *context,
          } else {
             return false;
          }
+      } else if (indirect_ubo) {
+         binding_ubo_count = shader->nir->info.num_ubos;
+         if (binding->set ||
+             binding->binding != PSBC_GALLIUM_UBO_ARRAY_BINDING(
+                                    slot ? PSBC_STAGE_FRAGMENT : PSBC_STAGE_VERTEX) ||
+             binding->array_size != binding_ubo_count || binding->stride != 16 ||
+             binding->offset != PS5_TEXTURE_DESCRIPTOR_BYTES)
+            return false;
       } else if (binding->set ||
           binding->binding < PSBC_GALLIUM_UBO_BINDING_BASE ||
           binding->binding >= PSBC_GALLIUM_UBO_BINDING_BASE +
@@ -2751,7 +2773,7 @@ ps5_prepare_constant(struct ps5_context *context,
       for (unsigned array_index = 0;
            array_index < (storage_fs ? expected_ubo_count : binding_ubo_count);
            ++array_index) {
-         state_binding = (storage_fs || merged_geometry_storage)
+         state_binding = (storage_fs || merged_geometry_storage || indirect_ubo)
             ? array_index
             : binding->binding - PSBC_GALLIUM_UBO_BINDING_BASE;
          if (state_binding >= expected_ubo_count)
@@ -3486,12 +3508,12 @@ ps5_resource_layout(const struct pipe_resource *templ, size_t *size,
                        templ->array_size != 1 ||
                        (!depth_target &&
                         (!ps5_sampled_texture_format(templ->format) ||
-                         !ps5_mutable_sampled_resource_bind(templ->bind))))) ||
+                         !ps5_sampled_resource_bind(templ))))) ||
        (array_1d && (templ->height0 != 1 || !templ->array_size ||
                      templ->array_size > PS5_MAX_TEXTURE_ARRAY_LAYERS ||
                      (!depth_target &&
                       (!ps5_sampled_texture_format(templ->format) ||
-                       !ps5_mutable_sampled_resource_bind(templ->bind))))) ||
+                       !ps5_sampled_resource_bind(templ))))) ||
        (!texture_1d && !array_1d && !cube && !cube_array && !array_2d &&
         !texture_3d &&
         templ->array_size != 1) ||
@@ -3500,19 +3522,19 @@ ps5_resource_layout(const struct pipe_resource *templ, size_t *size,
                  templ->width0 != templ->height0 ||
                  (!depth_target &&
                   (!ps5_sampled_texture_format(templ->format) ||
-                   !ps5_mutable_sampled_resource_bind(templ->bind))))) ||
+                   !ps5_sampled_resource_bind(templ))))) ||
        (cube_array &&
         (!templ->array_size || templ->array_size % 6 ||
          templ->array_size > PS5_MAX_TEXTURE_ARRAY_LAYERS ||
          templ->width0 > PS5_MAX_TEXTURE_CUBE_SIZE ||
          templ->width0 != templ->height0 ||
          !ps5_sampled_texture_format(templ->format) ||
-         !ps5_mutable_sampled_resource_bind(templ->bind))) ||
+         !ps5_sampled_resource_bind(templ))) ||
        (array_2d && (!templ->array_size ||
                      templ->array_size > PS5_MAX_TEXTURE_ARRAY_LAYERS ||
                      !ps5_sampled_texture_format(templ->format) ||
                      (!depth_target &&
-                      !ps5_mutable_sampled_resource_bind(templ->bind) &&
+                      !ps5_sampled_resource_bind(templ) &&
                       !ps5_compute_image_array_resource(templ)))) ||
        (texture_3d && (templ->array_size != 1 || !templ->depth0 ||
                        templ->depth0 > PS5_MAX_TEXTURE_3D_SIZE ||
@@ -3520,7 +3542,7 @@ ps5_resource_layout(const struct pipe_resource *templ, size_t *size,
                        templ->height0 > PS5_MAX_TEXTURE_3D_SIZE ||
                        (!depth_target &&
                         (!ps5_sampled_texture_format(templ->format) ||
-                         !ps5_mutable_sampled_resource_bind(templ->bind))))))
+                         !ps5_sampled_resource_bind(templ))))))
       return false;
 
    if (templ->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT &&
@@ -4217,7 +4239,7 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
       (base->target == PIPE_TEXTURE_1D || base->target == PIPE_TEXTURE_1D_ARRAY);
    const bool volume = base && base->target == PIPE_TEXTURE_3D;
    const bool rectangle = base && base->target == PIPE_TEXTURE_RECT;
-   const bool cube = base && !sampled && ps5_cube_texture_target(base->target);
+   const bool cube = base && ps5_cube_texture_target(base->target);
    const bool array = base && (base->target == PIPE_TEXTURE_2D_ARRAY ||
                                (one_d && base->target == PIPE_TEXTURE_1D_ARRAY) || cube);
    if (!base || !descriptor || (!one_d && !volume && !rectangle && !cube &&
@@ -4227,7 +4249,7 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
        (one_d && base->height0 != 1) ||
        (volume ? (!base->depth0 || base->depth0 > PS5_MAX_TEXTURE_3D_SIZE ||
                   base->width0 > PS5_MAX_TEXTURE_3D_SIZE || base->height0 > PS5_MAX_TEXTURE_3D_SIZE) : base->depth0 != 1) ||
-       !base->array_size || base->array_size > (sampled ? 16u : PS5_MAX_TEXTURE_ARRAY_LAYERS) ||
+       !base->array_size || base->array_size > PS5_MAX_TEXTURE_ARRAY_LAYERS ||
        (cube && (base->width0 != base->height0 || base->array_size % 6 ||
                  (base->target == PIPE_TEXTURE_CUBE && base->array_size != 6))) ||
        (!array && base->array_size != 1) || base->last_level >= PIPE_MAX_TEXTURE_LEVELS ||
@@ -4309,7 +4331,8 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
          return -1;
    }
    /* Same reverse-ordered linear mip storage and layer encoding as graphics.
-    * Sampled arrays remain capped at 16; storage views validate sublayers below. */
+    * Sampled and storage arrays share the advertised layer limit; storage
+    * views validate sublayers below. */
    const uintptr_t address = (uintptr_t)resource->data;
    const unsigned pitch = resource->level_stride[0] / texel_size;
    const unsigned channels = ps5_storage_image_channels(base->format);
@@ -4321,10 +4344,12 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
       ((base->width0 - 1u) >> 2) | ((base->height0 - 1u) << 14) | UINT32_C(0x80000000),
       (multisampled ? (array ? UINT32_C(0xf1b20000) : UINT32_C(0xe1b20000)) :
        tiled ? UINT32_C(0x91b00000) : volume ? UINT32_C(0xa0000000) :
+       sampled && cube ? UINT32_C(0xb0000000) :
        one_d ? (array ? UINT32_C(0xc0000000) : UINT32_C(0x80000000)) :
        array ? UINT32_C(0xd0000000) : UINT32_C(0x90000000)) | swizzle |
          (first_level << 12) | (last_level << 16),
-      multisampled ? (array ? base->array_size - 1 : 0) : tiled ? 0 : volume ? base->depth0 - 1 : array ? base->array_size - 1 :
+      multisampled ? (array ? base->array_size - 1 : 0) : tiled ? 0 : volume ? base->depth0 - 1 :
+         sampled && cube ? base->array_size / 6u - 1u : array ? base->array_size - 1 :
          !one_d && !base->last_level && pitch > base->width0 ? pitch - 1u : 0,
       UINT32_C(0x00400000) | ((multisampled ? 2u : base->last_level) << 4), 0, 0,
    };
@@ -10611,6 +10636,24 @@ ps5_append_texture_descriptor(PsbcCompileOptions *options, unsigned binding, uns
 }
 
 static bool
+ps5_shader_has_indirect_ubo(const struct ps5_shader *shader)
+{
+   nir_foreach_function_impl(impl, shader->nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_load_ubo &&
+                !nir_src_is_const(intr->src[0]))
+               return true;
+         }
+      }
+   }
+   return false;
+}
+
+static bool
 ps5_shader_compile_options(const struct ps5_shader *shader,
                            uint32_t address32_hi,
                            const struct ps5_vertex_layout *layout,
@@ -10618,8 +10661,6 @@ ps5_shader_compile_options(const struct ps5_shader *shader,
                            bool provoking_vtx_last,
                            PsbcCompileOptions *options)
 {
-   unsigned texture_count = 0;
-
    memset(options, 0, sizeof(*options));
    options->target = PSBC_TARGET_PS5;
    options->stage = shader->stage;
@@ -10671,17 +10712,27 @@ ps5_shader_compile_options(const struct ps5_shader *shader,
          continue;
       if (!ps5_append_texture_descriptor(options, binding, 0))
          return false;
-      texture_count++;
    }
    if (shader->nir->info.num_ubos) {
       if (shader->nir->info.num_ubos >
-             (PS5_ENABLE_UBO_CANDIDATE ? PS5_MAX_CONSTANT_BUFFERS : 1) ||
-           !ps5_append_ubo_descriptors(options, 0,
-                                       shader->nir->info.num_ubos))
+             (PS5_ENABLE_UBO_CANDIDATE ? PS5_MAX_CONSTANT_BUFFERS : 1))
          return false;
-      if (options->descriptor_binding_count !=
-             texture_count + shader->nir->info.num_ubos)
+      if (ps5_shader_has_indirect_ubo(shader)) {
+         if (options->descriptor_binding_count >= PSBC_MAX_DESCRIPTOR_BINDINGS)
+            return false;
+         options->gallium_buffer_arrays = true;
+         options->descriptor_bindings[options->descriptor_binding_count++] =
+            (PsbcDescriptorBinding){
+               .binding = PSBC_GALLIUM_UBO_ARRAY_BINDING(shader->stage),
+               .type = PSBC_DESCRIPTOR_UNIFORM_BUFFER,
+               .array_size = shader->nir->info.num_ubos,
+               .offset = PS5_TEXTURE_DESCRIPTOR_BYTES,
+               .stride = 16,
+            };
+      } else if (!ps5_append_ubo_descriptors(options, 0,
+                                              shader->nir->info.num_ubos)) {
          return false;
+      }
    }
    return true;
 }
@@ -11534,17 +11585,19 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                binding_size[tex->texture_index] = 1;
                continue;
             }
+            const bool volume = tex->sampler_dim == GLSL_SAMPLER_DIM_3D;
             const unsigned dimensions = tex->sampler_dim == GLSL_SAMPLER_DIM_1D ? 1 :
                tex->sampler_dim == GLSL_SAMPLER_DIM_2D ? 2 :
-               tex->sampler_dim == GLSL_SAMPLER_DIM_3D ? 3 : 0;
+               (volume || tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE) ? 3 : 0;
             if ((tex->op != nir_texop_txf && tex->op != nir_texop_txs && tex->op != nir_texop_txl) ||
-                !dimensions || (dimensions == 3 && tex->is_array) ||
+                !dimensions || (volume && tex->is_array) ||
                 tex->is_shadow || tex->texture_index >= PS5_COMPUTE_TEXTURE_SLOTS ||
                 tex->def.bit_size != 32 ||
                 tex->num_srcs != (tex->op == nir_texop_txs ? 1 : 2))
                return false;
             if (tex->op == nir_texop_txl && (tex->sampler_index != tex->texture_index ||
-                tex->dest_type != nir_type_float32))
+                (tex->dest_type != nir_type_float32 && tex->dest_type != nir_type_int32 &&
+                 tex->dest_type != nir_type_uint32)))
                return false;
             unsigned coords = 0, lods = 0;
             for (unsigned i = 0; i < tex->num_srcs; ++i) {
@@ -12139,7 +12192,10 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
          return;
       if (context->cs->filtered_textures & (1u << i)) {
          if (!(context->compute_sampler_mask & (1u << i)) ||
-             (view->format != PIPE_FORMAT_R32_FLOAT && view->format != PIPE_FORMAT_R32G32B32A32_FLOAT))
+             !ps5_storage_image_texel_size(view->format) ||
+             (util_format_is_pure_integer(view->format) &&
+              (context->compute_samplers[i][2] &
+               ((UINT32_C(3) << 20) | (UINT32_C(3) << 22)))))
             return;
          memcpy(table->data + PS5_COMPUTE_TEXTURE_OFFSET + i * 48 + 32,
                 context->compute_samplers[i], 16);
@@ -12876,7 +12932,7 @@ ps5_set_vertex_buffers(struct pipe_context *base, unsigned count,
    if (count > PIPE_MAX_ATTRIBS || !buffers)
       return;
    for (index = 0; index < count; ++index) {
-      if (buffers[index].is_user_buffer || !buffers[index].buffer.resource)
+      if (buffers[index].is_user_buffer)
          return;
    }
    for (index = 0; index < count; ++index) {
@@ -13411,6 +13467,8 @@ ps5_screen_create(void)
    caps->rasterizer_subpixel_bits = 8;
    caps->min_texel_offset = -8;
    caps->max_texel_offset = 7;
+   caps->min_texture_gather_offset = -8;
+   caps->max_texture_gather_offset = 7;
    /* GFX10 rasterization provides upper-left window coordinates.  Mesa's
     * state tracker lowers OpenGL's lower-left convention through CB0. */
    caps->fs_coord_origin_upper_left = true;

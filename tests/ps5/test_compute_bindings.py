@@ -616,6 +616,37 @@ static void geometry_storage_contract(void) {
     assert(data.base.reference.count==1 && !ps5_prepare_geometry_storage(&c,m,userdata,16));
     fragment_mode=false;
 }
+static void indirect_ubo_contract(void) {
+    struct pipe_screen screen={.resource_destroy=destroy};
+    uint32_t words[64]={0}, userdata[16]={0};
+    _Alignas(256) uint8_t descriptors[PS5_DESCRIPTOR_STORAGE_BYTES]={0};
+    struct ps5_resource data={.base={.screen=&screen,.target=PIPE_BUFFER,.width0=sizeof(words)},
+        .data=(void *)words,.size=sizeof(words)};
+    struct ps5_resource table={.base={.target=PIPE_BUFFER},.data=descriptors,.size=sizeof(descriptors)};
+    struct test_nir nir={.info={.num_ubos=3,.first_ubo_is_default_ubo=true}};
+    struct test_variant variant={0};
+    struct ps5_shader shader={&nir,&variant};
+    PsbcShaderMetadata *m=&variant.output.metadata;
+    m->address32_hi=(uintptr_t)descriptors>>32;
+    m->descriptor_set0_valid=true; m->descriptor_binding_count=1;
+    m->descriptor_bindings[0]=(PsbcDescriptorBinding){
+        .binding=PSBC_GALLIUM_UBO_ARRAY_BINDING(PSBC_STAGE_VERTEX),
+        .type=PSBC_DESCRIPTOR_UNIFORM_BUFFER,.array_size=3,
+        .offset=PS5_TEXTURE_DESCRIPTOR_BYTES,.stride=16};
+    struct ps5_context c={.base.screen=&screen,.descriptor_storage[0]=&table.base};
+    for(unsigned i=0;i<3;++i) c.constants[0][i]=(struct ps5_constant_state){
+        .valid=true,.size=64,.offset=i*16,.buffer=&data.base};
+    fragment_mode=true;
+    assert(ps5_prepare_constant(&c,&shader,0,userdata,16,NULL));
+    for(unsigned i=0;i<3;++i) {
+        const uint32_t *d=(const uint32_t *)(descriptors+PS5_TEXTURE_DESCRIPTOR_BYTES+i*16);
+        assert(d[0]==(uint32_t)(uintptr_t)((uint8_t *)words+i*16) && d[2]==64);
+    }
+    assert(userdata[0]==(uint32_t)(uintptr_t)descriptors);
+    m->descriptor_bindings[0].array_size=2;
+    assert(!ps5_prepare_constant(&c,&shader,0,userdata,16,NULL));
+    fragment_mode=false;
+}
 static void texel_buffer_descriptor_contract(void) {
     _Alignas(256) uint8_t data[64]={0};
     struct ps5_resource resource={.base={.target=PIPE_BUFFER,.width0=sizeof(data),
@@ -652,6 +683,7 @@ int main(void) {
     stale_cleanup_regression();
     fragment_contract();
     geometry_storage_contract();
+    indirect_ubo_contract();
     texel_buffer_descriptor_contract();
     assert(PS5_COMPUTE_TEXTURE_SLOTS==16 && PS5_AGC_COMPUTE_MAX_RESOURCES==79);
     struct pipe_screen screen={.resource_destroy=destroy}, other_screen={0};
@@ -973,7 +1005,7 @@ int main(void) {
         assert(!ps5_resource_storage_image_descriptor(&array.base,0,descriptor));
         --array.size;
         assert(ps5_resource_sampled_image_descriptor(&array.base,0,0,descriptor)<0);
-        ++array.size; array.base.array_size=17;
+        ++array.size; array.base.array_size=PS5_MAX_TEXTURE_ARRAY_LAYERS+1;
         assert(ps5_resource_sampled_image_descriptor(&array.base,0,0,descriptor)<0);
     }
     {
@@ -983,6 +1015,8 @@ int main(void) {
         cube.base.width0=cube.base.height0=2; cube.base.array_size=12;
         cube.data=pixels; cube.size=cube.allocation_size=sizeof(pixels);
         cube.layer_stride=512;
+        assert(!ps5_resource_sampled_image_descriptor(&cube.base,0,0,descriptor));
+        assert((descriptor[3]>>28)==11 && descriptor[4]==1);
         struct pipe_image_view v={.resource=&cube.base,.format=cube.base.format,
             .access=PIPE_IMAGE_ACCESS_READ_WRITE};
         v.u.tex.last_layer=11;
@@ -1670,8 +1704,14 @@ int main(void) {
         assert(context.last_compute_status<0 && submitted==before_filter);
     }
     sampler=valid;
+    sampler.base.min_img_filter=sampler.base.mag_img_filter=PIPE_TEX_FILTER_NEAREST;
     ps5_set_compute_sampler_states(&context.base,0,8,states);
+    expected_sampler[2]=0;
     image.base.format=sampled.format=PIPE_FORMAT_R32_UINT;
+    ps5_launch_grid(&context.base,&good);
+    assert(!context.last_compute_status && submitted==++before_filter);
+    sampler.base.min_img_filter=PIPE_TEX_FILTER_LINEAR;
+    ps5_set_compute_sampler_states(&context.base,0,8,states);
     ps5_launch_grid(&context.base,&good);
     assert(context.last_compute_status<0 && submitted==before_filter);
     for(unsigned i=0;i<8;++i) states[i]=NULL;
@@ -1687,6 +1727,7 @@ int main(void) {
     ps5_set_compute_sampler_views(&context.base,0,16,0,all_views);
     ps5_set_compute_sampler_states(&context.base,0,16,all_states);
     assert(!context.compute_views_invalid && !context.compute_samplers_invalid && sampled.reference.count==17);
+    expected_sampler[2]=1u<<22;
     cs.textures=cs.filtered_textures=with_filtered=65535;
     with_sampled=true; sampled_count=16;
     ps5_launch_grid(&context.base,&good);

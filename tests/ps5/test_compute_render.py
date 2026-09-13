@@ -624,7 +624,9 @@ int main(void) {
             nir_src_rewrite(&tex->src[1].src,nir_imm_int(&b,16));
         }
         unsigned used=0, buffers=0, filtered=0, max_lod[PS5_COMPUTE_TEXTURE_SLOTS], arrays=0;
-        assert(!ps5_compute_texture_usage(checked,&used,&buffers,&filtered,max_lod,&arrays,(uint8_t[16]){0}));
+        bool valid=ps5_compute_texture_usage(checked,&used,&buffers,&filtered,max_lod,&arrays,(uint8_t[16]){0});
+        assert(valid==(fault==6));
+        if(valid) assert(used==1 && !buffers && filtered==1 && !arrays && !max_lod[0]);
         ralloc_free(checked);
     }
     options = (PsbcCompileOptions){.target=PSBC_TARGET_PS5, .stage=PSBC_STAGE_VERTEX,

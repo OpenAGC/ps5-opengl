@@ -579,7 +579,7 @@ require(all(f"caps->{cap}" in SCREEN for cap in (
             "anisotropic_filter", "query_so_overflow")) and
         "caps->max_texture_anisotropy = PS5_ENABLE_GLSL_460_CANDIDATE ? 16.0f" in SCREEN and
         "input_user_data[draw_id_dword] = drawid_offset" in SCREEN and
-        "active_streamout_overflow_query[i]->value = 1" in SCREEN,
+        "active_streamout_overflow_query[stream]->value = 1" in SCREEN,
         "OpenGL 4.6 capability group lost its candidate gate or runtime behavior")
 require("fs_caps->max_shader_buffers = PS5_COMPUTE_STORAGE_SLOTS" in SCREEN and
         "fs_caps->max_shader_images = PS5_COMPUTE_IMAGE_SLOTS" in SCREEN and
@@ -934,7 +934,8 @@ require("PS5_ENABLE_TEXTURE_CUBE_CANDIDATE" in SCREEN and
         "#define PS5_ENABLE_TEXTURE_CUBE_CANDIDATE 1" in SCREEN and
         "PS5_MAX_TEXTURE_CUBE_LEVELS 15u" in SCREEN and
         "target == PIPE_TEXTURE_CUBE" in SCREEN and
-        "ps5_mutable_sampled_resource_bind" in SCREEN and
+        "ps5_sampled_resource_bind" in SCREEN and
+        "PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_DEPTH_STENCIL" in SCREEN and
         "resource->target != PIPE_TEXTURE_2D" in SCREEN and
         "proxy.bind = PIPE_BIND_SAMPLER_VIEW" in SCREEN and
         "UINT32_C(0xb0000000)" in SCREEN and
@@ -1035,6 +1036,9 @@ require("PS5_ENABLE_UBO_CANDIDATE" in SCREEN and
         "caps->constant_buffer_offset_alignment" in SCREEN and
         "PSBC_GALLIUM_UBO_BINDING_BASE + binding" in SCREEN and
         "descriptor->offset = PS5_TEXTURE_DESCRIPTOR_BYTES + binding * 16u" in SCREEN and
+        "ps5_shader_has_indirect_ubo" in SCREEN and
+        "PSBC_GALLIUM_UBO_ARRAY_BINDING(shader->stage)" in SCREEN and
+        "indirect_ubo ? 1u : expected_ubo_count" in SCREEN and
         "context->constants[state_slot][state_binding]" in SCREEN and
         "ps5_flush_gpu_data((void *)data_address, state->size)" in SCREEN,
         "uniform-buffer limits, descriptors, or live-buffer route regressed")
@@ -1139,9 +1143,9 @@ require("psbc_compile_nir_geometry_pipeline" in PSBC_H and
         'draw-status=%d calls=%u expected=%u' in UBO and
         "PS5_GEOMETRY_CONSTANT_SLOT" in SCREEN and
         "ps5_offset_ubo_index" in SCREEN and
-        "state->source_count != 1" in SCREEN and
-        "nir_imm_int(builder, state->first)" in SCREEN and
-        "ps5_append_ubo_descriptors(&options, vertex_ubos, geometry_ubos)" in SCREEN and
+        "index >= state->source_count" in SCREEN and
+        "nir_imm_int(builder, state->first + index)" in SCREEN and
+        "ps5_append_ubo_descriptors(&options, vertex_ubos," in SCREEN and
         "case MESA_SHADER_GEOMETRY:" in SCREEN and
         "gs_caps->max_const_buffers = 0" not in SCREEN,
         "merged NGG geometry candidate regressed")
@@ -1149,7 +1153,7 @@ require("-DHAVE_FUNC_ATTRIBUTE_PACKED=1" in PSBC_HOST_CONFIG,
         "host PSBC build lost the shared packed-NIR ABI")
 require('--verify-psbc' in PSBC_PS5_BUILD and
         json.loads((ROOT / 'dependencies.json').read_text())['psbc_patch']['patched_tree'] ==
-                    'e125ae06c1d5da3e5551220baa78d0be20037e8f',
+                    '06b0ce708e45aecb4a76ab905e0276149b4ba65f',
         "PS5 compiler archive is not pinned to the expected source tree")
 require("-DOPENGNM_PSBC_ORBIS=1" in PSBC_PS5_CONFIG and
         "defined(OPENGNM_PSBC_ORBIS)" in ACO_ISEL_HELPERS and
@@ -1372,7 +1376,8 @@ require("streamout-instanced-split" in SCREEN and
 
 require("capacity = (end - begin) /" in SCREEN and
         "primitives = MIN2(primitives, capacity)" in SCREEN and
-        "streamout_written_vertices / vertices_per_primitive" in SCREEN and
+        "emitted_primitives[stream] <" in SCREEN and
+        "generated_primitives[stream]" in SCREEN and
         "CAPTURE_BYTES == 72" in XFB_OVERFLOW and
         "glBindBufferRange(GL_TRANSFORM_FEEDBACK_BUFFER, 0, output, CAPTURE_OFFSET," in XFB_OVERFLOW and
         "glDrawArrays(GL_TRIANGLES, 0, 9)" in XFB_OVERFLOW and
@@ -1491,8 +1496,8 @@ require("info->instance_count != 1" not in SCREEN and
         "uint32_t         instance_divisor;" in PSBC_H and
         "bool                 is_indexed_draw_valid;" in PSBC_H and
         "bool                 start_instance_valid;" in PSBC_H and
-        "gfx_state.vi.instance_rate_inputs" in PSBC_C and
-        "gfx_state.vi.instance_rate_divisors" in PSBC_C and
+        "gfx->vi.instance_rate_inputs" in PSBC_C and
+        "gfx->vi.instance_rate_divisors" in PSBC_C and
         "attribute->instance_divisor = element->instance_divisor;" in SCREEN and
         "binding_records[element->vertex_buffer_index]" in SCREEN and
         "input_metadata->start_instance_user_data_dword" in SCREEN and
@@ -2019,6 +2024,8 @@ require("egl_public_core33_limits.o:" in MAKEFILE and
         "caps->rasterizer_subpixel_bits = 8" in SCREEN and
         "caps->min_texel_offset = -8" in SCREEN and
         "caps->max_texel_offset = 7" in SCREEN and
+        "caps->min_texture_gather_offset = -8" in SCREEN and
+        "caps->max_texture_gather_offset = 7" in SCREEN and
         "GL_CONTEXT_CORE_PROFILE_BIT" in CORE_LIMITS and
         'strcmp((const char *)renderer, "PS5 AGC")' in CORE_LIMITS and
         "glGetStringi(GL_EXTENSIONS, extension_count)" in CORE_LIMITS and
