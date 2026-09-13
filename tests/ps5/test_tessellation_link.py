@@ -84,10 +84,10 @@ static nir_shader *build(mesa_shader_stage stage, bool cross,
         b.shader->info.gs.invocations=1;
         b.shader->info.gs.active_stream_mask=1;
         nir_def *zero=nir_imm_int(&b,0);
+        nir_variable *in=varying(&b,nir_var_shader_in,
+            glsl_array_type(glsl_vec4_type(),3,0),VARYING_SLOT_POS,false);
         for(unsigned i=0;i<3;++i) {
-            nir_def *p=nir_load_per_vertex_input(&b,4,32,nir_imm_int(&b,i),zero,
-                .dest_type=nir_type_float32,
-                .io_semantics={.location=VARYING_SLOT_POS,.num_slots=1});
+            nir_def *p=nir_load_deref(&b,element(&b,in,nir_imm_int(&b,i)));
             nir_store_output(&b,p,zero,.src_type=nir_type_float32,
                 .io_semantics={.location=VARYING_SLOT_POS,.num_slots=1});
             nir_emit_vertex(&b,0);

@@ -292,7 +292,7 @@
     "third_party/mesa-26.2.0/src/compiler/shader_info.h": "b7c0ffcdc60db695854fa596171c8bffe7928598fe93d1cb17939114b7f4e74b",
     "third_party/mesa-26.2.0/src/mesa/program/prog_statevars.c": "3c5d09c2d5f5a0747ea77e3c413a2f5661e54d2787bd4183a61c602001537643",
     "third_party/mesa-26.2.0/src/mesa/state_tracker/st_glsl_to_nir.cpp": "f8e1695bd04d4f304be651aa49b9ae1150997aa025cce7a489127a0c718c7d2e",
-    "third_party/opengnm-psbc/libpsbc/psbc_compile.c": "42c25a2c97645debab3884b19258e299c15df60a02019299300d6b553c46e736",
+    "third_party/opengnm-psbc/libpsbc/psbc_compile.c": "6f33712cb5aa6af99d6439d534b2442c57b9a84229bd9950b031efcec35f105d",
     "third_party/opengnm-psbc/libpsbc/psbc_compile.h": "8651cf249e133c11f4391c0e6d27fe22b618a9f19c073fcbae05536010221c5f",
     "third_party/opengnm-psbc/src/amd/common/nir/ac_nir.c": "bf93d76a158bfbf5fd955be5c3e01e198de20d0782404e7f4eba64a2d29f71bc",
     "third_party/opengnm-psbc/src/compiler/nir/nir_intrinsics.h": "2d6f9e713863ce5a5fa51d4ed684896ce62fd347f289ae7a6c458d4b0069c8ee",
@@ -309,7 +309,7 @@
   }
 }
 PS5_GLSL_RECEIPT_END */
-#define PS5_GLSL_RECEIPT_SHA256 "01bb0dc6f36d596b30a3150d024ff20b82a7508094e5e656397e4db0a6390415"
+#define PS5_GLSL_RECEIPT_SHA256 "14da00f8225710a8c066991733be4dfaac143fdd512f73da4ae888424e404bbe"
 #define PS5_GLSL_DEFAULT_BYTES 16u
 #define PS5_GLSL_ADDEND_OFFSET 0u
 _Static_assert(PS5_GLSL_DEFAULT_BYTES > 0 && PS5_GLSL_DEFAULT_BYTES <= 64 &&
