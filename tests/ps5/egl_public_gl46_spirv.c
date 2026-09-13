@@ -114,7 +114,7 @@ main(void)
                 GL_UNSIGNED_BYTE, pixel);
    error = glGetError();
    passed = linked && pixel[0] < 32 && pixel[1] > 200 && pixel[2] < 32 &&
-            status == 0 && draws == 1 && error == GL_NO_ERROR;
+            status == 0 && draws == 2 && error == GL_NO_ERROR;
    printf("[ps5-egl-gl46-spirv] core=%d.%d formats=%d/0x%x extensions=%d "
           "linked=%d pixel=%02x%02x%02x%02x status=%d draws=%u "
           "error=0x%x result=%s\n",
