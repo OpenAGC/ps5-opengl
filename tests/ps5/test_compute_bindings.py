@@ -1661,6 +1661,12 @@ int main(void) {
         ps5_launch_grid(&context.base,&good);
         assert(!context.last_compute_status && submitted==++before_filter);
     }
+    sampler.base.wrap_s=PIPE_TEX_WRAP_REPEAT;
+    sampler.base.wrap_t=PIPE_TEX_WRAP_MIRROR_REPEAT;
+    sampler.base.wrap_r=PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+    ps5_set_compute_sampler_states(&context.base,0,8,states);
+    assert(!context.compute_samplers_invalid && context.compute_samplers[7][0]==0x88);
+    sampler.base.wrap_s=sampler.base.wrap_t=sampler.base.wrap_r=PIPE_TEX_WRAP_CLAMP_TO_EDGE;
     struct ps5_sampler_state valid=sampler;
     sampler.base.min_mip_filter=PIPE_TEX_MIPFILTER_LINEAR;
     sampler.base.max_lod=3;
@@ -1681,13 +1687,10 @@ int main(void) {
     ps5_set_compute_sampler_states(&context.base,0,8,states);
     assert(!context.compute_samplers_invalid);
     assert(context.compute_samplers[7][0]==0x92u && context.compute_samplers[7][3]==0);
-    for(unsigned fault=0;fault<17;++fault) {
+    for(unsigned fault=3;fault<17;++fault) {
+        if(fault==4) continue;
         sampler=valid;
-        if(fault==0) sampler.base.wrap_s=PIPE_TEX_WRAP_REPEAT;
-        if(fault==1) sampler.base.wrap_t=PIPE_TEX_WRAP_REPEAT;
-        if(fault==2) sampler.base.wrap_r=PIPE_TEX_WRAP_REPEAT;
         if(fault==3) sampler.base.compare_mode=1;
-        if(fault==4) sampler.base.wrap_s=PIPE_TEX_WRAP_CLAMP_TO_BORDER;
         if(fault==5) sampler.base.max_anisotropy=17;
         if(fault==6) sampler.base.min_mip_filter=3;
         if(fault==7) sampler.base.min_lod=-1;

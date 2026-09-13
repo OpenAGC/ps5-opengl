@@ -12033,25 +12033,24 @@ ps5_set_compute_sampler_states(struct pipe_context *base, unsigned start, unsign
    for (unsigned i = 0; i < count; ++i) {
       if (!states[i]) continue;
       const struct pipe_sampler_state *s = &((const struct ps5_sampler_state *)states[i])->base;
-      uint32_t wrap, min_filter, mag_filter, mip_filter;
+      uint32_t wrap[3], min_filter, mag_filter, mip_filter;
       uint32_t anisotropy = ps5_texture_descriptor_anisotropy(s->max_anisotropy);
       /* Rectangle coordinates are normalized in NIR, including projectors
        * and offsets; keep the hardware sampler normalized for every target. */
-      /* ponytail: matching-axis wrap modes; independent axes need qualification. */
-      if ((s->wrap_s != PIPE_TEX_WRAP_CLAMP_TO_EDGE && s->wrap_s != PIPE_TEX_WRAP_REPEAT &&
-           s->wrap_s != PIPE_TEX_WRAP_MIRROR_REPEAT) || s->wrap_t != s->wrap_s ||
-          s->wrap_r != s->wrap_s || s->compare_mode ||
+      if (s->compare_mode ||
           s->max_anisotropy > 16 || !ps5_float_is_finite(s->min_lod) ||
           !ps5_float_is_finite(s->max_lod) ||
           !(s->min_lod >= 0 && s->max_lod >= s->min_lod) ||
           s->lod_bias != 0 || !ps5_texture_descriptor_mip_filter(s->min_mip_filter, &mip_filter) ||
-          !ps5_texture_descriptor_wrap(s->wrap_s, &wrap) ||
+          !ps5_texture_descriptor_wrap(s->wrap_s, &wrap[0]) ||
+          !ps5_texture_descriptor_wrap(s->wrap_t, &wrap[1]) ||
+          !ps5_texture_descriptor_wrap(s->wrap_r, &wrap[2]) ||
           !ps5_texture_descriptor_filter(s->min_img_filter, s->max_anisotropy,
                                          &min_filter) ||
           !ps5_texture_descriptor_filter(s->mag_img_filter, s->max_anisotropy,
                                          &mag_filter))
          return;
-      descriptors[i][0] = wrap | (wrap << 3) | (wrap << 6) |
+      descriptors[i][0] = wrap[0] | (wrap[1] << 3) | (wrap[2] << 6) |
                           (anisotropy << 9) |
                           ((anisotropy >> 1) << 16) |
                           (anisotropy << 21);
@@ -13469,6 +13468,7 @@ ps5_screen_create(void)
    caps->max_texel_offset = 7;
    caps->min_texture_gather_offset = -8;
    caps->max_texture_gather_offset = 7;
+   caps->max_texture_gather_components = 4;
    /* GFX10 rasterization provides upper-left window coordinates.  Mesa's
     * state tracker lowers OpenGL's lower-left convention through CB0. */
    caps->fs_coord_origin_upper_left = true;
