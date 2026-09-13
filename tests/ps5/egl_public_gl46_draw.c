@@ -162,7 +162,7 @@ main(void)
    error = glGetError();
    passed = linked && anisotropy == 16.0f && max_anisotropy >= 16.0f &&
             left[0] > 200 && left[1] < 32 && right[0] < 32 && right[1] > 200 &&
-            status == 0 && draws == 2 && error == GL_NO_ERROR;
+            status == 0 && draws == 3 && error == GL_NO_ERROR;
    printf("[ps5-egl-gl46-draw] core=%d.%d linked=%d aniso=%.1f/%.1f "
           "pixels=%02x%02x%02x%02x/%02x%02x%02x%02x "
           "status=%d draws=%u error=0x%x result=%s\n",
