@@ -11,6 +11,8 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 MESA = ROOT / "third_party/mesa-26.2.0"
 source = (ROOT / "src/gallium/ps5/ps5_screen.c").read_text()
+assert "#define PS5_COMPUTE_STORAGE_SLOTS PIPE_MAX_SHADER_BUFFERS" in source
+assert "#define PS5_COMPUTE_IMAGE_SLOTS PS5_AGC_COMPUTE_MAX_IMAGES" in source
 begin = source.index("static void\nps5_set_shader_buffers(")
 functions = source[begin:source.index("\n#endif", begin)]
 sampler_at = source.index("static bool\nps5_texture_descriptor_wrap(")
@@ -590,7 +592,7 @@ int main(void) {
     stale_cleanup_regression();
     fragment_contract();
     geometry_storage_contract();
-    assert(PS5_COMPUTE_TEXTURE_SLOTS==16 && PS5_AGC_COMPUTE_MAX_RESOURCES==55);
+    assert(PS5_COMPUTE_TEXTURE_SLOTS==16 && PS5_AGC_COMPUTE_MAX_RESOURCES==79);
     struct pipe_screen screen={.resource_destroy=destroy}, other_screen={0};
     struct pipe_context barrier_context={0};
     ps5_memory_barrier(&barrier_context,0);

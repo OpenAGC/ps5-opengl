@@ -33,7 +33,9 @@ int ps5_agc_compute_plan_memory(size_t code_size, uint32_t private_stride,
                                 size_t budget, struct ps5_agc_compute_memory_layout *out);
 #define PS5_AGC_COMPUTE_SCRATCH_WAVES 1152u
 #define PS5_AGC_COMPUTE_MAX_TEXTURES 16u
-#define PS5_AGC_COMPUTE_MAX_RESOURCES (16u + 15u + 8u + PS5_AGC_COMPUTE_MAX_TEXTURES)
+#define PS5_AGC_COMPUTE_MAX_IMAGES 16u
+#define PS5_AGC_COMPUTE_MAX_RESOURCES \
+   (32u + 15u + PS5_AGC_COMPUTE_MAX_IMAGES + PS5_AGC_COMPUTE_MAX_TEXTURES)
 /* Internal bring-up path, not a public GL compute capability. All resources
  * must remain owned and unchanged until this synchronous call returns.
  * Raw UBO/SSBO and validated mip/layer image views; unbound slots are zero. */
