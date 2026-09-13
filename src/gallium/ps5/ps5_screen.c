@@ -12184,6 +12184,14 @@ ps5_set_constant_buffer(struct pipe_context *base, mesa_shader_stage shader,
    size_t destination_offset;
    size_t copied_size;
 
+   if (shader == MESA_SHADER_GEOMETRY)
+      printf("[ps5-gallium] geometry-constant-set index=%u buffer=%p user=%p resource=%p offset=%u size=%u\n",
+             index, (const void *)buffer,
+             buffer ? buffer->user_buffer : NULL,
+             buffer ? (void *)buffer->buffer : NULL,
+             buffer ? buffer->buffer_offset : 0,
+             buffer ? buffer->buffer_size : 0);
+
    if (index >= (PS5_ENABLE_UBO_CANDIDATE
                     ? PS5_MAX_CONSTANT_BUFFERS : 1))
       return;
@@ -12248,6 +12256,9 @@ ps5_set_constant_buffer(struct pipe_context *base, mesa_shader_stage shader,
    }
    state->size = buffer->buffer_size;
    state->valid = true;
+   if (shader == MESA_SHADER_GEOMETRY)
+      printf("[ps5-gallium] geometry-constant-ready index=%u copied=%u size=%u\n",
+             index, state->copied, state->size);
 }
 
 static void
