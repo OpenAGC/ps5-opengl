@@ -10456,19 +10456,14 @@ ps5_offset_ubo_index(nir_builder *builder, nir_instr *instruction, void *data)
       return false;
    builder->cursor = nir_before_instr(instruction);
    if (!nir_src_is_const(intrinsic->src[0])) {
-      printf("[ps5-gallium] geometry-ubo index=dynamic first=%u count=%u\n",
-             state->first, state->source_count);
-      if (state->source_count != 1) {
-         state->valid = false;
+      if (!state->first)
          return false;
-      }
       nir_src_rewrite(&intrinsic->src[0],
-                      nir_imm_int(builder, state->first));
+                      nir_iadd_imm(builder, intrinsic->src[0].ssa,
+                                   state->first));
       return true;
    }
    index = nir_src_as_uint(intrinsic->src[0]);
-   printf("[ps5-gallium] geometry-ubo index=%u first=%u count=%u\n",
-          index, state->first, state->source_count);
    if (index >= state->source_count ||
        state->first + index >= 2u * PS5_MAX_CONSTANT_BUFFERS) {
       state->valid = false;

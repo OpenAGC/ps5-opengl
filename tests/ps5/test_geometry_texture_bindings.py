@@ -18,6 +18,11 @@ def function(name):
     return screen[start:screen.index("\n}", start) + 3]
 
 
+def structure(name):
+    start = screen.index("struct " + name + " {")
+    return screen[start:screen.index("\n};", start) + 3]
+
+
 defines = "\n".join(re.findall(
     r"^#define PS5_(?:MAX_TEXTURE_UNITS|MERGED_TEXTURE_UNITS|MAX_CONSTANT_BUFFERS|"
     r"TEXTURE_DESCRIPTOR_STRIDE|TEXTURE_DESCRIPTOR_BYTES|CONSTANT_DATA_OFFSET) "
@@ -29,8 +34,27 @@ code = r'''
 #include "psbc_compile.h"
 ''' + defines + "\n" + function("ps5_append_texture_descriptor") + "\n" + \
     function("ps5_append_ubo_descriptors") + "\n" + \
-    function("ps5_offset_geometry_texture") + r'''
+    function("ps5_offset_geometry_texture") + "\n" + \
+    structure("ps5_ubo_offset_state") + "\n" + \
+    function("ps5_offset_ubo_index") + r'''
+static void dynamic_ubo_offset(void) {
+    nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_GEOMETRY,
+        psbc_get_nir_options(PSBC_STAGE_GEOMETRY),"dynamic-geometry-ubo");
+    nir_def *index=nir_load_primitive_id(&b);
+    nir_def *value=nir_load_ubo(&b,1,32,index,nir_imm_int(&b,0),
+        .align_mul=4,.range=4);
+    nir_intrinsic_instr *load=nir_instr_as_intrinsic(nir_def_instr(value));
+    struct ps5_ubo_offset_state state={.first=3,.source_count=2,.valid=true};
+    assert(ps5_offset_ubo_index(&b,&load->instr,&state) && state.valid);
+    assert(!nir_src_is_const(load->src[0]));
+    nir_alu_instr *add=nir_instr_as_alu(nir_def_instr(load->src[0].ssa));
+    assert(add->op==nir_op_iadd && nir_src_as_uint(add->src[1].src)==3);
+    nir_validate_shader(b.shader,"dynamic geometry UBO offset");
+    ralloc_free(b.shader);
+}
 int main(void) {
+    psbc_init();
+    dynamic_ubo_offset();
     PsbcCompileOptions options = {0};
     for (unsigned i = 0; i < 32; ++i) {
         assert(ps5_append_texture_descriptor(&options, i, 0));
@@ -74,9 +98,11 @@ int main(void) {
     nir_instr other = {0};
     other.type = nir_instr_type_alu;
     assert(!ps5_offset_geometry_texture(NULL, &other, &valid) && valid);
+    psbc_shutdown();
 }
 '''
 with tempfile.TemporaryDirectory() as temporary:
+    obj = str(Path(temporary) / "geometry-bindings.o")
     executable = str(Path(temporary) / "geometry-bindings")
     psbc = ROOT / "third_party/opengnm-psbc"
     subprocess.run([
@@ -86,6 +112,8 @@ with tempfile.TemporaryDirectory() as temporary:
         "-I", str(psbc / "include/mesa"), "-I", str(psbc / "include"),
         "-I", str(psbc / "src"), "-I", str(psbc / "src/gallium/include"),
         "-I", str(psbc / "libpsbc"),
-        "-x", "c", "-o", executable, "-"], input=code, text=True, check=True)
+        "-x", "c", "-c", "-o", obj, "-"], input=code, text=True, check=True)
+    subprocess.run(["g++", "-o", executable, obj, str(psbc / "libpsbc.a"),
+                    "-pthread", "-lm"], check=True)
     subprocess.run([executable], check=True)
 print("PASS: 32 sampler + 30 UBO descriptors, no alias/overlap; GS NIR index bounds")
