@@ -196,6 +196,16 @@ int ps5_agc_compute_execute(struct pipe_screen *s, const PsbcShaderOutput *shade
     struct pipe_resource *table, struct pipe_resource *const *buffers, unsigned count,
     const uint32_t groups[3]) {
     assert(s && shader && groups[0]==2 && groups[1]==1 && groups[2]==1);
+    if(with_sampled && sampled_count==15) {
+        const struct ps5_resource *t=(const struct ps5_resource *)table;
+        assert(count==15);
+        for(unsigned i=0;i<16;++i) {
+            const uint32_t *d=(const uint32_t *)(t->data+PS5_COMPUTE_TEXTURE_OFFSET+i*48);
+            if(i<15) assert(!ps5_resource_texel_buffer_descriptor_owned(buffers[i],d));
+            else for(unsigned w=0;w<12;++w) assert(!d[w]);
+        }
+        ++submitted; return 0;
+    }
     if(with_sampled) {
         assert(count==sampled_count);
         const struct ps5_resource *t=(const struct ps5_resource *)table;
@@ -1416,6 +1426,22 @@ int main(void) {
     for(unsigned i=0;i<16;++i) all_states[i]=NULL;
     ps5_set_compute_sampler_states(&context.base,0,16,all_states);
     assert(sampled.reference.count==1 && !context.compute_sampler_mask);
+    /* CTS resources-max unbinds unit 15, then accesses units 0, 1 and 5. */
+    struct pipe_sampler_view bv={.texture=&image_buffer.base,.target=PIPE_BUFFER,
+        .format=PIPE_FORMAT_R32_UINT,.swizzle_r=PIPE_SWIZZLE_X,
+        .swizzle_g=PIPE_SWIZZLE_0,.swizzle_b=PIPE_SWIZZLE_0,.swizzle_a=PIPE_SWIZZLE_1};
+    bv.u.buf.size=12;
+    pipe_reference_init(&bv.reference,1);
+    for(unsigned i=0;i<16;++i) all_views[i]=i<15 ? &bv : NULL;
+    ps5_set_compute_sampler_views(&context.base,0,16,0,all_views);
+    cs.textures=cs.buffer_textures=65535; cs.filtered_textures=0;
+    sampled_count=15;
+    cs.output.metadata.address32_hi=(uintptr_t)image_buffer_data>>32;
+    unsigned before_sparse=submitted;
+    ps5_launch_grid(&context.base,&good);
+    assert(!context.last_compute_status && submitted==before_sparse+1);
+    ps5_set_compute_sampler_views(&context.base,0,0,16,NULL);
+    assert(bv.reference.count==1);
 }
 '''
 with tempfile.TemporaryDirectory() as directory:

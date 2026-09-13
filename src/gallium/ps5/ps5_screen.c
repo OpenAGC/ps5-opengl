@@ -11902,6 +11902,10 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
       const struct pipe_sampler_view *view = context->compute_views[i];
       uint32_t *descriptor = (uint32_t *)(table->data +
                                          PS5_COMPUTE_TEXTURE_OFFSET + i * 48);
+      /* A dynamically indexed buffer array may contain unused, unbound
+       * elements. Preserve their zero descriptor instead of dropping the grid. */
+      if (!view && (context->cs->buffer_textures & (1u << i)))
+         continue;
       if (!view)
          return;
       if (context->cs->buffer_textures & (1u << i)) {
