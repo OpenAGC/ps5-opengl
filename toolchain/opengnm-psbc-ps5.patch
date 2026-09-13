@@ -5395,8 +5395,8 @@ index 0ec0562..c578fba 100644
 +    point_coord_cx = {entry["offset"]: entry["value"]
 +                      for entry in point_coord_info["context_registers"]}
 +    assert "io location=VARYING_SLOT_PNTC" in r.stderr
-+    assert point_coord_info["input_semantics"] == []
-+    assert point_coord_info["unresolved_fields"] == 5
++    assert point_coord_info["input_semantics"] == [48]
++    assert point_coord_info["unresolved_fields"] == 1
 +    assert point_coord_cx[0x1B3] == 0x2
 +    assert point_coord_cx[0x1B4] == 0x2
 +    assert point_coord_cx[0x1B6] == 0x8001
