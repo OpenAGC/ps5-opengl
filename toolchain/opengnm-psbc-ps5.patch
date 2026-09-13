@@ -704,8 +704,8 @@ index bacbc6a..035ffd1 100644
 +    const enum pipe_format format = nir_intrinsic_format(intr);
 +    const bool atomic = intr->intrinsic == nir_intrinsic_image_atomic ||
 +                        intr->intrinsic == nir_intrinsic_image_atomic_swap;
-+    const bool uint_format = format == PIPE_FORMAT_R32_UINT || format == PIPE_FORMAT_R32G32_UINT || format == PIPE_FORMAT_R32G32B32A32_UINT || format == PIPE_FORMAT_R16G16B16A16_UINT;
-+    const bool sint_format = format == PIPE_FORMAT_R32_SINT || format == PIPE_FORMAT_R32G32_SINT || format == PIPE_FORMAT_R32G32B32A32_SINT || format == PIPE_FORMAT_R16G16B16A16_SINT;
++    const bool uint_format = format == PIPE_FORMAT_R32_UINT || format == PIPE_FORMAT_R32G32_UINT || format == PIPE_FORMAT_R32G32B32A32_UINT || format == PIPE_FORMAT_R16G16B16A16_UINT || format == PIPE_FORMAT_R8G8B8A8_UINT;
++    const bool sint_format = format == PIPE_FORMAT_R32_SINT || format == PIPE_FORMAT_R32G32_SINT || format == PIPE_FORMAT_R32G32B32A32_SINT || format == PIPE_FORMAT_R16G16B16A16_SINT || format == PIPE_FORMAT_R8G8B8A8_SINT;
 +    const bool float_format = format == PIPE_FORMAT_R32_FLOAT || format == PIPE_FORMAT_R32G32_FLOAT || format == PIPE_FORMAT_R32G32B32A32_FLOAT || format == PIPE_FORMAT_R16G16B16A16_FLOAT || format == PIPE_FORMAT_R16G16B16A16_UNORM || format == PIPE_FORMAT_R8G8B8A8_UNORM;
 +    const bool scalar_integer = format == PIPE_FORMAT_R32_UINT || format == PIPE_FORMAT_R32_SINT;
 +    if (!opts->gallium_buffer_arrays || !bank ||

@@ -136,13 +136,14 @@ static nir_shader *normalized_image(nir_shader *nir, unsigned operation, enum pi
             if(intr->intrinsic!=nir_intrinsic_image_store) continue;
             ++changed;
             nir_intrinsic_set_format(intr,format);
+            nir_alu_type type=nir_intrinsic_src_type(intr);
             if(!operation) continue;
             b.cursor=nir_before_instr(instr);
             nir_def *slot=intr->src[0].ssa, *zero=nir_imm_int(&b,0), *value;
             if(operation==1)
                 value=nir_image_load(&b,4,32,slot,intr->src[1].ssa,zero,zero,
                     .image_dim=GLSL_SAMPLER_DIM_2D,.format=format,
-                    .dest_type=nir_type_float32);
+                    .dest_type=type);
             else if(operation==2)
                 value=nir_image_size(&b,2,32,slot,zero,.image_dim=GLSL_SAMPLER_DIM_2D,
                     .format=format);
@@ -215,7 +216,8 @@ int main(void) {
                                 .array_size=16,.stride=48,.offset=752};
     compile(buffer_array,&buffer_array_options);
     compile(compute_buffer_image(),&options);
-    const enum pipe_format normalized_formats[]={PIPE_FORMAT_R16G16B16A16_UNORM,PIPE_FORMAT_R8G8B8A8_UNORM};
+    const enum pipe_format normalized_formats[]={PIPE_FORMAT_R16G16B16A16_UNORM,PIPE_FORMAT_R8G8B8A8_UNORM,
+        PIPE_FORMAT_R8G8B8A8_UINT,PIPE_FORMAT_R8G8B8A8_SINT};
     for(unsigned f=0;f<ARRAY_SIZE(normalized_formats);++f) for(unsigned stage=0;stage<2;++stage) {
         PsbcCompileOptions normalized=options;
         normalized.stage=stage ? PSBC_STAGE_FRAGMENT : PSBC_STAGE_COMPUTE;
@@ -224,11 +226,12 @@ int main(void) {
         normalized.descriptor_bindings[1].binding=PSBC_GALLIUM_UBO_ARRAY_BINDING(normalized.stage);
         normalized.descriptor_bindings[2].binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(normalized.stage);
         for(unsigned operation=0;operation<4;++operation) {
-            nir_shader *nir=normalized_image(stage ? build_fragment_storage(2,7,9,false,false,0) :
-                build_compute(0),operation,normalized_formats[f]);
-            nir_validate_shader(nir,"normalized RGBA compiler regression");
+            unsigned kind=f<2 ? 0 : f-1;
+            nir_shader *nir=normalized_image(stage ? build_fragment_storage(2,7,9+kind,false,false,0) :
+                build_compute(kind),operation,normalized_formats[f]);
+            nir_validate_shader(nir,"RGBA compiler regression");
             if(operation==3) {
-                /* Normalized atomics are invalid NIR, so test the exact
+                /* Narrow RGBA atomics are invalid NIR, so test the exact
                  * extracted admission guard, not an invalid compile pipeline. */
                 unsigned changed=0;
                 nir_foreach_function_impl(impl,nir) nir_foreach_block(block,impl) nir_foreach_instr(instr,block) {
@@ -245,13 +248,13 @@ int main(void) {
                 }
                 assert(changed==1);
                 nir_validate_shader(nir,"restored R32UI atomic control");
-                fprintf(stderr,"RGBA%u_UNORM stage=%u atomic admission guard rejected\n",f ? 8 : 16,normalized.stage);
+                fprintf(stderr,"format=%u stage=%u atomic admission guard rejected\n",normalized_formats[f],normalized.stage);
                 ralloc_free(nir);
                 continue;
             }
             PsbcShaderOutput out={0};
             PsbcResult result=psbc_compile_nir(nir,&normalized,&out);
-            fprintf(stderr,"RGBA%u_UNORM stage=%u op=%s result=%d bytes=%zu\n",f ? 8 : 16,normalized.stage,
+            fprintf(stderr,"format=%u stage=%u op=%s result=%d bytes=%zu\n",normalized_formats[f],normalized.stage,
                 operation==0 ? "store" : operation==1 ? "load" : operation==2 ? "size" : "atomic-reject",
                 result,out.machine_code_size);
             assert(result==PSBC_RESULT_OK && out.machine_code_size && !out.metadata.scratch_size_per_thread);
@@ -744,4 +747,4 @@ with tempfile.TemporaryDirectory() as directory:
         "-pthread", "-lm"], check=True)
     subprocess.run([executable], check=True, timeout=30)
 print("PASS: CS/VS/FS packages; typed, filtered, mip/array sampling and writers; descriptor rejections and readback/guard oracles (host only)")
-print("PASS: RGBA16/RGBA8_UNORM CS/FS store/load/size compile+package; exact source guard rejects normalized atomics (NIR, not parsed GLSL)")
+print("PASS: RGBA16/8_UNORM and RGBA8_UINT/SINT CS/FS store/load/size compile+package; exact source guard rejects narrow RGBA atomics (NIR, not parsed GLSL)")

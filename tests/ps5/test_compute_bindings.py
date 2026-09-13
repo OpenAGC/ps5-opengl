@@ -1206,15 +1206,17 @@ int main(void) {
     const enum pipe_format vectors[]={PIPE_FORMAT_R32G32_UINT,PIPE_FORMAT_R32G32_SINT,PIPE_FORMAT_R32G32_FLOAT,
         PIPE_FORMAT_R32G32B32A32_UINT,PIPE_FORMAT_R32G32B32A32_SINT,PIPE_FORMAT_R32G32B32A32_FLOAT,
         PIPE_FORMAT_R16G16B16A16_UINT,PIPE_FORMAT_R16G16B16A16_SINT,PIPE_FORMAT_R16G16B16A16_FLOAT,
-        PIPE_FORMAT_R16G16B16A16_UNORM,PIPE_FORMAT_R8G8B8A8_UNORM};
+        PIPE_FORMAT_R16G16B16A16_UNORM,PIPE_FORMAT_R8G8B8A8_UNORM,
+        PIPE_FORMAT_R8G8B8A8_UINT,PIPE_FORMAT_R8G8B8A8_SINT};
     _Alignas(256) uint8_t vector_pixels[1536];
     for(unsigned i=0;i<ARRAY_SIZE(vectors);++i) {
         struct ps5_resource v=image; v.base.format=vectors[i]; v.data=vector_pixels;
-        unsigned bytes=v.base.format==PIPE_FORMAT_R8G8B8A8_UNORM ? 4 : i>=3 && i<6 ? 16 : 8;
+        unsigned bytes=i>=10 ? 4 : i>=3 && i<6 ? 16 : 8;
         unsigned stride=(17*bytes+255)&~255u;
         v.level_stride[0]=stride; v.size=stride*3; v.allocation_size=sizeof(vector_pixels);
         assert(ps5_storage_image_texel_size(v.base.format)==bytes);
         assert(!ps5_resource_storage_image_descriptor(&v.base,0,descriptor));
+        if(i>=11) assert((descriptor[1]&0x3ff00000u)==((60u+i-11)<<20));
         assert((descriptor[3]&4095)==(i<3 ? 0x22c : 0xfac));
         assert(descriptor[4]==stride/bytes-1);
         v.size--;

@@ -1393,7 +1393,8 @@ static unsigned
 ps5_storage_image_texel_size(enum pipe_format format)
 {
    switch (format) {
-   case PIPE_FORMAT_R8G8B8A8_UNORM: return 4;
+   case PIPE_FORMAT_R8G8B8A8_UNORM: case PIPE_FORMAT_R8G8B8A8_UINT:
+   case PIPE_FORMAT_R8G8B8A8_SINT: return 4;
    case PIPE_FORMAT_R32_FLOAT: case PIPE_FORMAT_R32_UINT: case PIPE_FORMAT_R32_SINT: return 4;
    case PIPE_FORMAT_R32G32_FLOAT: case PIPE_FORMAT_R32G32_UINT: case PIPE_FORMAT_R32G32_SINT: return 8;
    case PIPE_FORMAT_R16G16B16A16_FLOAT: case PIPE_FORMAT_R16G16B16A16_UINT:
