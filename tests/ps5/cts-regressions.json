@@ -53,6 +53,7 @@
   "gl46-compute": ["KHR-GL46.compute_shader.*"],
   "gl46-info": ["KHR-GL46.info.*"],
   "gl46-buffer-storage": ["KHR-GL46.buffer_storage.*"],
+  "gl46-spirv": ["KHR-GL46.gl_spirv.*"],
   "gl46-prerequisites": [
     "KHR-GL46.buffer_storage.*",
     "KHR-GL46.gl_spirv.*",
