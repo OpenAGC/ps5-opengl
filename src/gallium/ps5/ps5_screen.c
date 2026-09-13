@@ -11825,8 +11825,18 @@ ps5_set_compute_sampler_views(struct pipe_context *base, unsigned start, unsigne
           v->target != v->texture->target || v->format != v->texture->format ||
           v->u.tex.first_layer ||
           v->u.tex.last_layer != v->texture->array_size - 1 || !swizzle_ok ||
-          ps5_resource_sampled_image_descriptor(v->texture, v->u.tex.first_level, v->u.tex.last_level, descriptor)))
+          ps5_resource_sampled_image_descriptor(v->texture, v->u.tex.first_level, v->u.tex.last_level, descriptor))) {
+         printf("[ps5-gallium] compute view rejected slot=%u target=%u/%u format=%u/%u levels=%u:%u/%u layers=%u:%u/%u depth=%u samples=%u:%u bind=%x swizzle=%u descriptor=%d\n",
+                start + i, v->target, v->texture ? v->texture->target : 0,
+                v->format, v->texture ? v->texture->format : 0,
+                v->u.tex.first_level, v->u.tex.last_level, v->texture ? v->texture->last_level : 0,
+                v->u.tex.first_layer, v->u.tex.last_layer, v->texture ? v->texture->array_size : 0,
+                v->texture ? v->texture->depth0 : 0,
+                v->texture ? v->texture->nr_samples : 0, v->texture ? v->texture->nr_storage_samples : 0,
+                v->texture ? v->texture->bind : 0, swizzle_ok,
+                ps5_resource_sampled_image_descriptor(v->texture, v->u.tex.first_level, v->u.tex.last_level, descriptor));
          return;
+      }
    }
    for (unsigned i = 0; i < count + unbind_trailing; ++i)
       pipe_sampler_view_reference(&context->compute_views[start + i], i < count ? views[i] : NULL);
