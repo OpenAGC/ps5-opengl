@@ -7892,8 +7892,8 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       uint64_t bytes = (uint64_t)draws[0].count * info->index_size;
       unsigned min_index = UINT32_MAX;
       unsigned max_index = 0;
-      int64_t effective_min;
-      int64_t effective_end;
+      unsigned min_effective = UINT32_MAX;
+      unsigned max_effective = 0;
 
       index_resource = (struct ps5_resource *)info->index.resource;
       if (!index_resource || index_resource->base.target != PIPE_BUFFER ||
@@ -7936,24 +7936,28 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       }
       for (unsigned i = 0; i < draws[0].count; ++i) {
          unsigned index = ps5_index_value(indices, info->index_size, i);
+         uint32_t effective;
+
+         if (draws[0].index_bias < 0 &&
+             index < (uint64_t)-(int64_t)draws[0].index_bias) {
+            context->last_draw_status = -12;
+            return;
+         }
+         effective = index + (uint32_t)draws[0].index_bias;
          min_index = MIN2(min_index, index);
          max_index = MAX2(max_index, index);
+         min_effective = MIN2(min_effective, effective);
+         max_effective = MAX2(max_effective, effective);
       }
-      if (max_index == UINT32_MAX) {
+      if (max_effective == UINT32_MAX) {
          context->last_draw_status = -12;
          return;
       }
-      effective_min = (int64_t)min_index + draws[0].index_bias;
-      effective_end = (int64_t)max_index + draws[0].index_bias + 1;
-      if (effective_min < 0 || effective_end > UINT32_MAX) {
-         context->last_draw_status = -12;
-         return;
-      }
-      vertex_count = (unsigned)effective_end;
+      vertex_count = max_effective + 1u;
       if (draws[0].index_bias)
-         printf("[ps5-gallium] base-vertex bias=%d raw-min=%u raw-max=%u effective-min=%lld effective-max=%lld\n",
+         printf("[ps5-gallium] base-vertex bias=%d raw-min=%u raw-max=%u effective-min=%u effective-max=%u\n",
                 draws[0].index_bias, min_index, max_index,
-                (long long)effective_min, (long long)effective_end - 1);
+                min_effective, max_effective);
    }
    tessellation_active = context->tcs || context->tes;
    if (!context->vs || !context->fs || !context->framebuffer_valid ||
@@ -10814,7 +10818,8 @@ ps5_stream_output_info_valid(const struct pipe_stream_output_info *info,
    if (!info->num_outputs)
       return true;
    if (!PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDATE ||
-       (stage != PSBC_STAGE_VERTEX && stage != PSBC_STAGE_GEOMETRY) ||
+       (stage != PSBC_STAGE_VERTEX && stage != PSBC_STAGE_TESS_EVAL &&
+        stage != PSBC_STAGE_GEOMETRY) ||
        info->num_outputs > PIPE_MAX_SO_OUTPUTS)
       return false;
    for (unsigned index = 0; index < info->num_outputs; ++index) {
@@ -10822,7 +10827,7 @@ ps5_stream_output_info_valid(const struct pipe_stream_output_info *info,
 
       if (output->output_buffer >= PIPE_MAX_SO_BUFFERS ||
           output->stream >= PIPE_MAX_VERTEX_STREAMS ||
-          (stage == PSBC_STAGE_VERTEX && output->stream) ||
+          (stage != PSBC_STAGE_GEOMETRY && output->stream) ||
           !output->num_components || output->num_components > 4 ||
           output->start_component + output->num_components > 4 ||
           !info->stride[output->output_buffer] ||
@@ -11156,6 +11161,9 @@ ps5_select_tessellation_pipeline(struct ps5_context *context,
    };
    uint8_t *hs_package = NULL;
    uint8_t *tes_package = NULL;
+   nir_shader *final_carrier = NULL;
+   const nir_shader *tes_nir = context->tes ? context->tes->nir : NULL;
+   const nir_shader *gs_nir = context->gs ? context->gs->nir : NULL;
    size_t hs_size = 0;
    size_t tes_size = 0;
    uint32_t ring_itemsize = 0;
@@ -11170,8 +11178,7 @@ ps5_select_tessellation_pipeline(struct ps5_context *context,
        context->patch_vertices > 32 ||
        context->vs->stream_output.num_outputs ||
        context->tcs->stream_output.num_outputs ||
-       context->tes->stream_output.num_outputs ||
-       (context->gs && context->gs->stream_output.num_outputs) ||
+       (context->gs && context->tes->stream_output.num_outputs) ||
        (context->gs &&
         !ps5_draw_primitive(context->gs->nir->info.gs.input_primitive, 6,
                             &geometry_primitive_type)) ||
@@ -11189,9 +11196,22 @@ ps5_select_tessellation_pipeline(struct ps5_context *context,
        !memcmp(context->tessellation_layout, layout, sizeof(*layout)))
       return true;
 
+   if ((context->gs && context->gs->stream_output.num_outputs) ||
+       (!context->gs && context->tes->stream_output.num_outputs)) {
+      final_carrier = ps5_stream_output_carrier_nir(
+         context->gs ? context->gs->nir : context->tes->nir);
+      if (!final_carrier)
+         return false;
+      if (context->gs)
+         gs_nir = final_carrier;
+      else
+         tes_nir = final_carrier;
+   }
+
    result = psbc_compile_nir_tessellation_pipeline(
-      context->vs->nir, context->tcs->nir, context->tes->nir,
-      context->gs ? context->gs->nir : NULL, &options, &output);
+      context->vs->nir, context->tcs->nir, tes_nir, gs_nir,
+      &options, &output);
+   ralloc_free(final_carrier);
    printf("[ps5-gallium] compile-tessellation result=%d hs=%zu final=%zu gs=%u patches=%u\n",
           result, output.hs.machine_code_size, output.tes.machine_code_size,
           context->gs != NULL, output.runtime.num_patches);
