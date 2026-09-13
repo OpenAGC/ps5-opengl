@@ -70,6 +70,26 @@ static void compile(nir_shader *nir, PsbcCompileOptions *options) {
     printf("stage=%u code=%zu package=%zu\n", options->stage, out.machine_code_size, size);
     free(package); psbc_free_output(&out); ralloc_free(nir);
 }
+static nir_shader *compute_buffer_pair(void) {
+    nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
+        psbc_get_nir_options(PSBC_STAGE_COMPUTE),"compute-buffer-pair");
+    b.shader->info.workgroup_size[0]=b.shader->info.workgroup_size[1]=
+        b.shader->info.workgroup_size[2]=1;
+    b.shader->info.num_ssbos=1; b.shader->info.num_textures=2;
+    for(unsigned unit=0;unit<2;++unit) {
+        BITSET_SET(b.shader->info.textures_used,unit);
+        nir_tex_instr *tex=nir_tex_instr_create(b.shader,2);
+        tex->op=nir_texop_txf; tex->sampler_dim=GLSL_SAMPLER_DIM_BUF;
+        tex->texture_index=tex->sampler_index=unit; tex->coord_components=1;
+        tex->dest_type=nir_type_float32;
+        tex->src[0]=nir_tex_src_for_ssa(nir_tex_src_coord,nir_imm_int(&b,unit));
+        tex->src[1]=nir_tex_src_for_ssa(nir_tex_src_lod,nir_imm_int(&b,0));
+        nir_def_init(&tex->instr,&tex->def,4,32); nir_builder_instr_insert(&b,&tex->instr);
+        nir_store_ssbo(&b,&tex->def,nir_imm_int(&b,0),nir_imm_int(&b,unit*16),
+            .write_mask=15,.align_mul=16);
+    }
+    return b.shader;
+}
 /* Reuse actual image-store builders; mutate only format/op and retain an
  * observable SSBO sink for loads/size/atomics. Compiler-only, not GL parsing. */
 static nir_shader *normalized_image(nir_shader *nir, unsigned operation, enum pipe_format format) {
@@ -131,6 +151,22 @@ int main(void) {
            .type=PSBC_DESCRIPTOR_UNIFORM_BUFFER, .array_size=15, .stride=16, .offset=256},
           {.binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_COMPUTE),
            .type=PSBC_DESCRIPTOR_STORAGE_IMAGE, .array_size=8, .stride=32, .offset=496}}};
+    PsbcShaderOutput pair[2]={{0}};
+    for(unsigned variant=0;variant<2;++variant) {
+        PsbcCompileOptions pair_options=options;
+        pair_options.descriptor_bindings[pair_options.descriptor_binding_count++]=
+            (PsbcDescriptorBinding){.binding=0,.type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,
+                                    .array_size=1,.stride=48,.offset=752};
+        pair_options.descriptor_bindings[pair_options.descriptor_binding_count++]=
+            (PsbcDescriptorBinding){.binding=1,.type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,
+                                    .array_size=1,.stride=48,.offset=800+variant*48};
+        nir_shader *nir=compute_buffer_pair();
+        assert(psbc_compile_nir(nir,&pair_options,&pair[variant])==PSBC_RESULT_OK);
+        ralloc_free(nir);
+    }
+    assert(pair[0].machine_code_size==pair[1].machine_code_size &&
+           memcmp(pair[0].machine_code,pair[1].machine_code,pair[0].machine_code_size));
+    for(unsigned i=0;i<2;++i) psbc_free_output(&pair[i]);
     const enum pipe_format normalized_formats[]={PIPE_FORMAT_R16G16B16A16_UNORM,PIPE_FORMAT_R8G8B8A8_UNORM};
     for(unsigned f=0;f<ARRAY_SIZE(normalized_formats);++f) for(unsigned stage=0;stage<2;++stage) {
         PsbcCompileOptions normalized=options;
@@ -276,9 +312,9 @@ int main(void) {
         all_slots.descriptor_bindings[all_slots.descriptor_binding_count++]=(PsbcDescriptorBinding){
             .binding=unit,.type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,.array_size=1,.stride=48,.offset=752+unit*48};
     nir_shader *all_nir=compute_all_slots();
-    unsigned all_used=0,all_filtered=0,all_lod[PS5_COMPUTE_TEXTURE_SLOTS],all_arrays=0;
-    assert(ps5_compute_texture_usage(all_nir,&all_used,&all_filtered,all_lod,&all_arrays));
-    assert(all_used==65535 && !all_filtered && !all_arrays);
+    unsigned all_used=0,all_buffers=0,all_filtered=0,all_lod[PS5_COMPUTE_TEXTURE_SLOTS],all_arrays=0;
+    assert(ps5_compute_texture_usage(all_nir,&all_used,&all_buffers,&all_filtered,all_lod,&all_arrays));
+    assert(all_used==65535 && !all_buffers && !all_filtered && !all_arrays);
     compile(all_nir,&all_slots);
     for(unsigned kind=0;kind<3;++kind) for(unsigned array=0;array<2;++array) for(unsigned level=0;level<4;++level)
         compile(write_mip(level,array,kind), &options);
@@ -293,16 +329,16 @@ int main(void) {
             nir_foreach_block(block,nir_shader_get_entrypoint(nir)) nir_foreach_instr(instr,block)
                 if(instr->type==nir_instr_type_tex) tex=nir_instr_as_tex(instr);
             assert(tex);
-            unsigned used=0,filtered=0,lods[PS5_COMPUTE_TEXTURE_SLOTS],arrays=0;
+            unsigned used=0,buffers=0,filtered=0,lods[PS5_COMPUTE_TEXTURE_SLOTS],arrays=0;
             if(implicit) {
-                assert(!ps5_compute_texture_usage(nir,&used,&filtered,lods,&arrays));
+                assert(!ps5_compute_texture_usage(nir,&used,&buffers,&filtered,lods,&arrays));
             }
             assert(prepare_compute_nir(nir) && prepare_compute_nir(nir));
             assert(tex->op==nir_texop_txl && tex->num_srcs==2);
             int lod=nir_tex_instr_src_index(tex,nir_tex_src_lod);
             assert(lod>=0 && nir_src_is_const(tex->src[lod].src) && nir_src_as_float(tex->src[lod].src)==0);
-            assert(ps5_compute_texture_usage(nir,&used,&filtered,lods,&arrays));
-            assert(used==(1u<<unit) && filtered==used && !arrays && !lods[unit]);
+            assert(ps5_compute_texture_usage(nir,&used,&buffers,&filtered,lods,&arrays));
+            assert(used==(1u<<unit) && !buffers && filtered==used && !arrays && !lods[unit]);
             nir_validate_shader(nir,"compute implicit LOD normalized before usage validation");
             assert(psbc_compile_nir(nir,&sampled,&output[implicit])==PSBC_RESULT_OK);
             assert(!output[implicit].metadata.scratch_valid);
@@ -319,9 +355,9 @@ int main(void) {
     }
     for(unsigned unit=0;unit<=15;unit+=15) for(unsigned test=0;test<6;++test) {
         nir_shader *checked=compute_sample(test,unit);
-        unsigned used=0, filtered=0, max_lod[PS5_COMPUTE_TEXTURE_SLOTS], arrays=0;
-        assert(ps5_compute_texture_usage(checked,&used,&filtered,max_lod,&arrays) && !arrays);
-        assert(used==(1u<<unit) && filtered==(test>=4 ? 1u<<unit : 0));
+        unsigned used=0, buffers=0, filtered=0, max_lod[PS5_COMPUTE_TEXTURE_SLOTS], arrays=0;
+        assert(ps5_compute_texture_usage(checked,&used,&buffers,&filtered,max_lod,&arrays) && !arrays);
+        assert(used==(1u<<unit) && !buffers && filtered==(test>=4 ? 1u<<unit : 0));
         ralloc_free(checked);
         PsbcCompileOptions sampled=options;
         sampled.descriptor_binding_count=4;
@@ -340,8 +376,9 @@ int main(void) {
       for(unsigned unit=0;unit<=15;unit+=15) for(unsigned op=0;op<(kind ? 2u : 4u);++op)
         for(unsigned level=0;level<(op==3 ? 1u : 4u);++level) {
             nir_shader *checked=compute_mip(op,unit,level,layer_counts[count],kind,false);
-            unsigned used=0, filtered=0, max_lod[PS5_COMPUTE_TEXTURE_SLOTS], arrays=0;
-            assert(ps5_compute_texture_usage(checked,&used,&filtered,max_lod,&arrays));
+            unsigned used=0, buffers=0, filtered=0, max_lod[PS5_COMPUTE_TEXTURE_SLOTS], arrays=0;
+            assert(ps5_compute_texture_usage(checked,&used,&buffers,&filtered,max_lod,&arrays));
+            assert(!buffers);
             assert(arrays==(layer_counts[count]>1 ? 1u<<unit : 0));
             assert(used==(1u<<unit) && filtered==(op>=2 ? 1u<<unit : 0));
             assert(max_lod[unit]==level+(op==3));
@@ -376,8 +413,9 @@ int main(void) {
       for(unsigned op=0;op<(kind ? 2u : 3u);++op) for(unsigned unit=0;unit<=15;unit+=15)
       for(unsigned mask=0;mask<=3;++mask) {
         nir_shader *nir=compute_mip(op,unit,mask,layer_counts[count],kind,true);
-        unsigned used=0,filtered=0,max_lod[PS5_COMPUTE_TEXTURE_SLOTS],arrays=0;
-        assert(ps5_compute_texture_usage(nir,&used,&filtered,max_lod,&arrays));
+        unsigned used=0,buffers=0,filtered=0,max_lod[PS5_COMPUTE_TEXTURE_SLOTS],arrays=0;
+        assert(ps5_compute_texture_usage(nir,&used,&buffers,&filtered,max_lod,&arrays));
+        assert(!buffers);
         assert(used==(1u<<unit) && filtered==(op==2 ? 1u<<unit : 0) && max_lod[unit]==mask);
         PsbcCompileOptions sampled=options;
         sampled.descriptor_binding_count=4;
@@ -423,8 +461,8 @@ int main(void) {
                 nir_src_rewrite(&tex->src[0].src,fault==3 ? nir_u2f32(&b,nir_iand_imm(&b,lod,3)) : lod);
             }
         }
-        unsigned used=0,filtered=0,max_lod[PS5_COMPUTE_TEXTURE_SLOTS],arrays=0;
-        assert(!ps5_compute_texture_usage(nir,&used,&filtered,max_lod,&arrays));
+        unsigned used=0,buffers=0,filtered=0,max_lod[PS5_COMPUTE_TEXTURE_SLOTS],arrays=0;
+        assert(!ps5_compute_texture_usage(nir,&used,&buffers,&filtered,max_lod,&arrays));
         ralloc_free(nir);
     }
     for(unsigned fault=0;fault<7;++fault) {
@@ -445,8 +483,8 @@ int main(void) {
             b.cursor=nir_before_instr(&tex->instr);
             nir_src_rewrite(&tex->src[1].src,nir_imm_int(&b,16));
         }
-        unsigned used=0, filtered=0, max_lod[PS5_COMPUTE_TEXTURE_SLOTS], arrays=0;
-        assert(!ps5_compute_texture_usage(checked,&used,&filtered,max_lod,&arrays));
+        unsigned used=0, buffers=0, filtered=0, max_lod[PS5_COMPUTE_TEXTURE_SLOTS], arrays=0;
+        assert(!ps5_compute_texture_usage(checked,&used,&buffers,&filtered,max_lod,&arrays));
         ralloc_free(checked);
     }
     options = (PsbcCompileOptions){.target=PSBC_TARGET_PS5, .stage=PSBC_STAGE_VERTEX,

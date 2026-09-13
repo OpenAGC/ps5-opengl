@@ -38,6 +38,16 @@ static int ps5_resource_sampled_image_descriptor(struct pipe_resource *r,unsigne
     if(first || last) return -1;
     return ps5_resource_storage_image_descriptor(r,0,d);
 }
+static int ps5_resource_texel_buffer_descriptor_owned(struct pipe_resource *r,const uint32_t d[4]) {
+    if(!r || r->image || !d) return -1;
+    const uint64_t address=d[0]|((uint64_t)(d[1]&0xffffu)<<32);
+    const unsigned stride=d[1]>>16;
+    const uint64_t bytes=(uint64_t)d[2]*stride;
+    const uintptr_t start=(uintptr_t)r->data;
+    return (stride==1||stride==2||stride==4||stride==8||stride==12||stride==16) &&
+        d[2] && (d[3]&0x01000000u) && address>=start &&
+        address-start<=r->size && bytes<=r->size-(address-start) ? 0 : -1;
+}
 static unsigned locked, allocations, submissions, dispatches, flushes, userdata_count;
 static unsigned out_of_space;
 static const void *watched_resource;
@@ -287,9 +297,17 @@ static void submission_contract(PsbcShaderOutput *out) {
         assert(!allocations && !locked && submissions==sampled_submissions);
         sampled[word]^=1;
     }
+    memset(sampled,0,48);
+    sampled[0]=(uintptr_t)output;
+    sampled[1]=((uintptr_t)output>>32)|(4u<<16);
+    sampled[2]=logical_output/4;
+    sampled[3]=0x01015fac;
+    assert(!ps5_agc_compute_execute(&screen,out,&table,all,47,groups));
+    sampled[2]++;
+    assert(ps5_agc_compute_execute(&screen,out,&table,all,47,groups)<0);
     memset(table_data+31*4,0,8*32);
     assert(ps5_agc_compute_execute(&screen,out,&table,buffers,1,groups)<0);
-    assert(!allocations && !locked && submissions==sampled_submissions);
+    assert(!allocations && !locked && submissions==sampled_submissions+1);
     out->metadata=saved;
 }
 static const PsbcCompileOptions opts = {

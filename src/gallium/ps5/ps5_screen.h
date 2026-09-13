@@ -40,6 +40,8 @@ int ps5_resource_storage_image_descriptor(struct pipe_resource *resource,
 int ps5_resource_sampled_image_descriptor(struct pipe_resource *resource,
                                           unsigned first_level, unsigned last_level,
                                           uint32_t descriptor[8]);
+int ps5_resource_texel_buffer_descriptor_owned(struct pipe_resource *resource,
+                                                const uint32_t descriptor[4]);
 int ps5_resource_stencil_info(struct pipe_resource *resource, void **address,
                               size_t *allocation_size);
 struct pipe_resource *ps5_display_target_alias(struct pipe_resource *owner,

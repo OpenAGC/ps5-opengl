@@ -23,6 +23,10 @@ extent_at = source.index("static unsigned\nps5_linear_mip_storage_extent(")
 extent_helper = source[extent_at:source.index("static bool\nps5_packed_depth_sample_layout(", extent_at)]
 image_at = source.index("static int\nps5_resource_image_descriptor(")
 image_descriptor = source[image_at:source.index("\nstruct pipe_resource *", image_at)]
+texel_at = source.index("static bool\nps5_texel_buffer_descriptor(")
+texel_descriptor = source[texel_at:source.index("\nstruct ps5_batch_flush_cache", texel_at)]
+texel_format_at = source.index("static bool\nps5_texel_buffer_format(")
+texel_format = source[texel_format_at:source.index("\nstatic bool\nps5_cube_texture_target", texel_format_at)]
 tiled_at = source.index("static size_t\nps5_tiled_color_surface_size(")
 tiled_helper = source[tiled_at:source.index("static uint32_t\nps5_color_target_info(", tiled_at)]
 array_at = source.index("static unsigned\nps5_storage_image_texel_size(")
@@ -66,6 +70,7 @@ code = r'''
 #include "psbc_compile.h"
 #include "ps5_agc_package.h"
 #include "amd/common/amdgfxregs.h"
+#include "amd/common/ac_descriptors.h"
 #include "amd/common/gfx10_format_table.h"
 #define PS5_ENABLE_UBO_CANDIDATE 1
 #define PS5_ENABLE_GLSL_430_CANDIDATE 1
@@ -79,6 +84,7 @@ code = r'''
 #define PS5_ENABLE_TEXTURE_SNORM_CANDIDATE 1
 #define PS5_ENABLE_TEXTURE_FLOAT_CANDIDATE 1
 #define PS5_ENABLE_TEXTURE_INTEGER_CANDIDATE 1
+#define PS5_ENABLE_TEXTURE_BUFFER_CANDIDATE 1
 #define PS5_ENABLE_NARROW_TEXTURE_INTEGER_CANDIDATE 1
 #define PS5_ENABLE_RGB10_A2UI_CANDIDATE 1
 #define PS5_ENABLE_SHARED_EXPONENT_CANDIDATE 1
@@ -104,6 +110,7 @@ code = r'''
 #define PS5_COMPUTE_TEXTURE_OFFSET (31*16+8*32)
 #define PS5_COMPUTE_DESCRIPTOR_BYTES (PS5_COMPUTE_TEXTURE_OFFSET+PS5_COMPUTE_TEXTURE_SLOTS*48)
 #define PS5_MAX_TEXTURE_2D_SIZE 8192
+#define PS5_MAX_TEXEL_BUFFER_ELEMENTS (1u << 20)
 #define PS5_MAX_CONSTANT_BUFFER_SIZE 0x4000u
 struct ps5_resource {
     struct pipe_resource base; uint8_t *data;
@@ -111,7 +118,7 @@ struct ps5_resource {
     unsigned level_stride[PIPE_MAX_TEXTURE_LEVELS];
     size_t level_offset[PIPE_MAX_TEXTURE_LEVELS];
 };
-struct ps5_compute_shader { PsbcShaderOutput output; unsigned textures, filtered_textures, texture_lod[PS5_COMPUTE_TEXTURE_SLOTS], array_textures; };
+struct ps5_compute_shader { PsbcShaderOutput output; unsigned textures, buffer_textures, filtered_textures, texture_lod[PS5_COMPUTE_TEXTURE_SLOTS], array_textures; };
 struct ps5_sampler_state { struct pipe_sampler_state base; };
 struct test_nir { struct { unsigned num_ssbos, num_images, num_ubos, num_textures; bool first_ubo_is_default_ubo; } info; };
 struct test_variant { PsbcShaderOutput output; };
@@ -166,6 +173,7 @@ static bool fragment_mode;
 static unsigned fragment_drains;
 static void ps5_draw_batch_drain(void) { ++fragment_drains; }
 static void ps5_flush_gpu_data(const void *address, size_t size) { assert(address && (fragment_mode ? size==64 || size==256 || size==512 || size==768 || size==PS5_DESCRIPTOR_STORAGE_BYTES : size==12)); }
+''' + texel_format + texel_descriptor + r'''
 static bool ps5_uses_merged_geometry_metadata(const struct ps5_context *c, const struct ps5_shader *s, const PsbcShaderMetadata *m) { return false; }
 static unsigned ps5_texture_count(const struct ps5_context *c, const struct ps5_shader *s, const PsbcShaderMetadata *m) { return s->nir->info.num_textures; }
 static unsigned ps5_constant_state_binding(const struct ps5_shader *s, unsigned i) { return i+!s->nir->info.first_ubo_is_default_ubo; }
@@ -587,11 +595,33 @@ static void geometry_storage_contract(void) {
     assert(data.base.reference.count==1 && !ps5_prepare_geometry_storage(&c,m,userdata,16));
     fragment_mode=false;
 }
+static void texel_buffer_descriptor_contract(void) {
+    _Alignas(256) uint8_t data[64]={0};
+    struct ps5_resource resource={.base={.target=PIPE_BUFFER,.width0=sizeof(data)},
+        .data=data,.size=sizeof(data)};
+    struct pipe_sampler_view view={.texture=&resource.base,.target=PIPE_BUFFER,
+        .format=PIPE_FORMAT_R32_SINT,.swizzle_r=PIPE_SWIZZLE_X,
+        .swizzle_g=PIPE_SWIZZLE_0,.swizzle_b=PIPE_SWIZZLE_0,.swizzle_a=PIPE_SWIZZLE_1};
+    view.u.buf.offset=16; view.u.buf.size=32;
+    uint32_t descriptor[4]={0};
+    assert(ps5_texel_buffer_descriptor(&view,(uintptr_t)data>>32,descriptor));
+    assert(descriptor[0]==(uint32_t)(uintptr_t)(data+16));
+    assert(descriptor[3]&0x01000000u);
+    assert(!ps5_resource_texel_buffer_descriptor_owned(&resource.base,descriptor));
+    descriptor[2]=13;
+    assert(ps5_resource_texel_buffer_descriptor_owned(&resource.base,descriptor));
+    descriptor[2]=8;
+    descriptor[1]=(descriptor[1]&0xffffu)|(3u<<16);
+    assert(ps5_resource_texel_buffer_descriptor_owned(&resource.base,descriptor));
+    view.u.buf.offset=17;
+    assert(!ps5_texel_buffer_descriptor(&view,(uintptr_t)data>>32,descriptor));
+}
 int main(void) {
     atomic_handoff_contract();
     stale_cleanup_regression();
     fragment_contract();
     geometry_storage_contract();
+    texel_buffer_descriptor_contract();
     assert(PS5_COMPUTE_TEXTURE_SLOTS==16 && PS5_AGC_COMPUTE_MAX_RESOURCES==79);
     struct pipe_screen screen={.resource_destroy=destroy}, other_screen={0};
     struct pipe_context barrier_context={0};

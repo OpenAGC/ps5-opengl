@@ -37,11 +37,12 @@ def caps_source():
     baseline = source[fs_begin:begin]
     glsl_begin = source.index("   caps->glsl_feature_level =")
     glsl_end = source.index(";", source.index("caps->glsl_feature_level_compatibility", glsl_begin)) + 1
+    constants = source + (ROOT / "src/platform/ps5_agc_package.h").read_text()
     defines = []
-    for name in ("PS5_COMPUTE_CONSTANT_SLOTS", "PS5_COMPUTE_STORAGE_SLOTS",
+    for name in ("PS5_AGC_COMPUTE_MAX_IMAGES", "PS5_COMPUTE_CONSTANT_SLOTS", "PS5_COMPUTE_STORAGE_SLOTS",
                  "PS5_COMPUTE_IMAGE_SLOTS", "PS5_MAX_CONSTANT_BUFFERS",
                  "PS5_MAX_DEFAULT_CONSTANT_BUFFER_SIZE"):
-        defines.append(re.search(r"^#define " + name + r" .+$", source, re.M)[0])
+        defines.append(re.search(r"^#define " + name + r" .+$", constants, re.M)[0])
     # Real pipe_screen, no mock layout. Only unwrap the production ps5_screen's
     # base member reference; all assignments inside the gate remain verbatim.
     block = block.replace("screen->base.", "screen->")
