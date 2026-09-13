@@ -111,6 +111,19 @@ static nir_shader *compute_buffer_array(void) {
     nir_store_ssbo(&b,&tex->def,zero,zero,.write_mask=15,.align_mul=16);
     return b.shader;
 }
+static nir_shader *compute_buffer_image(void) {
+    nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
+        psbc_get_nir_options(PSBC_STAGE_COMPUTE),"compute-buffer-image");
+    b.shader->info.workgroup_size[0]=b.shader->info.workgroup_size[1]=
+        b.shader->info.workgroup_size[2]=1;
+    b.shader->info.num_ssbos=1; b.shader->info.num_images=1;
+    nir_def *zero=nir_imm_int(&b,0);
+    nir_def *value=nir_image_load(&b,4,32,zero,nir_replicate(&b,zero,4),zero,zero,
+        .image_dim=GLSL_SAMPLER_DIM_BUF,.format=PIPE_FORMAT_R32G32B32A32_UINT,
+        .dest_type=nir_type_uint32);
+    nir_store_ssbo(&b,value,zero,zero,.write_mask=15,.align_mul=16);
+    return b.shader;
+}
 /* Reuse actual image-store builders; mutate only format/op and retain an
  * observable SSBO sink for loads/size/atomics. Compiler-only, not GL parsing. */
 static nir_shader *normalized_image(nir_shader *nir, unsigned operation, enum pipe_format format) {
@@ -201,6 +214,7 @@ int main(void) {
         (PsbcDescriptorBinding){.binding=0,.type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,
                                 .array_size=16,.stride=48,.offset=752};
     compile(buffer_array,&buffer_array_options);
+    compile(compute_buffer_image(),&options);
     const enum pipe_format normalized_formats[]={PIPE_FORMAT_R16G16B16A16_UNORM,PIPE_FORMAT_R8G8B8A8_UNORM};
     for(unsigned f=0;f<ARRAY_SIZE(normalized_formats);++f) for(unsigned stage=0;stage<2;++stage) {
         PsbcCompileOptions normalized=options;
