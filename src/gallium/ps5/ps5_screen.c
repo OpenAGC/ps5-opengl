@@ -4202,11 +4202,23 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
    const struct ps5_resource *resource = (const struct ps5_resource *)base;
    uint32_t format;
    const unsigned texel_size = base ? ps5_storage_image_texel_size(base->format) : 0;
-   if (!base || !descriptor || (base->target != PIPE_TEXTURE_2D && base->target != PIPE_TEXTURE_2D_ARRAY) ||
+   const bool sampled = required_bind == PIPE_BIND_SAMPLER_VIEW;
+   const bool one_d = base && sampled &&
+      (base->target == PIPE_TEXTURE_1D || base->target == PIPE_TEXTURE_1D_ARRAY);
+   const bool volume = base && sampled && base->target == PIPE_TEXTURE_3D;
+   const bool rectangle = base && sampled && base->target == PIPE_TEXTURE_RECT;
+   const bool array = base && (base->target == PIPE_TEXTURE_2D_ARRAY ||
+                               (one_d && base->target == PIPE_TEXTURE_1D_ARRAY));
+   if (!base || !descriptor || (!one_d && !volume && !rectangle &&
+       base->target != PIPE_TEXTURE_2D && base->target != PIPE_TEXTURE_2D_ARRAY) ||
        !texel_size || !base->width0 || !base->height0 ||
        base->width0 > PS5_MAX_TEXTURE_2D_SIZE || base->height0 > PS5_MAX_TEXTURE_2D_SIZE ||
-       base->depth0 != 1 || !base->array_size || base->array_size > 8 ||
-       (base->target == PIPE_TEXTURE_2D && base->array_size != 1) || base->last_level >= PIPE_MAX_TEXTURE_LEVELS ||
+       (one_d && base->height0 != 1) ||
+       (volume ? (!base->depth0 || base->depth0 > PS5_MAX_TEXTURE_3D_SIZE ||
+                  base->width0 > PS5_MAX_TEXTURE_3D_SIZE || base->height0 > PS5_MAX_TEXTURE_3D_SIZE) : base->depth0 != 1) ||
+       !base->array_size || base->array_size > 8 ||
+       (!array && base->array_size != 1) || base->last_level >= PIPE_MAX_TEXTURE_LEVELS ||
+       ((rectangle || volume) && base->last_level) ||
        base->last_level > 15 || first_level > last_level || last_level > base->last_level ||
        base->nr_samples > 1 || base->nr_storage_samples > 1 ||
        (!(base->bind & required_bind) &&
@@ -4260,8 +4272,9 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
             return -1;
          offset += span;
       }
-      if (base->target == PIPE_TEXTURE_2D_ARRAY &&
-          (resource->layer_stride != offset || offset > resource->size / base->array_size))
+      const unsigned layers = volume ? base->depth0 : base->array_size;
+      if ((array || volume) &&
+          (resource->layer_stride != offset || offset > resource->size / layers))
          return -1;
    }
    /* Same reverse-ordered linear mip storage and layer encoding as graphics.
@@ -4274,10 +4287,12 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
       address >> 8,
       format | (((base->width0 - 1u) & 3u) << 30) | (uint32_t)(address >> 40),
       ((base->width0 - 1u) >> 2) | ((base->height0 - 1u) << 14) | UINT32_C(0x80000000),
-      (tiled ? UINT32_C(0x91b00000) : base->target == PIPE_TEXTURE_2D_ARRAY ? UINT32_C(0xd0000000) : UINT32_C(0x90000000)) | swizzle |
+      (tiled ? UINT32_C(0x91b00000) : volume ? UINT32_C(0xa0000000) :
+       one_d ? (array ? UINT32_C(0xc0000000) : UINT32_C(0x80000000)) :
+       array ? UINT32_C(0xd0000000) : UINT32_C(0x90000000)) | swizzle |
          (first_level << 12) | (last_level << 16),
-      tiled ? 0 : base->target == PIPE_TEXTURE_2D_ARRAY ? base->array_size - 1 :
-         !base->last_level && pitch > base->width0 ? pitch - 1u : 0,
+      tiled ? 0 : volume ? base->depth0 - 1 : array ? base->array_size - 1 :
+         !one_d && !base->last_level && pitch > base->width0 ? pitch - 1u : 0,
       UINT32_C(0x00400000) | (base->last_level << 4), 0, 0,
    };
    memcpy(descriptor, srd, sizeof(srd));
@@ -11346,8 +11361,11 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                binding_size[tex->texture_index] = array_size;
                continue;
             }
+            const unsigned dimensions = tex->sampler_dim == GLSL_SAMPLER_DIM_1D ? 1 :
+               tex->sampler_dim == GLSL_SAMPLER_DIM_2D ? 2 :
+               tex->sampler_dim == GLSL_SAMPLER_DIM_3D ? 3 : 0;
             if ((tex->op != nir_texop_txf && tex->op != nir_texop_txs && tex->op != nir_texop_txl) ||
-                tex->sampler_dim != GLSL_SAMPLER_DIM_2D ||
+                !dimensions || (dimensions == 3 && tex->is_array) ||
                 tex->is_shadow || tex->texture_index >= PS5_COMPUTE_TEXTURE_SLOTS ||
                 tex->def.bit_size != 32 ||
                 tex->num_srcs != (tex->op == nir_texop_txs ? 1 : 2))
@@ -11358,7 +11376,9 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
             unsigned coords = 0, lods = 0;
             for (unsigned i = 0; i < tex->num_srcs; ++i) {
                if (tex->src[i].src_type == nir_tex_src_coord) {
-                  if (tex->op == nir_texop_txs || tex->coord_components != 2 + tex->is_array)
+                  if (tex->op == nir_texop_txs || tex->coord_components != dimensions + tex->is_array ||
+                      tex->src[i].src.ssa->num_components != tex->coord_components ||
+                      tex->src[i].src.ssa->bit_size != 32)
                      return false;
                   ++coords;
                } else if (tex->src[i].src_type == nir_tex_src_lod) {
@@ -11385,6 +11405,7 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                         ceiling = (unsigned)lod + (lod > (unsigned)lod);
                      } else if (ceiling > 15) return false;
                   }
+                  if (dimensions == 3 && ceiling) return false;
                   max_lod[tex->texture_index] = MAX2(max_lod[tex->texture_index], ceiling);
                   ++lods;
                } else {
@@ -11922,7 +11943,8 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
          return;
       if (context->cs->texture_lod[i] > view->u.tex.last_level - view->u.tex.first_level)
          return;
-      if ((view->target == PIPE_TEXTURE_2D_ARRAY) != ((context->cs->array_textures & (1u << i)) != 0))
+      if ((view->target == PIPE_TEXTURE_1D_ARRAY || view->target == PIPE_TEXTURE_2D_ARRAY) !=
+          ((context->cs->array_textures & (1u << i)) != 0))
          return;
       if (context->cs->filtered_textures & (1u << i)) {
          if (!(context->compute_sampler_mask & (1u << i)) || view->format != PIPE_FORMAT_R32_FLOAT)

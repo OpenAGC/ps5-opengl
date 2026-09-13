@@ -110,6 +110,7 @@ code = r'''
 #define PS5_COMPUTE_TEXTURE_OFFSET (31*16+8*32)
 #define PS5_COMPUTE_DESCRIPTOR_BYTES (PS5_COMPUTE_TEXTURE_OFFSET+PS5_COMPUTE_TEXTURE_SLOTS*48)
 #define PS5_MAX_TEXTURE_2D_SIZE 8192
+#define PS5_MAX_TEXTURE_3D_SIZE 2048
 #define PS5_MAX_TEXEL_BUFFER_ELEMENTS (1u << 20)
 #define PS5_MAX_CONSTANT_BUFFER_SIZE 0x4000u
 struct ps5_resource {
@@ -903,6 +904,37 @@ int main(void) {
     canonical.render_staging_offset=canonical.render_staging_size=0;
     assert(!ps5_resource_storage_image_descriptor(&canonical.base,0,descriptor));
     assert(!memcmp(descriptor,canonical_srd,sizeof(descriptor)));
+    /* New sampled dimensions retain canonical owned backing; storage-image
+     * support is deliberately unchanged. Volumes are single-level for now. */
+    const unsigned sampled_targets[]={PIPE_TEXTURE_1D,PIPE_TEXTURE_1D_ARRAY,
+        PIPE_TEXTURE_3D,PIPE_TEXTURE_RECT};
+    const uint32_t sampled_types[]={0x80000000u,0xc0000000u,0xa0000000u,0x90000000u};
+    for(unsigned target=0;target<ARRAY_SIZE(sampled_targets);++target) {
+        struct ps5_resource dimensional=canonical;
+        dimensional.base.target=sampled_targets[target];
+        dimensional.base.height0=target<2 ? 1 : 3;
+        dimensional.base.depth0=target==2 ? 4 : 1;
+        dimensional.base.array_size=target==1 ? 4 : 1;
+        dimensional.layer_stride=256*dimensional.base.height0;
+        dimensional.size=dimensional.layer_stride*(target==1 || target==2 ? 4 : 1);
+        assert(!ps5_resource_sampled_image_descriptor(&dimensional.base,0,0,descriptor));
+        assert((descriptor[3]&0xf0000000u)==sampled_types[target]);
+        assert(descriptor[4]==(target==1 || target==2 ? 3 : target==3 ? 63 : 0));
+        assert(ps5_resource_storage_image_descriptor(&dimensional.base,0,descriptor)<0);
+        struct ps5_resource bad=dimensional;
+        bad.allocation_size=bad.size-1;
+        assert(ps5_resource_sampled_image_descriptor(&bad.base,0,0,descriptor)<0);
+        if(target==1 || target==2) {
+            bad=dimensional; --bad.size;
+            assert(ps5_resource_sampled_image_descriptor(&bad.base,0,0,descriptor)<0);
+            bad=dimensional; ++bad.layer_stride;
+            assert(ps5_resource_sampled_image_descriptor(&bad.base,0,0,descriptor)<0);
+        }
+        if(target==2 || target==3) {
+            bad=dimensional; bad.base.last_level=1;
+            assert(ps5_resource_sampled_image_descriptor(&bad.base,0,0,descriptor)<0);
+        }
+    }
     /* Actual Mesa-generated table/driver encoding: RGBA16=65, RGBA8=56. */
     const enum pipe_format normalized_formats[]={PIPE_FORMAT_R16G16B16A16_UNORM,PIPE_FORMAT_R8G8B8A8_UNORM};
     for(unsigned f=0;f<ARRAY_SIZE(normalized_formats);++f) {

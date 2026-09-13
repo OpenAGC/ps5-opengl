@@ -227,6 +227,39 @@ static nir_shader *compute_sample(unsigned test, unsigned unit)
    return b.shader;
 }
 
+static nir_shader *compute_dimensional(unsigned kind, bool filtered)
+{
+   nir_builder b = nir_builder_init_simple_shader(MESA_SHADER_COMPUTE,
+      psbc_get_nir_options(PSBC_STAGE_COMPUTE), "compute-dimensional");
+   b.shader->info.workgroup_size[0] = 16;
+   b.shader->info.workgroup_size[1] = b.shader->info.workgroup_size[2] = 1;
+   b.shader->info.num_ssbos = b.shader->info.num_textures = 1;
+   BITSET_SET(b.shader->info.textures_used, 0);
+   nir_def *id = nir_channel(&b, nir_load_local_invocation_id(&b), 0);
+   nir_def *x = nir_iand_imm(&b, id, 3), *y = nir_ushr_imm(&b, id, 2), *z = y;
+   if (filtered) {
+      x = nir_fmul_imm(&b, nir_fadd_imm(&b, nir_u2f32(&b, x), 0.5f), 0.25f);
+      y = kind == 1 ? nir_u2f32(&b, y) :
+         nir_fmul_imm(&b, nir_fadd_imm(&b, nir_u2f32(&b, y), 0.5f), 0.25f);
+      z = y;
+   }
+   nir_tex_instr *tex = nir_tex_instr_create(b.shader, 2);
+   tex->op = filtered ? nir_texop_txl : nir_texop_txf;
+   tex->sampler_dim = kind == 2 ? GLSL_SAMPLER_DIM_3D : GLSL_SAMPLER_DIM_1D;
+   tex->is_array = kind == 1;
+   tex->coord_components = kind + 1;
+   tex->dest_type = nir_type_float32;
+   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_coord,
+      kind == 0 ? x : kind == 1 ? nir_vec2(&b, x, y) : nir_vec3(&b, x, y, z));
+   tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod,
+      filtered ? nir_imm_float(&b, 0) : nir_imm_int(&b, 0));
+   nir_def_init(&tex->instr, &tex->def, 4, 32);
+   nir_builder_instr_insert(&b, &tex->instr);
+   nir_store_ssbo(&b, &tex->def, nir_imm_int(&b, 0), nir_imul_imm(&b, id, 16),
+      .write_mask = 0xf, .align_mul = 16);
+   return b.shader;
+}
+
 static uint32_t expected_red(unsigned kind, unsigned x, float sign)
 {
    if (kind == 1)
@@ -767,6 +800,81 @@ cleanup:
    return status;
 }
 
+static int run_dimensional(struct pipe_context *pipe, uint32_t *words, size_t bytes)
+{
+   const unsigned targets[] = {PIPE_TEXTURE_1D, PIPE_TEXTURE_1D_ARRAY, PIPE_TEXTURE_3D};
+   int status = 1;
+   struct pipe_resource *image = NULL;
+   struct pipe_sampler_view *view = NULL;
+   void *shader = NULL;
+   const struct pipe_sampler_state ss = {.wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
+      .wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE, .wrap_r = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
+      .min_img_filter = PIPE_TEX_FILTER_NEAREST, .mag_img_filter = PIPE_TEX_FILTER_NEAREST};
+   void *sampler = pipe->create_sampler_state(pipe, &ss);
+   if (!sampler || bytes != 320) goto cleanup;
+   pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 0, 1, &sampler);
+   for (unsigned kind = 0; kind < 3; ++kind) {
+      const unsigned height = kind == 2 ? 4 : 1, layers = kind ? 4 : 1;
+      const struct pipe_resource templ = {.target = targets[kind], .format = PIPE_FORMAT_R32_FLOAT,
+         .width0 = 4, .height0 = height, .depth0 = kind == 2 ? 4 : 1,
+         .array_size = kind == 1 ? 4 : 1, .bind = PIPE_BIND_SAMPLER_VIEW};
+      image = pipe->screen->resource_create(pipe->screen, &templ);
+      float *pixels = NULL; size_t size = 0;
+      if (!image || ps5_resource_info(image, (void **)&pixels, &size, NULL) ||
+          !pixels || size != 256 * height * layers) goto cleanup;
+      memset(pixels, 0xcd, size);
+      for (unsigned z = 0; z < layers; ++z) for (unsigned y = 0; y < height; ++y)
+         for (unsigned x = 0; x < 4; ++x) pixels[(z * height + y) * 64 + x] = 1 + x + 4 * y + 16 * z;
+      const struct pipe_sampler_view sv = {.target = targets[kind], .format = PIPE_FORMAT_R32_FLOAT,
+         .swizzle_r = PIPE_SWIZZLE_X, .swizzle_g = PIPE_SWIZZLE_Y,
+         .swizzle_b = PIPE_SWIZZLE_Z, .swizzle_a = PIPE_SWIZZLE_W,
+         .u.tex.last_layer = kind == 1 ? 3 : 0};
+      view = pipe->create_sampler_view(pipe, image, &sv);
+      if (!view) goto cleanup;
+      pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 1, 0, &view);
+      for (unsigned filtered = 0; filtered < 2; ++filtered) {
+         const struct pipe_compute_state cs = {.ir_type = PIPE_SHADER_IR_NIR,
+            .prog = compute_dimensional(kind, filtered)};
+         shader = pipe->create_compute_state(pipe, &cs);
+         if (!shader) goto cleanup;
+         pipe->bind_compute_state(pipe, shader);
+         unsigned before = 0, after = 0;
+         if (ps5_context_last_compute_status(pipe, &before)) goto cleanup;
+         memset(words, 0xcd, bytes);
+         const struct pipe_grid_info grid = {.work_dim = 1, .block = {16, 1, 1}, .grid = {1, 1, 1}};
+         pipe->launch_grid(pipe, &grid);
+         pipe->memory_barrier(pipe, PIPE_BARRIER_ALL);
+         int rc = ps5_context_last_compute_status(pipe, &after);
+         unsigned correct = 0;
+         for (unsigned i = 0; i < 80; ++i) {
+            uint32_t expected = GUARD_WORD;
+            if (i >= 8 && i < 72) {
+               const unsigned lane = (i - 8) % 4, id = (i - 8) / 4;
+               float value = lane == 3 ? 1 : lane ? 0 :
+                  1 + (id & 3) + (kind ? 16 * (id >> 2) : 0) + (kind == 2 ? 4 * (id >> 2) : 0);
+               memcpy(&expected, &value, 4);
+            }
+            correct += words[i] == expected;
+         }
+         printf("[ps5-compute-dimensional] kind=%u filtered=%u rc=%d words=%u/80 dispatch=%u\n",
+                kind, filtered, rc, correct, after - before);
+         if (rc || after != before + 1 || correct != 80) goto cleanup;
+         pipe->bind_compute_state(pipe, NULL); pipe->delete_compute_state(pipe, shader); shader = NULL;
+      }
+      pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 0, 1, NULL);
+      pipe_sampler_view_reference(&view, NULL); pipe_resource_reference(&image, NULL);
+   }
+   status = 0;
+cleanup:
+   pipe->bind_compute_state(pipe, NULL);
+   pipe->set_sampler_views(pipe, MESA_SHADER_COMPUTE, 0, 0, 1, NULL);
+   void *none = NULL; pipe->bind_sampler_states(pipe, MESA_SHADER_COMPUTE, 0, 1, &none);
+   if (shader) pipe->delete_compute_state(pipe, shader);
+   if (sampler) pipe->delete_sampler_state(pipe, sampler);
+   pipe_sampler_view_reference(&view, NULL); pipe_resource_reference(&image, NULL);
+   return status;
+}
+
 static int run_compute_uniforms(struct pipe_context *pipe, uint32_t *words, size_t bytes)
 {
    int status = 1;
@@ -1302,6 +1410,7 @@ int main(void)
    for (unsigned kind = 0; kind < 3; ++kind)
       if (run_mips(pipe, sample_words, sample_bytes, 8, kind)) goto cleanup;
    if (run_all_slots(pipe, sample_words, sample_bytes)) goto cleanup;
+   if (run_dimensional(pipe, sample_words, sample_bytes)) goto cleanup;
    if (run_compute_uniforms(pipe, sample_words, sample_bytes)) goto cleanup;
    if (run_fragment_storage(pipe, sample_output, sample_words, sample_bytes, target)) goto cleanup;
    for (unsigned kind = 0; kind < 3; ++kind)
