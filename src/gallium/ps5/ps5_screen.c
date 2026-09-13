@@ -11520,7 +11520,7 @@ ps5_set_shader_images(struct pipe_context *base, mesa_shader_stage stage,
           v->u.tex.first_layer || v->u.tex.last_layer != v->resource->array_size - 1 ||
           /* Mesa marks ordinary, non-layered 2D images as single-layer views. */
           (v->u.tex.single_layer_view && v->resource->target != PIPE_TEXTURE_2D) ||
-          v->u.tex.is_2d_view_of_3d ||
+          (v->resource->target == PIPE_TEXTURE_3D && v->u.tex.is_2d_view_of_3d) ||
           ps5_resource_storage_image_descriptor(v->resource, v->u.tex.level, descriptor))
          return;
    }

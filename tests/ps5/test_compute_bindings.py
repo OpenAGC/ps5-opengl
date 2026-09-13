@@ -1143,18 +1143,18 @@ int main(void) {
     pipe_reference_init(&image.base.reference,1);
     struct pipe_image_view view={.resource=&image.base,.format=PIPE_FORMAT_R32_UINT,.access=PIPE_IMAGE_ACCESS_READ_WRITE};
     view.u.tex.single_layer_view=true; /* Actual Mesa 2D image representation. */
+    view.u.tex.is_2d_view_of_3d=true; /* Irrelevant for 2D; Mesa leaves it undefined. */
     ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,1,0,&view);
     caller=&image.base; pipe_resource_reference(&caller,NULL);
     assert(image.base.reference.count==1 && !context.compute_images_invalid);
-    for(unsigned fault=0;fault<7;++fault) {
+    for(unsigned fault=0;fault<6;++fault) {
         struct pipe_image_view bad=view;
         if(fault==0) bad.format=PIPE_FORMAT_R32_FLOAT;
         if(fault==1) bad.access=0;
         if(fault==2) bad.access|=PIPE_IMAGE_ACCESS_TEX2D_FROM_BUFFER;
         if(fault==3) bad.u.tex.level=1;
         if(fault==4) bad.u.tex.last_layer=1;
-        if(fault==5) bad.u.tex.is_2d_view_of_3d=true;
-        if(fault==6) image.base.screen=&other_screen;
+        if(fault==5) image.base.screen=&other_screen;
         struct pipe_image_view pair[2]={view,bad};
         ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,6,2,0,pair);
         assert(context.compute_images_invalid && !context.compute_images[6].resource && image.base.reference.count==1);
