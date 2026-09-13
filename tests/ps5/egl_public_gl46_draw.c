@@ -46,7 +46,7 @@ main(void)
       "flat out int id;\n"
       "void main() {\n"
       " bool ok = allInvocations(true) && anyInvocation(true) &&\n"
-      "           allInvocationsEqual(gl_DrawID) &&\n"
+      "           allInvocationsEqual(gl_DrawID == 0) &&\n"
       "           gl_BaseVertex == 0 && gl_BaseInstance == 0;\n"
       " id = ok ? gl_DrawID : -1;\n"
       " float x = gl_DrawID == 0 ? -0.4 : 0.4;\n"
