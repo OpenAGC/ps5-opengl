@@ -449,6 +449,10 @@ ps5_geometry_ring_itemsize(const PsbcShaderMetadata *metadata,
                            uint32_t *itemsize);
 static bool
 ps5_render_condition_passes(const struct ps5_context *context);
+static unsigned
+ps5_streamout_buffer_mask(unsigned stream_buffer_mask);
+static unsigned
+ps5_streamout_buffer_stream(unsigned stream_buffer_mask, unsigned buffer);
 
 #define PS5_DIRECT_MEMORY_TYPE 12
 #define PS5_MAP_PROTECTION 0x33
@@ -7238,8 +7242,12 @@ ps5_prepare_streamout(struct ps5_context *context,
        primitives > UINT64_MAX / instance_count)
       return false;
    primitives *= instance_count;
-   mask = metadata->streamout_enabled_stream_buffers_mask;
-   if (!mask || mask >> PIPE_MAX_SO_BUFFERS)
+   if (metadata->streamout_enabled_stream_buffers_mask >>
+       (PIPE_MAX_VERTEX_STREAMS * PIPE_MAX_SO_BUFFERS))
+      return false;
+   mask = ps5_streamout_buffer_mask(
+      metadata->streamout_enabled_stream_buffers_mask);
+   if (!mask)
       return false;
    memset(descriptors, 0,
           (global_control ? PS5_STREAMOUT_CONTROL_DESCRIPTOR + 1u : 4u) *
@@ -7325,34 +7333,35 @@ ps5_prepare_streamout(struct ps5_context *context,
 static bool
 ps5_collect_geometry_streamout(
    struct ps5_context *context, struct ps5_resource *descriptor_resource,
-   uint64_t *written_vertices, uint64_t *generated_primitives)
+   uint64_t written_vertices[PIPE_MAX_VERTEX_STREAMS],
+   uint64_t generated_primitives[PIPE_MAX_VERTEX_STREAMS])
 {
    struct ps5_streamout_control *control =
       (struct ps5_streamout_control *)(descriptor_resource->data +
                                        PS5_STREAMOUT_CONTROL_OFFSET);
    unsigned vertices_per_primitive =
       ps5_streamout_vertices_per_primitive(context->stream_output_primitive);
-   uint32_t generated;
-   uint32_t emitted;
 
    if (!vertices_per_primitive ||
        PS5_STREAMOUT_CONTROL_OFFSET + sizeof(*control) >
           descriptor_resource->size)
       return false;
    ps5_flush_gpu_data(control, sizeof(*control));
-   generated = control->generated_primitives[0];
-   emitted = control->emitted_primitives[0];
-   if (emitted > generated || control->generated_primitives[1] ||
-       control->generated_primitives[2] ||
-       control->generated_primitives[3] ||
-       control->emitted_primitives[1] ||
-       control->emitted_primitives[2] ||
-       control->emitted_primitives[3])
-      return false;
-   *written_vertices = (uint64_t)emitted * vertices_per_primitive;
-   *generated_primitives = generated;
-   printf("[ps5-gallium] geometry-streamout generated=%u emitted=%u offsets=%u/%u/%u/%u\n",
-          generated, emitted, control->buffer_offsets[0],
+   for (unsigned stream = 0; stream < PIPE_MAX_VERTEX_STREAMS; ++stream) {
+      if (control->emitted_primitives[stream] >
+          control->generated_primitives[stream])
+         return false;
+      written_vertices[stream] =
+         (uint64_t)control->emitted_primitives[stream] *
+         vertices_per_primitive;
+      generated_primitives[stream] = control->generated_primitives[stream];
+   }
+   printf("[ps5-gallium] geometry-streamout generated=%u/%u/%u/%u emitted=%u/%u/%u/%u offsets=%u/%u/%u/%u\n",
+          control->generated_primitives[0], control->generated_primitives[1],
+          control->generated_primitives[2], control->generated_primitives[3],
+          control->emitted_primitives[0], control->emitted_primitives[1],
+          control->emitted_primitives[2], control->emitted_primitives[3],
+          control->buffer_offsets[0],
           control->buffer_offsets[1], control->buffer_offsets[2],
           control->buffer_offsets[3]);
    return true;
@@ -7417,8 +7426,8 @@ ps5_draw_vbo_locked(struct pipe_context *base,
    uint32_t streamout_size[4] = {0};
    uint32_t streamout_stride[4] = {0};
    uint32_t streamout_offset[4] = {0};
-   uint64_t streamout_written_vertices = 0;
-   uint64_t generated_primitives = 0;
+   uint64_t streamout_written_vertices[PIPE_MAX_VERTEX_STREAMS] = {0};
+   uint64_t generated_primitives[PIPE_MAX_VERTEX_STREAMS] = {0};
    struct ps5_query *occlusion_query = context->queries_enabled
                                          ? context->active_occlusion_query
                                          : NULL;
@@ -7492,7 +7501,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       context->last_draw_status = -2;
       return;
    }
-   generated_primitives = (primitive_type == 9
+   generated_primitives[0] = (primitive_type == 9
       ? draws[0].count / context->patch_vertices
       : ps5_draw_primitive_count(primitive_type, draws[0].count)) *
       info->instance_count;
@@ -7981,7 +7990,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
           user_data_count, primitive_type, draws[0].count,
           info->instance_count, &streamout_mask, streamout_size,
           streamout_stride, streamout_offset,
-          &streamout_written_vertices)) {
+          &streamout_written_vertices[0])) {
       context->last_draw_status = -21;
       return;
    }
@@ -8496,42 +8505,62 @@ ps5_draw_vbo_locked(struct pipe_context *base,
    if (streamout_active && context->gs &&
        context->last_draw_status == 0 &&
        !ps5_collect_geometry_streamout(
-          context, descriptor_resource, &streamout_written_vertices,
-          &generated_primitives))
+          context, descriptor_resource, streamout_written_vertices,
+          generated_primitives))
       context->last_draw_status = -21;
    if (streamout_active && context->last_draw_status == 0) {
       unsigned vertices_per_primitive =
          ps5_streamout_vertices_per_primitive(
             context->stream_output_primitive);
-      uint64_t emitted_primitives = vertices_per_primitive
-         ? streamout_written_vertices / vertices_per_primitive : 0;
+      uint64_t emitted_primitives[PIPE_MAX_VERTEX_STREAMS] = {0};
+
+      for (unsigned stream = 0; stream < PIPE_MAX_VERTEX_STREAMS; ++stream)
+         emitted_primitives[stream] = vertices_per_primitive
+            ? streamout_written_vertices[stream] / vertices_per_primitive : 0;
 
       for (unsigned index = 0;
            index < context->stream_output_target_count; ++index) {
          struct ps5_stream_output_target *target =
             (struct ps5_stream_output_target *)
                context->stream_output_targets[index];
+         unsigned stream = ps5_streamout_buffer_stream(
+            vertex_output->metadata.streamout_enabled_stream_buffers_mask,
+            index);
 
          if (target && (streamout_mask & BITFIELD_BIT(index)))
-            target->offset += (unsigned)(streamout_written_vertices *
+            target->offset += (unsigned)(streamout_written_vertices[stream] *
                               streamout_stride[index] * 4u);
       }
       if (context->queries_enabled &&
           context->active_primitives_emitted_query &&
           vertices_per_primitive)
          context->active_primitives_emitted_query->value +=
-            emitted_primitives;
-      if (context->queries_enabled && emitted_primitives < generated_primitives)
-         for (unsigned i = 0; i <= PIPE_MAX_VERTEX_STREAMS;
-              i += PIPE_MAX_VERTEX_STREAMS)
-            if (context->active_streamout_overflow_query[i])
-               context->active_streamout_overflow_query[i]->value = 1;
+            emitted_primitives[0];
+      if (context->queries_enabled) {
+         bool any_overflow = false;
+
+         for (unsigned stream = 0; stream < PIPE_MAX_VERTEX_STREAMS;
+              ++stream) {
+            bool overflow = emitted_primitives[stream] <
+                            generated_primitives[stream];
+
+            any_overflow |= overflow;
+            if (overflow &&
+                context->active_streamout_overflow_query[stream])
+               context->active_streamout_overflow_query[stream]->value = 1;
+         }
+         if (any_overflow &&
+             context->active_streamout_overflow_query[
+                PIPE_MAX_VERTEX_STREAMS])
+            context->active_streamout_overflow_query[
+               PIPE_MAX_VERTEX_STREAMS]->value = 1;
+      }
    }
    if (context->queries_enabled && context->last_draw_status == 0 &&
        (!context->gs || streamout_active) &&
        context->active_primitives_generated_query)
       context->active_primitives_generated_query->value +=
-         generated_primitives;
+         generated_primitives[0];
 #ifdef PS5_PUBLIC_STENCIL_TEST
    if (context->last_draw_status == 0 && context->draw_calls == 17) {
       struct ps5_resource *depth = context->framebuffer.zsbuf.texture
@@ -10367,7 +10396,9 @@ ps5_stream_output_info_valid(const struct pipe_stream_output_info *info,
    for (unsigned index = 0; index < info->num_outputs; ++index) {
       const struct pipe_stream_output *output = &info->output[index];
 
-      if (output->output_buffer >= PIPE_MAX_SO_BUFFERS || output->stream ||
+      if (output->output_buffer >= PIPE_MAX_SO_BUFFERS ||
+          output->stream >= PIPE_MAX_VERTEX_STREAMS ||
+          (stage == PSBC_STAGE_VERTEX && output->stream) ||
           !output->num_components || output->num_components > 4 ||
           output->start_component + output->num_components > 4 ||
           !info->stride[output->output_buffer] ||
@@ -10439,7 +10470,8 @@ ps5_stream_output_metadata_matches(
    if (!metadata->streamout_valid)
       return false;
    for (unsigned index = 0; index < info->num_outputs; ++index)
-      mask |= BITFIELD_BIT(info->output[index].output_buffer);
+      mask |= BITFIELD_BIT(info->output[index].output_buffer +
+                           info->output[index].stream * PIPE_MAX_SO_BUFFERS);
    if (metadata->streamout_enabled_stream_buffers_mask != mask)
       return false;
    for (unsigned buffer = 0; buffer < PIPE_MAX_SO_BUFFERS; ++buffer)
@@ -10447,6 +10479,26 @@ ps5_stream_output_metadata_matches(
           info->stride[buffer])
          return false;
    return true;
+}
+
+static unsigned
+ps5_streamout_buffer_mask(unsigned stream_buffer_mask)
+{
+   unsigned mask = 0;
+
+   for (unsigned stream = 0; stream < PIPE_MAX_VERTEX_STREAMS; ++stream)
+      mask |= stream_buffer_mask >> (stream * PIPE_MAX_SO_BUFFERS);
+   return mask & BITFIELD_MASK(PIPE_MAX_SO_BUFFERS);
+}
+
+static unsigned
+ps5_streamout_buffer_stream(unsigned stream_buffer_mask, unsigned buffer)
+{
+   for (unsigned stream = 0; stream < PIPE_MAX_VERTEX_STREAMS; ++stream)
+      if (stream_buffer_mask &
+          BITFIELD_BIT(buffer + stream * PIPE_MAX_SO_BUFFERS))
+         return stream;
+   return 0;
 }
 
 static bool
