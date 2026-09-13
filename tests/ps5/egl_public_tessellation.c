@@ -38,7 +38,7 @@ shader(GLenum type, const char *source)
 static GLuint
 program(const char *const *sources, const GLenum *types, unsigned count)
 {
-   GLuint shaders[4] = {0};
+   GLuint shaders[5] = {0};
    GLuint result = glCreateProgram();
    GLint ok = GL_FALSE;
 
@@ -76,6 +76,87 @@ matching(uint32_t color)
    for (unsigned i = 0; i < SIZE * SIZE; ++i)
       result += pixels[i] == color;
    return result;
+}
+
+/* Separate final-stage layer/viewport routing from upstream distance I/O.
+ * Both texture layers and both viewport halves are checked after every draw. */
+static int
+layered_routing(const char *const *tess_sources)
+{
+   const GLenum types[] = {GL_VERTEX_SHADER, GL_TESS_CONTROL_SHADER,
+      GL_TESS_EVALUATION_SHADER, GL_GEOMETRY_SHADER, GL_FRAGMENT_SHADER};
+   GLuint texture = 0, fbo = 0;
+   static uint32_t pixels[2 * SIZE * SIZE];
+   int passed = 1;
+   glGenTextures(1, &texture);
+   glBindTexture(GL_TEXTURE_2D_ARRAY, texture);
+   glTexImage3D(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA8, SIZE, SIZE, 2, 0,
+                GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+   glGenFramebuffers(1, &fbo);
+   glBindFramebuffer(GL_FRAMEBUFFER, fbo);
+   glFramebufferTexture(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, texture, 0);
+   if (glCheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE) {
+      passed = 0;
+      goto done;
+   }
+   glViewportIndexedf(0, 0, 0, SIZE / 2, SIZE);
+   glViewportIndexedf(1, SIZE / 2, 0, SIZE / 2, SIZE);
+   glPatchParameteri(GL_PATCH_VERTICES, 3);
+   for (unsigned distances = 0; distances < 2; ++distances) {
+      for (unsigned layer = 0; layer < 2; ++layer) {
+         for (unsigned viewport = 0; viewport < 2; ++viewport) {
+            char geometry[1024];
+            int length = snprintf(geometry, sizeof(geometry),
+               "#version 330 core\n"
+               "#extension GL_ARB_viewport_array : require\n"
+               "%s"
+               "layout(triangles) in;layout(triangle_strip,max_vertices=3) out;"
+               "void main(){gl_Layer=%u;gl_ViewportIndex=%u;"
+               "for(int i=0;i<3;++i){gl_Position=gl_in[i].gl_Position;"
+               "%sEmitVertex();}EndPrimitive();}",
+               distances ? "#extension GL_ARB_cull_distance : require\n" : "",
+               layer, viewport,
+               distances ? "gl_ClipDistance[0]=1.0;gl_CullDistance[0]=1.0;" : "");
+            if (length < 0 || (size_t)length >= sizeof(geometry)) {
+               passed = 0;
+               goto done;
+            }
+            const char *sources[] = {tess_sources[0], tess_sources[1],
+               tess_sources[2], geometry, tess_sources[3]};
+            GLuint p = program(sources, types, 5);
+            if (!p) { passed = 0; goto done; }
+            glUseProgram(p);
+            glClear(GL_COLOR_BUFFER_BIT);
+            glDrawArrays(GL_PATCHES, 4, 3);
+            glGetTexImage(GL_TEXTURE_2D_ARRAY, 0, GL_RGBA, GL_UNSIGNED_BYTE, pixels);
+            unsigned green[4] = {0}, unexpected = 0;
+            for (unsigned z = 0; z < 2; ++z)
+               for (unsigned y = 0; y < SIZE; ++y)
+                  for (unsigned x = 0; x < SIZE; ++x) {
+                     uint32_t color = pixels[(z * SIZE + y) * SIZE + x];
+                     green[z * 2 + (x >= SIZE / 2)] += color == UINT32_C(0xff00ff00);
+                     unexpected += color != UINT32_C(0xff00ff00) && color != UINT32_C(0xff000000);
+                  }
+            int status = ps5_egl_current_draw_status(NULL);
+            GLenum error = glGetError();
+            int ok = !unexpected && !status && error == GL_NO_ERROR;
+            for (unsigned q = 0; q < 4; ++q)
+               ok &= q == layer * 2 + viewport ? green[q] > 100 : green[q] == 0;
+            printf("[ps5-egl-tess-routing] distances=%u layer=%u viewport=%u "
+                   "green=%u,%u,%u,%u unexpected=%u status=%d error=%x result=%s\n",
+                   distances, layer, viewport, green[0], green[1], green[2], green[3],
+                   unexpected, status, error, ok ? "pass" : "fail");
+            passed &= ok;
+            glUseProgram(0);
+            glDeleteProgram(p);
+         }
+      }
+   }
+done:
+   glBindFramebuffer(GL_FRAMEBUFFER, 0);
+   glDeleteFramebuffers(1, &fbo);
+   glDeleteTextures(1, &texture);
+   return passed;
 }
 
 int
@@ -226,6 +307,8 @@ main(void)
    passed = glGetError() == GL_NO_ERROR && status == 0 && draws == 8 &&
             green_count > 500 && yellow_count > 1000 &&
             magenta_count > 20 && blue_count > 500;
+   if (passed)
+      passed = layered_routing(tess_sources);
 
 done:
    printf("[ps5-egl-tessellation] green=%u yellow=%u magenta=%u blue=%u "

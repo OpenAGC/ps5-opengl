@@ -259,7 +259,8 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
     /* Gallium supplies lowered built-in outputs as well as position. Keep
      * these alive in the final GS so ACO must actually compile the exports. */
     const unsigned builtin_slots[]={VARYING_SLOT_PSIZ,VARYING_SLOT_LAYER,
-                                    VARYING_SLOT_VIEWPORT,VARYING_SLOT_CLIP_DIST0};
+                                    VARYING_SLOT_VIEWPORT,VARYING_SLOT_CLIP_DIST0,
+                                    VARYING_SLOT_CLIP_DIST0};
     for(unsigned n=0;n<ARRAY_SIZE(builtin_slots);++n) {
         gs=build(MESA_SHADER_GEOMETRY,false,ci);
         nir_lower_io(gs,nir_var_shader_in|nir_var_shader_out,type_size_vec4,0);
@@ -267,12 +268,16 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
         gs->info.io_lowered=true;
         nir_builder b=nir_builder_at(nir_before_impl(nir_shader_get_entrypoint(gs)));
         unsigned slot=builtin_slots[n];
+        bool combined=n==4;
         bool integer=slot==VARYING_SLOT_LAYER || slot==VARYING_SLOT_VIEWPORT;
-        nir_store_output(&b,integer ? nir_imm_int(&b,1) : nir_imm_float(&b,1),
-                         nir_imm_int(&b,0),.base=1,.write_mask=1,
+        nir_def* value=integer ? nir_imm_int(&b,1) : nir_imm_float(&b,1);
+        if(combined) value=nir_vec2(&b,value,value);
+        nir_store_output(&b,value,
+                         nir_imm_int(&b,0),.base=1,.write_mask=combined ? 3 : 1,
                          .src_type=integer ? nir_type_int32 : nir_type_float32,
                          .io_semantics={.location=slot,.num_slots=1});
         if(slot==VARYING_SLOT_CLIP_DIST0) gs->info.clip_distance_array_size=1;
+        if(combined) gs->info.cull_distance_array_size=1;
         nir_shader_gather_info(gs,nir_shader_get_entrypoint(gs));
         nir_validate_shader(gs,"lowered tessellation built-in export");
         gs_result=psbc_compile_nir_tessellation_pipeline(
@@ -280,6 +285,13 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
         printf("four-stage builtin slot=%u result=%d\n",slot,gs_result);
         fflush(stdout);
         assert(gs_result==PSBC_RESULT_OK);
+        const uint32_t control=context_value(&out.tes.metadata,0x207);
+        assert(G_02881C_USE_VTX_POINT_SIZE(control)==(slot==VARYING_SLOT_PSIZ));
+        assert(G_02881C_USE_VTX_RENDER_TARGET_INDX(control)==(slot==VARYING_SLOT_LAYER));
+        assert(G_02881C_USE_VTX_VIEWPORT_INDX(control)==(slot==VARYING_SLOT_VIEWPORT));
+        assert(out.tes.metadata.clip_distance_mask==(slot==VARYING_SLOT_CLIP_DIST0));
+        assert(out.tes.metadata.cull_distance_mask==(combined ? 2 : 0));
+        assert(G_02881C_VS_OUT_CCDIST0_VEC_ENA(control)==(slot==VARYING_SLOT_CLIP_DIST0));
         psbc_free_tessellation_output(&out);
         nir_foreach_block(block,nir_shader_get_entrypoint(gs)) {
             nir_foreach_instr(instr,block) {
