@@ -43,6 +43,8 @@ param(
     [switch]$Incremental,
     [switch]$Headless,
     [switch]$ReuseInstalledBinaries,
+    # Only with explicit owner authorization for exclusive console use.
+    [switch]$DedicatedConsole,
     [string]$LockPath,
     [string]$ResultsDirectory
 )
@@ -188,38 +190,42 @@ $ps5Lock = [IO.Path]::GetFullPath($LockPath)
 $lockToken = 'ps5-opengl-cts-pid{0}-{1}' -f $PID,
     [Guid]::NewGuid().ToString('N').Substring(0, 8)
 $handle = $null
-for ($attempt = 0; $attempt -lt 4; ++$attempt) {
-    try {
-        $handle = [IO.File]::Open($ps5Lock, [IO.FileMode]::CreateNew,
-            [IO.FileAccess]::Write, [IO.FileShare]::None)
-        break
-    } catch [IO.IOException] {
-        if (Test-Path -LiteralPath $ps5Lock) {
-            $owner = (Get-Content -LiteralPath $ps5Lock -Raw).Trim()
-            if ($attempt -eq 3) {
-                throw "PS5 lock remained occupied: $owner"
+if (-not $DedicatedConsole) {
+    for ($attempt = 0; $attempt -lt 4; ++$attempt) {
+        try {
+            $handle = [IO.File]::Open($ps5Lock, [IO.FileMode]::CreateNew,
+                [IO.FileAccess]::Write, [IO.FileShare]::None)
+            break
+        } catch [IO.IOException] {
+            if (Test-Path -LiteralPath $ps5Lock) {
+                $owner = (Get-Content -LiteralPath $ps5Lock -Raw).Trim()
+                if ($attempt -eq 3) {
+                    throw "PS5 lock remained occupied: $owner"
+                }
+                Write-Host "LOCK_WAIT owner=$owner seconds=15"
+                Start-Sleep -Seconds 15
+                continue
             }
-            Write-Host "LOCK_WAIT owner=$owner seconds=15"
-            Start-Sleep -Seconds 15
-            continue
+            if ($attempt -eq 3) { throw 'PS5 lock kept changing during acquisition.' }
+            Start-Sleep -Milliseconds 100
         }
-        if ($attempt -eq 3) { throw 'PS5 lock kept changing during acquisition.' }
-        Start-Sleep -Milliseconds 100
     }
-}
-try {
-    $bytes = [Text.Encoding]::UTF8.GetBytes($lockToken)
-    $handle.Write($bytes, 0, $bytes.Length)
-} finally {
-    $handle.Dispose()
+    try {
+        $bytes = [Text.Encoding]::UTF8.GetBytes($lockToken)
+        $handle.Write($bytes, 0, $bytes.Length)
+    } finally {
+        $handle.Dispose()
+    }
 }
 
 try {
-    Write-Host "LOCK_ACQUIRED $lockToken"
+    if ($DedicatedConsole) { Write-Host 'DEDICATED_CONSOLE owner-authorized; no lock acquired' }
+    else { Write-Host "LOCK_ACQUIRED $lockToken" }
     Assert-ServiceHealth 'preflight'
     & (Join-Path $scriptRoot 'Assert-Ps5ForegroundIdle.ps1') `
         -ProtocolDirectory $protocol -Ps5Host $Ps5Host -FtpCredential $FtpCredential `
-        -LockPath $ps5Lock -LockToken $lockToken -ResultsDirectory $ResultsDirectory
+        -LockPath $ps5Lock -LockToken $lockToken -ResultsDirectory $ResultsDirectory `
+        -DedicatedConsole:$DedicatedConsole
     if ($ReuseInstalledBinaries) {
         # FTP readback proves identity; do not trust a local deployment stamp.
         Assert-InstalledBinary 'eboot.bin'
@@ -299,7 +305,7 @@ try {
             }
         }
     } finally {
-        if (Test-Path -LiteralPath $ps5Lock) {
+        if (-not $DedicatedConsole -and (Test-Path -LiteralPath $ps5Lock)) {
             $currentToken = Get-Content -LiteralPath $ps5Lock -Raw
             if ($currentToken -eq $lockToken) {
                 Remove-Item -LiteralPath $ps5Lock -Force
@@ -366,6 +372,7 @@ try {
         ps5Host = $Ps5Host
         postHealthChecked = $postHealthChecked
         lockReleased = $lockReleased
+        dedicatedConsole = [bool]$DedicatedConsole
         installedBinariesVerified = [bool]$ReuseInstalledBinaries
     } | ConvertTo-Json | Set-Content -LiteralPath "$prefix-runner.json" -Encoding UTF8
 
@@ -407,7 +414,7 @@ try {
         throw "CTS lifecycle outcome was $($result.outcome)."
     }
     if ($result.teardownSignal -ne 'runtime-layers-released' -or
-        -not $postHealthChecked -or -not $lockReleased) {
+        -not $postHealthChecked -or (-not $DedicatedConsole -and -not $lockReleased)) {
         throw 'CTS lifecycle did not complete cleanly.'
     }
     Write-Host "OPENGL_CTS_PASSED executed=$ExpectedExecuted qpa=$prefix-ps5-opengl-cts.qpa"

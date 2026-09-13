@@ -13,6 +13,7 @@ param(
     [string]$ResultsDirectory,
     # Explicit owner confirmation for missing lifecycle history after a reboot.
     [switch]$OwnerConfirmedIdle,
+    [switch]$DedicatedConsole,
     [switch]$SelfTest
 )
 $ErrorActionPreference = 'Stop'
@@ -70,6 +71,7 @@ if ($SelfTest) {
 if (-not $Ps5Host) { throw 'Specify -Ps5Host for a console preflight.' }
 
 function Assert-OwnedLock {
+    if ($DedicatedConsole) { return }
     if (-not $LockToken -or -not (Test-Path -LiteralPath $LockPath) -or
         (Get-Content -LiteralPath $LockPath -Raw) -cne $LockToken) {
         throw 'Foreground preflight requires the exact owned lock.'

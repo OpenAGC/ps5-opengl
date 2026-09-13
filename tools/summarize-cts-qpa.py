@@ -113,7 +113,8 @@ def inventory(directory: Path, current_eboot: str | None) -> dict:
                 current_binary=bool(current_eboot and eboot == current_eboot.lower()),
                 # Legacy receipts did not persist service/lock evidence in JSON.
                 post_health=runner.get("postHealthChecked"),
-                lock_released=runner.get("lockReleased"))
+                lock_released=runner.get("lockReleased"),
+                dedicated_console=runner.get("dedicatedConsole", False))
             for case in summary["cases"]:
                 latest.setdefault(str(config), {})[case["name"]] = dict(
                     status="DiagnosticFailure" if case["name"] in summary["acceptance_errors"] else case["status"],

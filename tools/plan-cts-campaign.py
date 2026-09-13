@@ -17,14 +17,19 @@ ROOT = Path(__file__).resolve().parents[1]
 MUSTPASS = ROOT / "third_party/VK-GL-CTS/external/openglcts/data/gl_cts/data/mustpass/gl/khronos_mustpass/main/gl33-main.txt"
 
 
-def plan(cases, history, smoke, budget=120, startup=15, margin=1.5, unknown=30):
+def plan(cases, history, smoke, budget=120, startup=15, margin=1.5, unknown=30,
+         configurations=range(4), family_estimates=False):
+    configurations = tuple(configurations)
+    if (not configurations or len(set(configurations)) != len(configurations) or
+            any(type(c) is not int or c not in range(4) for c in configurations)):
+        raise ValueError("invalid configurations")
     if (not cases or len(cases) != len(set(cases)) or not set(smoke) <= set(cases) or
             any(not math.isfinite(v) for v in (budget, startup, margin, unknown)) or
             not (budget > startup >= 0 and margin >= 1 and unknown > 0)):
         raise ValueError("invalid inventory or time budget")
     capacity = (budget - startup) / margin
     shards = []
-    for config in range(len(PREPARE.CONFIGURATIONS)):
+    for config in configurations:
         rows = history.get(str(config), {})
         timings, fallback, previous_failures = {}, set(), set()
         for name in cases:
@@ -40,9 +45,18 @@ def plan(cases, history, smoke, budget=120, startup=15, margin=1.5, unknown=30):
                 fallback.add(name)
                 if row and row.get("status") not in {"Pass", "NotSupported"}:
                     previous_failures.add(name)
+        samples = {}
+        for name, seconds in timings.items():
+            if rows[name].get("status") == "Pass":
+                samples.setdefault(name.rsplit('.', 1)[0], []).append(seconds)
+        # Scheduling hints only: unmeasured cases still require execution.
+        estimates = {name: max(0.25, 4 * max(samples[name.rsplit('.', 1)[0]]))
+                     for name in fallback if family_estimates and name not in previous_failures
+                     and len(samples.get(name.rsplit('.', 1)[0], [])) >= 3}
+        costs = {name: timings.get(name, estimates.get(name, unknown)) for name in cases}
         groups = {lane: [] for lane in ("smoke", "previous-failure", "long", "bulk")}
         for name in cases:
-            seconds = timings.get(name, unknown)
+            seconds = costs[name]
             lane = ("long" if seconds > capacity else "previous-failure" if name in previous_failures else
                     "smoke" if name in smoke else "bulk")
             groups[lane].append(name)
@@ -51,14 +65,14 @@ def plan(cases, history, smoke, budget=120, startup=15, margin=1.5, unknown=30):
             while position < len(remaining):
                 if lane in {"long", "previous-failure"}:
                     selected = remaining[position:position + 1]
-                    seconds = timings.get(selected[0], unknown)
+                    seconds = costs[selected[0]]
                 else:
                     # One ordered pass; rebuilding family timings per shard is quadratic.
                     selected, seconds = [], 0.0
                     end = position
                     while end < len(remaining):
                         name = remaining[end]
-                        cost = timings.get(name, unknown)
+                        cost = costs[name]
                         if selected and seconds + cost > capacity:
                             break
                         selected.append(name)
@@ -69,11 +83,12 @@ def plan(cases, history, smoke, budget=120, startup=15, margin=1.5, unknown=30):
                     estimated_test_seconds=round(seconds, 6), observation_seconds=observation,
                     needs_duration_approval=observation > budget,
                     exceeds_runner_limit=observation > 3600,
-                    unknown_timings=sum(name in fallback for name in selected)))
+                    unknown_timings=sum(name in fallback for name in selected),
+                    family_estimates=sum(name in estimates for name in selected)))
                 position += len(selected)
     priorities = {"smoke": 0, "previous-failure": 1, "long": 2, "bulk": 3}
     shards.sort(key=lambda row: (priorities[row["lane"]], row["configuration"]))
-    for config in range(len(PREPARE.CONFIGURATIONS)):
+    for config in configurations:
         covered = Counter(name for row in shards if row["configuration"] == config for name in row["cases"])
         if covered != Counter(cases):
             raise ValueError("lost or duplicated case in schedule")
@@ -94,6 +109,10 @@ def main():
     parser.add_argument("--budget-seconds", type=float, default=120)
     parser.add_argument("--startup-seconds", type=float, default=15)
     parser.add_argument("--margin", type=float, default=1.5)
+    parser.add_argument("--configuration", type=int, choices=range(4), action="append",
+                        help="schedule only these configurations; default all four")
+    parser.add_argument("--family-estimates", action="store_true",
+                        help="estimate unknown siblings from at least three passing cases")
     args = parser.parse_args()
     try:
         cases = args.mustpass.read_text().splitlines()
@@ -108,7 +127,9 @@ def main():
             for config, rows in ledger["cases"].items():
                 history.setdefault(config, {}).update(rows)
             sources.append(dict(file=path.name, sha256=hashlib.sha256(raw).hexdigest()))
-        shards = plan(cases, history, smoke, args.budget_seconds, args.startup_seconds, args.margin)
+        configurations = args.configuration if args.configuration is not None else range(4)
+        shards = plan(cases, history, smoke, args.budget_seconds, args.startup_seconds, args.margin,
+                      configurations=configurations, family_estimates=args.family_estimates)
         revision = json.loads((ROOT / "dependencies.json").read_text())["repositories"]["VK-GL-CTS"]["revision"]
         output = args.output.resolve()
         output.mkdir(parents=True, exist_ok=False)
@@ -137,6 +158,8 @@ def main():
             budget_seconds=args.budget_seconds, startup_seconds=args.startup_seconds, margin=args.margin,
             historical_estimated_test_hours=sum(row["estimated_test_seconds"] for row in shards)/3600,
             unknown_timing_executions=sum(row["unknown_timings"] for row in shards),
+            family_estimated_executions=sum(row["family_estimates"] for row in shards),
+            selected_configurations=list(configurations),
             observation_budget_hours=sum(row["observation_seconds"] for row in shards)/3600,
             note="Excludes deploy/readback/teardown/lock waits. Old timings are not a current-runtime benchmark.",
             timing_sources=sources, configurations=PREPARE.CONFIGURATIONS, shards=shards)

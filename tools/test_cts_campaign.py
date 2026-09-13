@@ -19,6 +19,25 @@ PLANNER = importlib.import_module("plan-cts-campaign")
 
 
 class CampaignTests(unittest.TestCase):
+    def test_family_estimates_preserve_unknowns_and_failure_isolation(self):
+        cases = [f"GL.family.{i}" for i in range(103)] + ["GL.other.a", "GL.family.failed"]
+        history = {"0": {n: dict(status="Pass", seconds=.01) for n in cases[:3]}}
+        history["0"][cases[-1]] = dict(status="Fail", seconds=.001)
+        rows = PLANNER.plan(cases, history, [], configurations=[0], family_estimates=True)
+        self.assertEqual(Counter(n for r in rows for n in r['cases']), Counter(cases))
+        self.assertEqual(sum(r['family_estimates'] for r in rows), 100)
+        self.assertEqual(sum(r['unknown_timings'] for r in rows), 102)
+        self.assertTrue(all(r['configuration'] == 0 and r['observation_seconds'] <= 120 for r in rows))
+        self.assertEqual(next(r for r in rows if r['lane'] == 'previous-failure')['estimated_test_seconds'], 30)
+        history['0'][cases[0]]['status'] = 'NotSupported'
+        self.assertEqual(sum(r['family_estimates'] for r in PLANNER.plan(
+            cases, history, [], configurations=[0], family_estimates=True)), 0)
+
+    def test_invalid_configurations(self):
+        for configs in ([], [0, 0], [4], [True]):
+            with self.assertRaises(ValueError):
+                PLANNER.plan(['a'], {}, [], configurations=configs)
+
     def test_native_dependency_copy_resumes_without_nesting(self):
         script = (Path(__file__).parent / "build-native-cts-app.sh").read_text()
         start = script.index('if [[ ! -f "$app/.deps/native/.cts-copy-complete" ]]')
