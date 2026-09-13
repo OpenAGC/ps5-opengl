@@ -6994,7 +6994,9 @@ ps5_render_condition(struct pipe_context *base, struct pipe_query *pipe_query,
 
    if (query && query->type != PIPE_QUERY_OCCLUSION_COUNTER &&
        query->type != PIPE_QUERY_OCCLUSION_PREDICATE &&
-       query->type != PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE)
+       query->type != PIPE_QUERY_OCCLUSION_PREDICATE_CONSERVATIVE &&
+       query->type != PIPE_QUERY_SO_OVERFLOW_PREDICATE &&
+       query->type != PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE)
       return;
    (void)mode;
    context->render_condition_query = query;

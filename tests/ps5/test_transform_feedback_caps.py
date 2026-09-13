@@ -10,3 +10,5 @@ assert "caps->max_vertex_streams =\n      PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDAT
 assert "active_streamout_overflow_query[PIPE_MAX_VERTEX_STREAMS + 1]" in screen
 assert "index < PIPE_MAX_VERTEX_STREAMS" in screen
 assert "i += PIPE_MAX_VERTEX_STREAMS" in screen
+assert "query->type != PIPE_QUERY_SO_OVERFLOW_PREDICATE" in screen
+assert "query->type != PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE" in screen
