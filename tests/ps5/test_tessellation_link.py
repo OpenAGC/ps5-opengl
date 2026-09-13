@@ -244,6 +244,12 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
     assert(gs_result==PSBC_RESULT_OK);
     assert(out.tes.metadata.source_stage==PSBC_STAGE_GEOMETRY);
     assert(out.tes.metadata.hardware_stage==PSBC_HW_STAGE_NGG);
+    assert(G_028B54_LS_EN(out.tes.metadata.linkage_stages_en.value)==V_028B54_LS_STAGE_ON);
+    assert(G_028B54_HS_EN(out.tes.metadata.linkage_stages_en.value));
+    assert(G_028B54_DYNAMIC_HS(out.tes.metadata.linkage_stages_en.value));
+    assert(G_028B54_ES_EN(out.tes.metadata.linkage_stages_en.value)==V_028B54_ES_STAGE_DS);
+    assert(G_028B54_GS_EN(out.tes.metadata.linkage_stages_en.value));
+    assert(G_028B54_PRIMGEN_EN(out.tes.metadata.linkage_stages_en.value));
     assert(context_value(&out.tes.metadata,0x2ab));
     assert(out.runtime.final_offchip_layout_valid);
     assert(out.runtime.final_offchip_layout_user_data_dword<
