@@ -11737,6 +11737,10 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
           grid->grid_base[i] || (grid->last_block[i] && grid->last_block[i] != grid->block[i]))
          return;
    }
+   if (!ps5_render_condition_passes(context)) {
+      context->last_compute_status = 0;
+      return;
+   }
    memcpy(groups, grid->grid, sizeof(groups));
    if (grid->indirect) {
       const struct pipe_resource *command = grid->indirect;

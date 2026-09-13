@@ -160,6 +160,7 @@ static uint32_t expected_sampler[4];
 static unsigned with_filtered;
 static bool multi, with_constants, fail_upload;
 static bool fail_info;
+static bool render_condition_pass=true;
 static struct ps5_resource *upload_resource;
 ''' + extent_helper + array_layout + linear_helpers + format_encoding + tiled_helper + image_descriptor + r'''
 static int ps5_resource_info(struct pipe_resource *base, void **address, size_t *size, size_t *allocation) {
@@ -172,6 +173,7 @@ static int ps5_resource_info(struct pipe_resource *base, void **address, size_t 
 static bool fragment_mode;
 static unsigned fragment_drains;
 static void ps5_draw_batch_drain(void) { ++fragment_drains; }
+static bool ps5_render_condition_passes(const struct ps5_context *context) { (void)context; return render_condition_pass; }
 static void ps5_flush_gpu_data(const void *address, size_t size) { assert(address && (fragment_mode ? size==64 || size==256 || size==512 || size==768 || size==PS5_DESCRIPTOR_STORAGE_BYTES : size==12)); }
 ''' + texel_format + texel_descriptor + r'''
 static bool ps5_uses_merged_geometry_metadata(const struct ps5_context *c, const struct ps5_shader *s, const PsbcShaderMetadata *m) { return false; }
@@ -651,6 +653,10 @@ int main(void) {
     const struct pipe_grid_info good={.work_dim=1,.block={16,1,1},.grid={2,1,1}};
     ps5_launch_grid(&context.base,&good);
     assert(!context.last_compute_status && context.dispatches==1 && submitted==1);
+    render_condition_pass=false;
+    ps5_launch_grid(&context.base,&good);
+    assert(!context.last_compute_status && context.dispatches==1 && submitted==1);
+    render_condition_pass=true;
     struct pipe_shader_buffer pair[2]={binding,binding};
     pair[1].buffer_size=UINT32_MAX;
     ps5_set_shader_buffers(&context.base,MESA_SHADER_COMPUTE,14,2,pair,3);
