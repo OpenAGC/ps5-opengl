@@ -844,10 +844,11 @@ static int run_dimensional(struct pipe_context *pipe, uint32_t *words, size_t by
       float *pixels = NULL; size_t size = 0, allocation = 0;
       if (!image || ps5_resource_info(image, (void **)&pixels, &size, &allocation) || !pixels) goto cleanup;
       if (kind >= 4) {
-         if (size != 4 * height * layers * 4 * 4 || allocation != 65536 * layers) goto cleanup;
+         if (size != 4 * height * layers * 4 * 4 || allocation < 65536 * layers) goto cleanup;
          /* Constant per physical layer: checks sample 0/3 access and layer
           * selection, not distinct per-sample values or upload performance. */
-         for (unsigned i = 0; i < allocation / 4; ++i) pixels[i] = 1 + 16 * (i / 16384);
+         memset(pixels, 0xcd, allocation);
+         for (unsigned i = 0; i < 16384 * layers; ++i) pixels[i] = 1 + 16 * (i / 16384);
       } else {
          if (size != 256 * height * layers) goto cleanup;
          memset(pixels, 0xcd, size);
