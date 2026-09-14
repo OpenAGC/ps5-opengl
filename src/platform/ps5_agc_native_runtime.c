@@ -3754,6 +3754,21 @@ int main(void)
         /* Gallium performs resource readback and pixel validation itself.
          * Avoid multi-megabyte command/framebuffer dumps on every GL draw. */
         result = submit_rc == 0 && suspend_rc == 0 && waits < 2000 ? 0 : 1;
+        if (!result && runtime_hs_package) {
+            unsigned active = 0;
+            flush_gpu_data(memory + WORK_BYTES, TESS_OFFCHIP_BYTES);
+            for (unsigned block = 0; block < TESS_OFFCHIP_WORKGROUPS; ++block) {
+                const uint32_t *p = (const uint32_t *)(memory + WORK_BYTES + block * 32768u);
+                if (!(p[0] | p[1] | p[2] | p[3]))
+                    continue;
+                if (active++ < 4)
+                    printf(LOG_PREFIX " tess-ring block=%u hs-rsrc2=%08x pos=%08x,%08x,%08x,%08x / %08x,%08x,%08x,%08x / %08x,%08x,%08x,%08x color=%08x,%08x,%08x,%08x\n",
+                           block, runtime_hs_rsrc2, p[0], p[1], p[2], p[3],
+                           p[4], p[5], p[6], p[7], p[8], p[9], p[10], p[11],
+                           p[768], p[769], p[770], p[771]);
+            }
+            printf(LOG_PREFIX " tess-ring active=%u\n", active);
+        }
         if (result)
             printf(LOG_PREFIX " submit=%08" PRIx32
                    " suspend=%08" PRIx32 " waits=%u\n",

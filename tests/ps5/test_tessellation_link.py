@@ -63,6 +63,25 @@ code = r'''
 #include "amd/common/sid.h"
 ''' + helpers + r'''
 
+static bool trace_self_read;
+struct radv_shader_binary *__real_radv_shader_nir_to_asm(
+    const struct radv_compiler_info *, struct radv_shader_stage *,
+    struct nir_shader *const *, int, const struct radv_graphics_state_key *);
+struct radv_shader_binary *__wrap_radv_shader_nir_to_asm(
+    const struct radv_compiler_info *ci, struct radv_shader_stage *stage,
+    struct nir_shader *const *shaders, int count, const struct radv_graphics_state_key *gfx) {
+    if (trace_self_read) stage->key.keep_executable_info=true;
+    struct radv_shader_binary *binary=__real_radv_shader_nir_to_asm(ci,stage,shaders,count,gfx);
+    if (trace_self_read && binary) {
+        struct radv_shader_binary_legacy *legacy=(void *)binary;
+        fwrite(legacy->data+legacy->stats_size+legacy->code_size+legacy->ir_size,
+            1,legacy->disasm_size,stdout);
+        printf("CONFIG stage=%u rsrc1=%08x rsrc2=%08x lds=%u\n",stage->stage,
+            binary->config.rsrc1,binary->config.rsrc2,binary->config.lds_size);
+    }
+    return binary;
+}
+
 static nir_variable *varying(nir_builder *b, nir_variable_mode mode,
                             const struct glsl_type *type, unsigned slot, bool patch) {
     nir_variable *v=nir_variable_create(b->shader,mode,type,"linked-value");
@@ -222,8 +241,99 @@ static void expect_empty(const PsbcTessellationOutput* out) {
 static int type_size_vec4(const struct glsl_type* type,bool bindless) {
     return glsl_count_attribute_slots(type,false);
 }
+/* Reduced SPIR-V positive-case shape: the TCS reads its own varying output. */
+static void self_read_test(const struct radv_compiler_info *ci) {
+    nir_shader *n[4];
+    for (unsigned s=0;s<4;++s) {
+        nir_builder b=nir_builder_init_simple_shader(s,&ci->nir_options[s],"self-read");
+        n[s]=b.shader;
+        n[s]->info.io_lowered=true;
+        nir_def *zero=nir_imm_int(&b,0), *one=nir_imm_float(&b,1);
+        nir_io_semantics pos={.location=VARYING_SLOT_POS,.num_slots=1};
+        nir_io_semantics col={.location=VARYING_SLOT_VAR0,.num_slots=1};
+        if (s==0) {
+            nir_def *p=nir_load_input(&b,3,32,zero,.dest_type=nir_type_float32,
+                .range=1,.io_semantics={.location=VERT_ATTRIB_GENERIC0,.num_slots=1});
+            nir_store_output(&b,p,zero,.write_mask=7,.src_type=nir_type_float32,.io_semantics=pos);
+        } else if (s==1) {
+            n[s]->info.tess.tcs_vertices_out=3;
+            n[s]->info.tess._primitive_mode=TESS_PRIMITIVE_TRIANGLES;
+            n[s]->info.tess.spacing=TESS_SPACING_EQUAL;
+            nir_def *id=nir_load_invocation_id(&b);
+            nir_store_per_vertex_output(&b,zero,id,zero,.write_mask=1,.component=3,
+                .src_type=nir_type_float32,.io_semantics=pos);
+            nir_store_per_vertex_output(&b,nir_vec3(&b,one,zero,zero),id,zero,
+                .base=3,.write_mask=7,.src_type=nir_type_float32,.io_semantics=col);
+            nir_def *v=nir_load_per_vertex_output(&b,3,32,id,zero,.base=3,
+                .dest_type=nir_type_float32,.io_semantics=col);
+            nir_store_per_vertex_output(&b,one,id,zero,.write_mask=1,.component=3,
+                .src_type=nir_type_float32,.io_semantics=pos);
+            nir_store_per_vertex_output(&b,v,id,zero,.base=3,.write_mask=7,
+                .src_type=nir_type_float32,.io_semantics=col);
+            nir_push_if(&b,nir_ieq_imm(&b,id,0));
+            nir_store_output(&b,nir_vec3(&b,one,one,one),zero,.base=1,.write_mask=7,
+                .src_type=nir_type_float32,.io_semantics={.location=VARYING_SLOT_TESS_LEVEL_OUTER,.num_slots=1,.no_varying=true});
+            nir_store_output(&b,one,zero,.base=2,.write_mask=1,.src_type=nir_type_float32,
+                .io_semantics={.location=VARYING_SLOT_TESS_LEVEL_INNER,.num_slots=1,.no_varying=true});
+            nir_pop_if(&b,NULL);
+            nir_def *p=nir_load_per_vertex_input(&b,3,32,id,zero,.dest_type=nir_type_float32,.io_semantics=pos);
+            nir_store_per_vertex_output(&b,p,id,zero,.write_mask=7,.src_type=nir_type_float32,.io_semantics=pos);
+        } else if (s==2) {
+            n[s]->info.tess._primitive_mode=TESS_PRIMITIVE_TRIANGLES;
+            n[s]->info.tess.spacing=TESS_SPACING_EQUAL;
+            n[s]->info.tess.ccw=true;
+            nir_def *p0=nir_load_per_vertex_input(&b,4,32,zero,zero,.dest_type=nir_type_float32,.io_semantics=pos);
+            nir_def *v=nir_load_per_vertex_input(&b,1,32,zero,zero,.base=1,.dest_type=nir_type_float32,.io_semantics=col);
+            nir_def *tc=nir_load_tess_coord(&b), *p=NULL;
+            for(unsigned i=0;i<3;++i) {
+                nir_def *q=i ? nir_load_per_vertex_input(&b,3,32,nir_imm_int(&b,i),zero,
+                    .dest_type=nir_type_float32,.io_semantics=pos) : p0;
+                q=nir_vec4(&b,nir_channel(&b,q,0),nir_channel(&b,q,1),nir_channel(&b,q,2),one);
+                q=nir_fmul(&b,q,nir_channel(&b,tc,i));
+                p=p ? nir_fadd(&b,p,q) : q;
+            }
+            nir_store_output(&b,p,zero,.write_mask=15,.src_type=nir_type_float32,.io_semantics=pos);
+            nir_store_output(&b,nir_vec2(&b,nir_channel(&b,p0,3),v),zero,.base=1,.write_mask=3,
+                .src_type=nir_type_float32,.io_semantics=col);
+        } else {
+            n[s]->info.gs.input_primitive=MESA_PRIM_TRIANGLES;
+            n[s]->info.gs.output_primitive=MESA_PRIM_TRIANGLE_STRIP;
+            n[s]->info.gs.vertices_in=n[s]->info.gs.vertices_out=3;
+            n[s]->info.gs.invocations=1; n[s]->info.gs.active_stream_mask=1;
+            nir_def *v=nir_load_per_vertex_input(&b,2,32,zero,zero,.base=1,.dest_type=nir_type_float32,.io_semantics=col);
+            for(unsigned i=0;i<3;++i) {
+                nir_def *p=nir_load_per_vertex_input(&b,4,32,nir_imm_int(&b,i),zero,.dest_type=nir_type_float32,.io_semantics=pos);
+                nir_store_output(&b,p,zero,.write_mask=15,.src_type=nir_type_float32,.io_semantics=pos);
+                nir_store_output(&b,v,zero,.base=1,.write_mask=3,.src_type=nir_type_float32,.io_semantics=col);
+                nir_emit_vertex(&b,0);
+            }
+            nir_end_primitive(&b,0);
+        }
+        nir_shader_gather_info(n[s],nir_shader_get_entrypoint(n[s]));
+    }
+    PsbcTessellationCompileOptions options={.input_patch_vertices=3,
+        .offchip_workgroup_capacity_dwords=8192,.address32_hi=2};
+    options.vertex.vertex_attribute_count=1;
+    options.vertex.vertex_attributes[0]=(PsbcVertexAttribute){.location=0,.binding=0,
+        .format=PSBC_VERTEX_FORMAT_R32G32B32_FLOAT,.stride=12,.alignment=4};
+    PsbcTessellationOutput out={0};
+    trace_self_read=true;
+    assert(psbc_compile_nir_tessellation_pipeline(n[0],n[1],n[2],n[3],&options,&out)==PSBC_RESULT_OK);
+    trace_self_read=false;
+    printf("SELF-READ hs=%zu final=%zu lds=%u rsrc2=%08x layout=%08x\n",
+        out.hs.machine_code_size,out.tes.machine_code_size,out.runtime.lds_bytes,
+        out.runtime.hs_rsrc2,out.runtime.final_offchip_layout);
+    printf("SELF-READ users=%u/%u offchip=%u ngg=%u/%u\n",
+        out.hs.metadata.user_sgpr_count,out.tes.metadata.user_sgpr_count,
+        out.runtime.final_offchip_layout_user_data_dword,
+        out.tes.metadata.ngg_lds_layout_user_data_dword,out.tes.metadata.ngg_lds_layout);
+    assert(out.runtime.lds_bytes>0);
+    psbc_free_tessellation_output(&out);
+    for(unsigned i=0;i<4;++i) ralloc_free(n[i]);
+}
 static void api_tests(const struct radv_compiler_info* ci,bool cross,
                       PsbcTessellationOutput* reference) {
+    if (!cross) self_read_test(ci);
     nir_shader* inputs[]={build(MESA_SHADER_VERTEX,cross,ci),
                          build(MESA_SHADER_TESS_CTRL,cross,ci),
                          build(MESA_SHADER_TESS_EVAL,cross,ci)};
@@ -808,7 +918,7 @@ if __name__ == "__main__":
             status = run(command + ["-c", str(ROOT / "src/platform/ps5_agc_package.c"),
                                     "-o", str(package_obj)], attempt / "package-compile.log", 45, attempt)
         if not status:
-            status = run(["g++", "-o", str(executable), str(obj), str(package_obj), str(LIB), "-pthread", "-lm"],
+            status = run(["g++", "-Wl,--wrap=radv_shader_nir_to_asm", "-o", str(executable), str(obj), str(package_obj), str(LIB), "-pthread", "-lm"],
                          attempt / "link.log", 45, attempt)
         if not status:
             for variant in ("same", "cross"):
