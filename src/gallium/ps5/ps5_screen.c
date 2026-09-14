@@ -12417,6 +12417,17 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
 }
 #endif
 
+static void
+ps5_lower_default_uniforms(nir_shader *nir)
+{
+   if (!nir->num_uniforms)
+      return;
+   nir_lower_uniforms_to_ubo(nir, false, false);
+   /* Lowering leaves dead uniform dereferences in non-VS stages too. */
+   nir_opt_dce(nir);
+   nir_remove_dead_variables(nir, nir_var_uniform, NULL);
+}
+
 static void *
 ps5_create_shader_state(struct pipe_screen *screen,
                         const struct pipe_shader_state *templ, PsbcStage stage,
@@ -12445,8 +12456,7 @@ ps5_create_shader_state(struct pipe_screen *screen,
 
    /* Mesa's default uniforms arrive as load_uniform intrinsics and CB0 data.
     * PSBC consumes descriptor-backed load_ubo, with the same vec4 layout. */
-   if (templ->ir.nir->num_uniforms)
-      nir_lower_uniforms_to_ubo(templ->ir.nir, false, false);
+   ps5_lower_default_uniforms(templ->ir.nir);
 
    printf("[ps5-gallium] create-shader stage=%u nir-stage=%d io-lowered=%u ubos=%u textures=%u default-ubo=%u uniforms=%u face=%u/%u\n",
           stage, templ->ir.nir->info.stage, templ->ir.nir->info.io_lowered,

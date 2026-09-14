@@ -37,6 +37,8 @@ for name in ("radv_graphics_shaders_fill_linked_vs_io_info",
              "radv_declare_pipeline_args"):
     helpers += function(pipeline, "static void\n" + name + "(")
 helpers += function(util_source, "static unsigned get_tcs_wg_output_mem_size(")
+helpers += function((ROOT / "src/gallium/ps5/ps5_screen.c").read_text(),
+                    "static void\nps5_lower_default_uniforms(")
 
 code = r'''
 #include <assert.h>
@@ -318,14 +320,21 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
         *resource_input=nir_shader_clone(NULL,saved);
         nir_builder b=nir_builder_at(nir_before_cf_list(
             &nir_shader_get_entrypoint(*resource_input)->body));
-        nir_def *value=nir_load_ubo(&b,1,32,nir_imm_int(&b,0),nir_imm_int(&b,0),
-            .align_mul=4,.range=4);
+        nir_variable *offset=nir_variable_create(*resource_input,nir_var_uniform,
+                                               glsl_uint_type(),"offset");
+        nir_build_deref_var(&b,offset); /* Dead after Mesa lowers the load. */
+        nir_def *value=nir_load_uniform(&b,1,32,nir_imm_int(&b,0),.range=1);
         nir_def *old=nir_ssbo_atomic(&b,32,nir_imm_int(&b,0),nir_imm_int(&b,0),value,
             .atomic_op=nir_atomic_op_iadd);
         nir_store_ssbo(&b,old,nir_imm_int(&b,0),nir_imm_int(&b,4),
             .write_mask=1,.align_mul=4);
-        (*resource_input)->info.num_ubos=1;
+        (*resource_input)->num_uniforms=1;
         (*resource_input)->info.num_ssbos=1;
+        ps5_lower_default_uniforms(*resource_input);
+        assert(count(*resource_input,nir_intrinsic_load_uniform)==0);
+        assert(count(*resource_input,nir_intrinsic_load_ubo)==1);
+        nir_foreach_variable_with_modes(var,*resource_input,nir_var_uniform)
+            assert(!"dead uniform declaration retained");
         nir_validate_shader(*resource_input,"linked buffer input");
         PsbcTessellationCompileOptions resource_options=options;
         resource_options.vertex.gallium_buffer_arrays=true;
