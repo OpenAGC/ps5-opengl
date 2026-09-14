@@ -11117,23 +11117,6 @@ ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
    nir_shader *streamout_nir = NULL;
    const nir_shader *package_nir;
 
-   /* Temporary bounded diagnostic for the active double-input CTS failure. */
-   if (shader->stage == PSBC_STAGE_VERTEX && shader->stream_output.num_outputs &&
-       shader->nir->info.dual_slot_inputs && layout->count &&
-       layout->attributes[0].format == PSBC_VERTEX_FORMAT_R64G64B64_FLOAT) {
-      static bool captured;
-      if (!captured) {
-         captured = true;
-         printf("[ps5-gallium] fp64-input-diagnostic begin\n");
-         for (unsigned i = 0; i < layout->count; ++i) {
-            const PsbcVertexAttribute *a = &layout->attributes[i];
-            printf("attribute location=%u binding=%u format=%u offset=%u stride=%u\n",
-                   a->location, a->binding, a->format, a->offset, a->stride);
-         }
-         printf("[ps5-gallium] fp64-input-diagnostic end\n");
-      }
-   }
-
    if (!exports)
       exports = &no_exports;
    for (variant = shader->variants; variant; variant = variant->next) {
@@ -12732,9 +12715,29 @@ ps5_create_vertex_elements_state(struct pipe_context *base,
    state = calloc(1, sizeof(*state));
    if (!state)
       return NULL;
-   state->count = count;
-   if (count)
-      memcpy(state->elements, elements, count * sizeof(*elements));
+   for (unsigned i = 0; i < count; ++i) {
+      struct pipe_vertex_element element = elements[i];
+      /* CSO/u_vbuf split a dual-slot uint64 input into two uint32 elements.
+       * PSBC consumes Gallium's compact semantic plus high_dvec2, so restore
+       * one raw 64-bit format per input before building layouts/descriptors. */
+      if (PS5_ENABLE_FP64_CANDIDATE && element.dual_slot &&
+          element.src_format == PIPE_FORMAT_R32G32B32A32_UINT && i + 1 < count) {
+         const struct pipe_vertex_element *high = &elements[i + 1];
+         if (high->dual_slot &&
+             (high->src_format == PIPE_FORMAT_R32G32_UINT ||
+              high->src_format == PIPE_FORMAT_R32G32B32A32_UINT) &&
+             (uint64_t)element.src_offset + 16 == high->src_offset &&
+             element.src_stride == high->src_stride &&
+             element.vertex_buffer_index == high->vertex_buffer_index &&
+             element.instance_divisor == high->instance_divisor) {
+            element.src_format = high->src_format == PIPE_FORMAT_R32G32_UINT
+               ? PIPE_FORMAT_R64G64B64_FLOAT : PIPE_FORMAT_R64G64B64A64_FLOAT;
+            element.dual_slot = false;
+            ++i;
+         }
+      }
+      state->elements[state->count++] = element;
+   }
    return state;
 }
 
