@@ -8330,22 +8330,15 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       }
       input_user_data[draw_id_dword] = drawid_offset;
    }
-   if (info->start_instance) {
-      if (!input_metadata->start_instance_valid ||
-          input_metadata->start_instance_user_data_dword >=
-             input_user_data_count) {
-         context->last_draw_status = -10;
-         return;
-      }
-      input_user_data[input_metadata->start_instance_user_data_dword] =
-         info->start_instance;
-   } else if (input_metadata->start_instance_valid) {
+   /* An unused base instance has no compiler argument, including when XFB
+    * splits an instanced draw into individual submissions. */
+   if (input_metadata->start_instance_valid) {
       if (input_metadata->start_instance_user_data_dword >=
           input_user_data_count) {
          context->last_draw_status = -10;
          return;
       }
-      input_user_data[input_metadata->start_instance_user_data_dword] = 0;
+      input_user_data[input_metadata->start_instance_user_data_dword] = info->start_instance;
    }
    if (input_metadata->vertex_buffer_table_valid) {
       uint32_t binding_mask = 0;

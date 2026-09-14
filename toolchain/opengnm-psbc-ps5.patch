@@ -527,7 +527,7 @@ index 945737db85a6e86c1e06b09b32af1d3b1de12485..b2755c7cbef13a608ec815e5bd4e7761
  
  	psbc_free_output(&output);
 diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
-index bacbc6a59bcddef3b477508b32e9c7ef19059fc5..8319c120440653463c0473c51858a8b2ee3c3a21 100644
+index bacbc6a59bcddef3b477508b32e9c7ef19059fc5..36b2d190c9476b38f29e8d2c81cfb8bca55482cd 100644
 --- a/libpsbc/psbc_compile.c
 +++ b/libpsbc/psbc_compile.c
 @@ -12,6 +12,7 @@
@@ -1632,7 +1632,7 @@ index bacbc6a59bcddef3b477508b32e9c7ef19059fc5..8319c120440653463c0473c51858a8b2
          ac_info->has_fma_mix = true;
      } else if (gfxlevel == GFX10) {
          ac_info->max_waves_per_simd = 20;
-@@ -928,26 +1895,1226 @@ static void setup_target(PsbcTarget target,
+@@ -928,26 +1895,1228 @@ static void setup_target(PsbcTarget target,
      }
  }
  
@@ -1812,6 +1812,8 @@ index bacbc6a59bcddef3b477508b32e9c7ef19059fc5..8319c120440653463c0473c51858a8b2
 +            return NULL;
 +        }
 +    }
++    stage->key.ps5_compact_vertex_inputs = input_nir &&
++        input_nir->info.stage == MESA_SHADER_VERTEX && input_nir->info.io_lowered;
 +    stage->spirv.data = (const char*)spirv;
 +    stage->spirv.size = spirv_size;
 +    stage->entrypoint = opts->entrypoint ? opts->entrypoint : "main";
@@ -2863,7 +2865,7 @@ index bacbc6a59bcddef3b477508b32e9c7ef19059fc5..8319c120440653463c0473c51858a8b2
  
      /* Ensure library is initialized */
      psbc_init();
-@@ -961,17 +3128,43 @@ PsbcResult psbc_compile_shader(
+@@ -961,17 +3130,43 @@ PsbcResult psbc_compile_shader(
      /* Construct ac_compiler_info for the target GPU */
      struct ac_compiler_info ac_info = {0};
      setup_ac_info(&ac_info, gfxlevel);
@@ -2908,7 +2910,7 @@ index bacbc6a59bcddef3b477508b32e9c7ef19059fc5..8319c120440653463c0473c51858a8b2
      /* ACO uses debug.family for disassembly and init_program assertion */
      compiler_info.debug.family = chipfamily;
  
-@@ -981,6 +3174,7 @@ PsbcResult psbc_compile_shader(
+@@ -981,6 +3176,7 @@ PsbcResult psbc_compile_shader(
      /* Construct radv_shader_stage */
      struct radv_shader_stage stage = {0};
      stage.stage = mesa_stage;
@@ -2916,7 +2918,7 @@ index bacbc6a59bcddef3b477508b32e9c7ef19059fc5..8319c120440653463c0473c51858a8b2
      /* Set next_stage based on the pipeline graph.
       * For standalone compilation we assume the simplest pipeline:
       *   VS → FS, VS → HS → DS → FS, VS → GS → FS
-@@ -992,46 +3186,288 @@ PsbcResult psbc_compile_shader(
+@@ -992,46 +3188,288 @@ PsbcResult psbc_compile_shader(
      case MESA_SHADER_GEOMETRY:  stage.next_stage = MESA_SHADER_FRAGMENT;     break;
      default:                    stage.next_stage = MESA_SHADER_NONE;         break;
      }
@@ -3229,7 +3231,7 @@ index bacbc6a59bcddef3b477508b32e9c7ef19059fc5..8319c120440653463c0473c51858a8b2
  
      /* Determine previous stage for shader args declaration.
       * HS/GS need previous_stage=VERTEX so that the merged-pipeline args
-@@ -1049,10 +3485,23 @@ PsbcResult psbc_compile_shader(
+@@ -1049,10 +3487,23 @@ PsbcResult psbc_compile_shader(
      radv_declare_shader_args(
          &compiler_info, &gfx_state, &stage, previous_stage, NULL
      );
@@ -3254,7 +3256,7 @@ index bacbc6a59bcddef3b477508b32e9c7ef19059fc5..8319c120440653463c0473c51858a8b2
  
      /* For geometry shaders, run the legacy GS lowering pass.
       * On GFX10.3 (PS5), NGG GS requires merging with the previous stage,
-@@ -1080,16 +3529,72 @@ PsbcResult psbc_compile_shader(
+@@ -1080,16 +3531,72 @@ PsbcResult psbc_compile_shader(
              ralloc_free(gs_copy);
      }
  
@@ -3331,7 +3333,7 @@ index bacbc6a59bcddef3b477508b32e9c7ef19059fc5..8319c120440653463c0473c51858a8b2
          psbc_shutdown();
          return PSBC_RESULT_COMPILE_ACO;
      }
-@@ -1098,6 +3603,22 @@ PsbcResult psbc_compile_shader(
+@@ -1098,6 +3605,22 @@ PsbcResult psbc_compile_shader(
      struct radv_shader_binary_legacy* legacy =
          (struct radv_shader_binary_legacy*)binary;
  
@@ -3354,7 +3356,7 @@ index bacbc6a59bcddef3b477508b32e9c7ef19059fc5..8319c120440653463c0473c51858a8b2
      /* The data layout in radv_shader_binary_legacy is:
       * [stats | code | ir | disasm | debug_info]
       * Code starts at offset stats_size. */
-@@ -1116,28 +3637,104 @@ PsbcResult psbc_compile_shader(
+@@ -1116,28 +3639,104 @@ PsbcResult psbc_compile_shader(
          .psbc_stage = opts->stage,
          .spirv_data = spirv,
          .spirv_size = spirv_size,
@@ -3463,7 +3465,7 @@ index bacbc6a59bcddef3b477508b32e9c7ef19059fc5..8319c120440653463c0473c51858a8b2
  }
  
  const char* psbc_result_string(PsbcResult result) {
-@@ -1149,6 +3746,7 @@ const char* psbc_result_string(PsbcResult result) {
+@@ -1149,6 +3748,7 @@ const char* psbc_result_string(PsbcResult result) {
      case PSBC_RESULT_COMPILE_ACO:      return "ACO shader compilation failed";
      case PSBC_RESULT_OUT_OF_MEMORY:    return "out of memory";
      case PSBC_RESULT_INTERNAL_ERROR:   return "internal error";
@@ -4497,6 +4499,40 @@ index 241288084c342b659be03e187de13fb0f3d29b0f..71ac6f6f01fc5e14102487812fb714e0
  
     return true;
  }
+diff --git a/src/amd/vulkan/nir/radv_nir_lower_vs_inputs.c b/src/amd/vulkan/nir/radv_nir_lower_vs_inputs.c
+index a4fa99fe8f2c219b4e169288340059c0c5e4cb4c..8fb6e44ad0e39cc7bc79cc716fcbc9a7c6807706 100644
+--- a/src/amd/vulkan/nir/radv_nir_lower_vs_inputs.c
++++ b/src/amd/vulkan/nir/radv_nir_lower_vs_inputs.c
+@@ -17,6 +17,7 @@ typedef struct {
+    const struct radv_shader_info *info;
+    const struct radv_graphics_state_key *gfx_state;
+    const struct radv_compiler_info *compiler_info;
++   bool compact_vertex_inputs;
+ } lower_vs_inputs_state;
+ 
+ static nir_def *
+@@ -218,6 +219,13 @@ location_from_intrinsic(nir_intrinsic_instr *intrin, const lower_vs_inputs_state
+    const unsigned base_offset = nir_src_as_uint(*offset_src);
+    const unsigned loc = io_sem.location + base_offset - VERT_ATTRIB_GENERIC0;
+ 
++   /* Gallium keeps both halves at the same attribute location. Neighboring
++    * doubles are distinct attributes; only high_dvec2 selects the upper half. */
++   if (s->compact_vertex_inputs) {
++      *is_high_dvec2 = io_sem.high_dvec2;
++      return loc;
++   }
++
+    /* Check whether the current slot is the high part of a 64-bit input.
+     * If so, use the low part of the 64-bit input as location.
+     *
+@@ -462,6 +470,7 @@ radv_nir_lower_vs_inputs(nir_shader *shader, const struct radv_compiler_info *co
+       .args = &vs_stage->args,
+       .gfx_state = gfx_state,
+       .compiler_info = compiler_info,
++      .compact_vertex_inputs = vs_stage->key.ps5_compact_vertex_inputs,
+    };
+ 
+    return nir_shader_intrinsics_pass(shader, lower_vs_input_instr, nir_metadata_control_flow, &state);
 diff --git a/src/amd/vulkan/radv_pipeline.c b/src/amd/vulkan/radv_pipeline.c
 index 820ebf0bd67c348d1148d004b4858a2372299130..c7f366bfeb61fabaf613aaef17ba2c530f46c1bc 100644
 --- a/src/amd/vulkan/radv_pipeline.c
@@ -4695,10 +4731,20 @@ index 61fe2b4d6722181b479803b15283d5a864f81a2d..19c03bfc0177300ada5ce3c81a3ecff3
     const struct radv_instance *instance = radv_physical_device_instance(pdev);
     bool dump_shader = instance->debug_flags & RADV_DEBUG_DUMP_EPILOGS;
 diff --git a/src/amd/vulkan/radv_shader.h b/src/amd/vulkan/radv_shader.h
-index ad3182add80cdb93805dae39b9f0684d5e83534a..8841638be5f128357b10b3909a9733b1ed1a6af4 100644
+index ad3182add80cdb93805dae39b9f0684d5e83534a..117da6cce67edc99ac8dd68669a6e1b7c93c4d61 100644
 --- a/src/amd/vulkan/radv_shader.h
 +++ b/src/amd/vulkan/radv_shader.h
-@@ -186,6 +186,7 @@ struct radv_graphics_state_key {
+@@ -101,7 +101,8 @@ struct radv_shader_stage_key {
+    /* Whether the shader is used with indirect pipeline binds. */
+    uint8_t indirect_bindable : 1;
+ 
+-   uint32_t reserved : 14;
++   uint32_t ps5_compact_vertex_inputs : 1;
++   uint32_t reserved : 13;
+ };
+ 
+ struct radv_ps_epilog_key {
+@@ -186,6 +187,7 @@ struct radv_graphics_state_key {
     struct {
        struct radv_ps_epilog_key epilog;
        bool force_vrs_enabled;
@@ -4706,7 +4752,7 @@ index ad3182add80cdb93805dae39b9f0684d5e83534a..8841638be5f128357b10b3909a9733b1
        bool exports_mrtz_via_epilog;
        bool has_epilog;
     } ps;
-@@ -564,7 +565,9 @@ struct radv_compiler_info {
+@@ -564,7 +566,9 @@ struct radv_compiler_info {
        uint32_t lower_terminate_to_discard : 1;
        uint32_t no_implicit_varying_subgroup_size : 1;
        uint32_t nir_debug_info : 1;
