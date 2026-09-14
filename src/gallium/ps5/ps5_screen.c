@@ -9702,6 +9702,15 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
     * becomes measurable and the runtime stops using process-global setters. */
    ps5_screen_submit_lock(&screen->base);
    ps5_draw_vbo_locked(base, info, drawid_offset, indirect, draws, num_draws, NULL);
+#ifndef PS5_RUNTIME_QUIET
+   if (context->tcs && context->tes)
+      printf("[ps5-gallium] tessellation-draw status=%d hs=%08x final=%08x\n",
+             context->last_draw_status,
+             ps5_hash32(context->tessellation_output.hs.machine_code,
+                        context->tessellation_output.hs.machine_code_size),
+             ps5_hash32(context->tessellation_output.tes.machine_code,
+                        context->tessellation_output.tes.machine_code_size));
+#endif
    /* ponytail: storage draws retire synchronously; batching needs retained
     * storage resources and explicit shader-write visibility first. */
    if (!context->last_draw_status)
