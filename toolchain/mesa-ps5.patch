@@ -556,6 +556,12 @@ diff --git a/src/gallium/auxiliary/util/u_vbuf.c b/src/gallium/auxiliary/util/u_
              struct translate_element *te = &key[type].element[elem_index[type][i]];
 +            mgr->fallback_velems.velems[i] = mgr->ve->ve[i];
              mgr->fallback_velems.velems[i].instance_divisor = mgr->ve->ve[i].instance_divisor;
+diff --git a/src/compiler/glsl/gl_nir_lower_xfb_varying.c b/src/compiler/glsl/gl_nir_lower_xfb_varying.c
+--- a/src/compiler/glsl/gl_nir_lower_xfb_varying.c
++++ b/src/compiler/glsl/gl_nir_lower_xfb_varying.c
+@@ -101,1 +101,1 @@
+-      assert(*type != NULL && glsl_type_is_struct(*type) && field != NULL);
++      assert(*type != NULL && glsl_type_is_struct_or_ifc(*type) && field != NULL);
 diff --git a/src/util/os_file.c b/src/util/os_file.c
 --- a/src/util/os_file.c
 +++ b/src/util/os_file.c
