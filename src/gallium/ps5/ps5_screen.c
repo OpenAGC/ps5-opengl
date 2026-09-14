@@ -4511,8 +4511,12 @@ ps5_storage_image_view_descriptor(const struct pipe_image_view *view,
                                   uint32_t descriptor[8])
 {
    struct pipe_resource *base = view ? view->resource : NULL;
+   uint32_t format;
    if (!base || !descriptor || view->u.tex.level >= PIPE_MAX_TEXTURE_LEVELS ||
-       view->u.tex.level > base->last_level)
+       view->u.tex.level > base->last_level ||
+       !ps5_storage_image_texel_size(view->format) ||
+       ps5_storage_image_texel_size(view->format) != ps5_storage_image_texel_size(base->format) ||
+       !ps5_texture_descriptor_format(view->format, &format))
       return -1;
    const unsigned first = view->u.tex.first_layer, last = view->u.tex.last_layer;
    const bool volume = base->target == PIPE_TEXTURE_3D;
@@ -4522,6 +4526,12 @@ ps5_storage_image_view_descriptor(const struct pipe_image_view *view,
        (volume && (view->u.tex.is_2d_view_of_3d || first || last != layers - 1)) ||
        ps5_resource_storage_image_descriptor(base, view->u.tex.level, descriptor))
       return -1;
+   /* Validate the allocation using its storage format, then reinterpret only
+    * equal-size texels. Addressing, pitch, tiling and mip/layer bounds stay intact. */
+   const unsigned channels = ps5_storage_image_channels(view->format);
+   descriptor[1] = (descriptor[1] & ~UINT32_C(0x1ff00000)) | format;
+   descriptor[3] = (descriptor[3] & ~UINT32_C(0xfff)) |
+      (channels == 1 ? 0x204u : channels == 2 ? 0x22cu : channels == 3 ? 0x3acu : 0xfacu);
    if (volume)
       return 0;
    const struct ps5_resource *resource = (const struct ps5_resource *)base;
@@ -4556,6 +4566,18 @@ ps5_resource_storage_image_descriptor_owned(struct pipe_resource *base,
    if (!base || !descriptor)
       return -1;
    struct pipe_image_view view = {.resource = base, .format = base->format};
+   /* Recover only a supported, equal-size image view; the full descriptor is
+    * still reconstructed and compared below, including every address/bound. */
+   for (unsigned f = 0; f < PIPE_FORMAT_COUNT; ++f) {
+      uint32_t format;
+      if (ps5_storage_image_texel_size(f) &&
+          ps5_storage_image_texel_size(f) == ps5_storage_image_texel_size(base->format) &&
+          ps5_texture_descriptor_format(f, &format) &&
+          format == (descriptor[1] & UINT32_C(0x1ff00000))) {
+         view.format = f;
+         break;
+      }
+   }
    view.u.tex.level = (descriptor[3] >> 12) & 15u;
    view.u.tex.last_layer = base->target == PIPE_TEXTURE_3D
       ? MAX2(base->depth0 >> view.u.tex.level, 1u) - 1u : 0;
@@ -12191,7 +12213,6 @@ ps5_set_shader_images(struct pipe_context *base, mesa_shader_stage stage,
       if (!v->resource)
          continue;
       if (v->resource->screen != base->screen ||
-          (v->resource->target != PIPE_BUFFER && v->format != v->resource->format) ||
           !(v->access & PIPE_IMAGE_ACCESS_READ_WRITE) ||
           ((v->access | v->shader_access) & ~(PIPE_IMAGE_ACCESS_READ_WRITE |
               PIPE_IMAGE_ACCESS_COHERENT | PIPE_IMAGE_ACCESS_VOLATILE)))

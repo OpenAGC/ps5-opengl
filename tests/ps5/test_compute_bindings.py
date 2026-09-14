@@ -1044,7 +1044,7 @@ int main(void) {
         assert(canonical.base.reference.count==2);
         view.format=PIPE_FORMAT_R32_UINT;
         ps5_set_shader_images(&context.base,which,7,1,0,&view);
-        assert(stage ? context.fragment_images_invalid : context.compute_images_invalid);
+        assert(!(stage ? context.fragment_images_invalid : context.compute_images_invalid));
         assert(canonical.base.reference.count==2);
         ps5_set_shader_images(&context.base,which,7,0,1,NULL);
         assert(canonical.base.reference.count==1);
@@ -1242,6 +1242,28 @@ int main(void) {
                 expected|=selector<<(lane*3);
             }
             assert((descriptor[3]&0xfffu)==expected);
+            /* Equal-size image views preserve geometry and ownership in both stages. */
+            for (unsigned alias=0;alias<ARRAY_SIZE(formats);++alias) {
+                struct pipe_image_view v={.resource=&typed.base,.format=formats[alias],
+                    .access=PIPE_IMAGE_ACCESS_READ_WRITE};
+                const bool compatible=util_format_get_blocksize(formats[alias])==bytes;
+                assert((ps5_storage_image_view_descriptor(&v,descriptor)==0)==compatible);
+                if (compatible) {
+                    assert(!ps5_resource_storage_image_descriptor_owned(&typed.base,descriptor));
+                    descriptor[0]^=1;
+                    assert(ps5_resource_storage_image_descriptor_owned(&typed.base,descriptor)<0);
+                    descriptor[0]^=1;
+                    descriptor[2]^=1;
+                    assert(ps5_resource_storage_image_descriptor_owned(&typed.base,descriptor)<0);
+                }
+                for(unsigned stage=0;stage<2;++stage) {
+                    mesa_shader_stage which=stage ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
+                    ps5_set_shader_images(&context.base,which,7,1,0,&v);
+                    assert(!(stage ? context.fragment_images_invalid : context.compute_images_invalid)==compatible);
+                    ps5_set_shader_images(&context.base,which,7,0,1,NULL);
+                    assert(typed.base.reference.count==1);
+                }
+            }
             for(unsigned stage=0;stage<2;++stage) {
                 mesa_shader_stage which=stage ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
                 struct pipe_image_view v={.resource=&typed.base,.format=formats[f],
@@ -1295,7 +1317,7 @@ int main(void) {
             assert(normalized.base.reference.count==2);
             v.format=PIPE_FORMAT_R16G16B16A16_UINT;
             ps5_set_shader_images(&context.base,which,7,1,0,&v);
-            assert(stage ? context.fragment_images_invalid : context.compute_images_invalid);
+            assert((stage ? context.fragment_images_invalid : context.compute_images_invalid)==(bytes!=8));
             assert(normalized.base.reference.count==2);
             ps5_set_shader_images(&context.base,which,7,0,1,NULL);
             assert(normalized.base.reference.count==1);
@@ -1656,7 +1678,7 @@ int main(void) {
     assert(image.base.reference.count==1 && !context.compute_images_invalid);
     for(unsigned fault=0;fault<6;++fault) {
         struct pipe_image_view bad=view;
-        if(fault==0) bad.format=PIPE_FORMAT_R32_FLOAT;
+        if(fault==0) bad.format=PIPE_FORMAT_R16_FLOAT; /* Different texel size. */
         if(fault==1) bad.access=0;
         if(fault==2) bad.access|=PIPE_IMAGE_ACCESS_TEX2D_FROM_BUFFER;
         if(fault==3) bad.u.tex.level=1;
