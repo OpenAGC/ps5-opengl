@@ -240,6 +240,7 @@ int main(void) {
         }
     }
     const enum pipe_format normalized_formats[]={
+        /* Formatless stores are tested separately for each GLSL numeric type. */
         PIPE_FORMAT_R8_UINT,
         PIPE_FORMAT_R8_SINT,
         PIPE_FORMAT_R8G8_UINT,
@@ -279,6 +280,37 @@ int main(void) {
         PIPE_FORMAT_R10G10B10A2_UNORM,
         PIPE_FORMAT_R10G10B10A2_UINT,
         PIPE_FORMAT_R11G11B10_FLOAT};
+    for(unsigned stage=0;stage<2;++stage) for(unsigned kind=0;kind<3;++kind) {
+        PsbcCompileOptions candidate=options;
+        candidate.stage=stage ? PSBC_STAGE_FRAGMENT : PSBC_STAGE_COMPUTE;
+        candidate.spi_shader_col_format=stage ? 4 : 0;
+        candidate.descriptor_bindings[0].binding=PSBC_GALLIUM_SSBO_ARRAY_BINDING(candidate.stage);
+        candidate.descriptor_bindings[1].binding=PSBC_GALLIUM_UBO_ARRAY_BINDING(candidate.stage);
+        candidate.descriptor_bindings[2].binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(candidate.stage);
+        for(unsigned op=0;op<4;++op) {
+            if(op==2) continue; /* Size-query support is unchanged. */
+            nir_shader *nir=normalized_image(stage ? build_fragment_storage(2,7,9+kind,false,false,0) :
+                build_compute(kind),op,PIPE_FORMAT_NONE,GLSL_SAMPLER_DIM_2D,false);
+            if(op==0) {
+                nir_validate_shader(nir,"formatless store");
+                compile(nir,&candidate);
+                continue;
+            }
+            unsigned checked=0;
+            nir_foreach_function_impl(impl,nir) nir_foreach_block(block,impl) nir_foreach_instr(instr,block) {
+                if(instr->type!=nir_instr_type_intrinsic) continue;
+                nir_intrinsic_instr *intr=nir_instr_as_intrinsic(instr);
+                if(!nir_intrinsic_has_image_dim(intr)) continue;
+                nir_intrinsic_set_format(intr,PIPE_FORMAT_NONE);
+                struct gallium_buffer_state state={.options=&candidate,.valid=true};
+                nir_builder b=nir_builder_create(impl);
+                assert(!lower_gallium_image_index(&b,instr,&state) && !state.valid);
+                ++checked;
+            }
+            assert(checked==1);
+            ralloc_free(nir);
+        }
+    }
     for(unsigned f=0;f<ARRAY_SIZE(normalized_formats);++f) for(unsigned stage=0;stage<2;++stage) {
         PsbcCompileOptions normalized=options;
         normalized.stage=stage ? PSBC_STAGE_FRAGMENT : PSBC_STAGE_COMPUTE;
