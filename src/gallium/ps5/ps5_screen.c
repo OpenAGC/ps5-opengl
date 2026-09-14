@@ -486,8 +486,12 @@ ps5_streamout_buffer_stream(unsigned stream_buffer_mask, unsigned buffer);
 #define PS5_CONSTANT_DATA_OFFSET 0xa00u
 #define PS5_FRAGMENT_UBO_OFFSET (PS5_COMPUTE_STORAGE_SLOTS * 16u + PS5_COMPUTE_IMAGE_SLOTS * 32u)
 #define PS5_FRAGMENT_TEXTURE_OFFSET (PS5_FRAGMENT_UBO_OFFSET + PS5_MAX_CONSTANT_BUFFERS * 16u)
-#define PS5_DESCRIPTOR_STORAGE_BYTES \
+#define PS5_TESSELLATION_BUFFER_OFFSET \
    (PS5_CONSTANT_DATA_OFFSET + 4u * PS5_MAX_CONSTANT_BUFFER_SIZE)
+#define PS5_TESSELLATION_BUFFER_STRIDE \
+   ((PS5_MAX_CONSTANT_BUFFERS + PS5_COMPUTE_STORAGE_SLOTS) * 16u)
+#define PS5_DESCRIPTOR_STORAGE_BYTES \
+   (PS5_TESSELLATION_BUFFER_OFFSET + 4u * PS5_TESSELLATION_BUFFER_STRIDE)
 #define PS5_MAX_TEXTURE_2D_SIZE PS5_MAX_RENDER_SIZE
 #define PS5_MAX_TEXTURE_CUBE_LEVELS 15u
 #define PS5_MAX_TEXTURE_CUBE_SIZE (1u << (PS5_MAX_TEXTURE_CUBE_LEVELS - 1u))
@@ -2842,6 +2846,131 @@ ps5_prepare_constant(struct ps5_context *context,
    user_data[metadata->descriptor_set0_user_data_dword] =
       (uint32_t)descriptor_address;
    ps5_flush_gpu_data(storage->data, storage->size);
+   return true;
+}
+
+static bool
+ps5_tessellation_buffer_layout(const struct ps5_context *context,
+                               PsbcCompileOptions *options)
+{
+   const struct ps5_shader *stages[] = {
+      context->vs, context->tcs, context->tes, context->gs,
+   };
+   options->descriptor_binding_count = 0;
+   options->gallium_buffer_arrays = true;
+   for (unsigned stage = 0; stage < 4; ++stage) {
+      const struct ps5_shader *shader = stages[stage];
+      if (!shader)
+         continue;
+      if (shader->stage != PSBC_STAGE_VERTEX + stage ||
+          shader->nir->info.num_images || ps5_shader_texture_count(shader) ||
+          shader->nir->info.num_ubos > PS5_MAX_CONSTANT_BUFFERS ||
+          shader->nir->info.num_ssbos > PS5_COMPUTE_STORAGE_SLOTS)
+         return false;
+      const unsigned offset = PS5_TESSELLATION_BUFFER_OFFSET +
+                              stage * PS5_TESSELLATION_BUFFER_STRIDE;
+      if (shader->nir->info.num_ubos)
+         options->descriptor_bindings[options->descriptor_binding_count++] =
+            (PsbcDescriptorBinding){
+               .binding = PSBC_GALLIUM_UBO_ARRAY_BINDING(shader->stage),
+               .type = PSBC_DESCRIPTOR_UNIFORM_BUFFER,
+               .array_size = shader->nir->info.num_ubos,
+               .offset = offset, .stride = 16,
+            };
+      if (shader->nir->info.num_ssbos)
+         options->descriptor_bindings[options->descriptor_binding_count++] =
+            (PsbcDescriptorBinding){
+               .binding = PSBC_GALLIUM_SSBO_ARRAY_BINDING(shader->stage),
+               .type = PSBC_DESCRIPTOR_STORAGE_BUFFER,
+               .array_size = shader->nir->info.num_ssbos,
+               .offset = offset + PS5_MAX_CONSTANT_BUFFERS * 16u, .stride = 16,
+            };
+   }
+   return true;
+}
+
+static bool
+ps5_prepare_tessellation_buffers(struct ps5_context *context,
+                                 const PsbcShaderMetadata *metadata,
+                                 uint32_t *user_data, unsigned user_data_count)
+{
+   PsbcCompileOptions expected = {0};
+   struct ps5_resource *table =
+      (struct ps5_resource *)context->descriptor_storage[0];
+   const struct ps5_shader *stages[] = {
+      context->vs, context->tcs, context->tes, context->gs,
+   };
+   const unsigned slots[] = {0, PS5_TESS_CTRL_CONSTANT_SLOT,
+      PS5_TESS_EVAL_CONSTANT_SLOT, PS5_GEOMETRY_CONSTANT_SLOT};
+   if (!ps5_tessellation_buffer_layout(context, &expected) ||
+       metadata->descriptor_binding_count != expected.descriptor_binding_count)
+      return false;
+   if (!expected.descriptor_binding_count)
+      return true;
+   if (!table || !table->data || table->base.target != PIPE_BUFFER ||
+       table->base.screen != context->base.screen ||
+       table->size < PS5_DESCRIPTOR_STORAGE_BYTES ||
+       !metadata->descriptor_set0_valid ||
+       metadata->descriptor_set0_user_data_dword >= user_data_count ||
+       (uintptr_t)table->data >> 32 != metadata->address32_hi)
+      return false;
+   for (unsigned b = 0; b < expected.descriptor_binding_count; ++b) {
+      const PsbcDescriptorBinding *bank = &expected.descriptor_bindings[b];
+      const PsbcDescriptorBinding *actual = &metadata->descriptor_bindings[b];
+      if (actual->set != bank->set || actual->binding != bank->binding ||
+          actual->type != bank->type || actual->array_size != bank->array_size ||
+          actual->offset != bank->offset || actual->stride != bank->stride)
+         return false;
+      const unsigned stage = (bank->binding - 1u) / 4u;
+      const bool uniform = bank->type == PSBC_DESCRIPTOR_UNIFORM_BUFFER;
+      if (!uniform && (stage == 3 ? context->geometry_bindings_invalid :
+                                   context->preraster_bindings_invalid[stage]))
+         return false;
+      for (unsigned i = 0; i < bank->array_size; ++i) {
+         uintptr_t address;
+         unsigned size;
+         if (uniform) {
+            const unsigned index = ps5_constant_state_binding(stages[stage], i);
+            if (index >= PS5_MAX_CONSTANT_BUFFERS)
+               return false;
+            const struct ps5_constant_state *bound =
+               &context->constants[slots[stage]][index];
+            size = bound->size;
+            if (!bound->valid || !size || size > PS5_MAX_CONSTANT_BUFFER_SIZE)
+               return false;
+            if (bound->copied) {
+               address = (uintptr_t)table->data + ps5_copied_constant_offset(slots[stage]);
+            } else {
+               const struct ps5_resource *resource = (const struct ps5_resource *)bound->buffer;
+               if (!resource || !resource->data || resource->base.target != PIPE_BUFFER ||
+                   resource->base.screen != context->base.screen ||
+                   bound->offset > resource->size || size > resource->size - bound->offset)
+                  return false;
+               address = (uintptr_t)resource->data + bound->offset;
+            }
+         } else {
+            const struct pipe_shader_buffer *bound = stage == 3
+               ? &context->geometry_buffers[i] : &context->preraster_buffers[stage][i];
+            const struct ps5_resource *resource = (const struct ps5_resource *)bound->buffer;
+            size = bound->buffer_size;
+            if (!resource || !resource->data || resource->base.target != PIPE_BUFFER ||
+                resource->base.screen != context->base.screen || !size ||
+                bound->buffer_offset > resource->size || size > resource->size - bound->buffer_offset)
+               return false;
+            address = (uintptr_t)resource->data + bound->buffer_offset;
+         }
+         uint32_t *srd = (uint32_t *)(table->data + bank->offset + i * 16u);
+         srd[0] = address;
+         srd[1] = address >> 32;
+         srd[2] = size;
+         srd[3] = uniform ? UINT32_C(0x0004dfac) |
+            S_008F0C_OOB_SELECT(V_008F0C_OOB_SELECT_RAW) : UINT32_C(0x31016fac);
+         ps5_flush_gpu_data((void *)address, size);
+      }
+   }
+   user_data[metadata->descriptor_set0_user_data_dword] = (uintptr_t)table->data;
+   ps5_flush_gpu_data(table->data + PS5_TESSELLATION_BUFFER_OFFSET,
+                      4u * PS5_TESSELLATION_BUFFER_STRIDE);
    return true;
 }
 
@@ -8340,19 +8469,28 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       ps5_flush_gpu_data(descriptor_resource->data,
                          descriptor_index * 16);
    }
-   if (!ps5_prepare_constant(context, context->vs, 0, input_user_data,
+   if (tessellation_active &&
+       (!ps5_prepare_tessellation_buffers(context, input_metadata,
+                                          input_user_data, input_user_data_count) ||
+        !ps5_prepare_tessellation_buffers(context, vertex_metadata,
+                                          user_data, user_data_count))) {
+      printf("[ps5-gallium] resource-prepare reject=tessellation-buffers\n");
+      context->last_draw_status = -15;
+      return;
+   }
+   if (!tessellation_active && !ps5_prepare_constant(context, context->vs, 0, input_user_data,
                              input_user_data_count, input_metadata)) {
       printf("[ps5-gallium] resource-prepare reject=vertex-constants\n");
       context->last_draw_status = -15;
       return;
    }
-   if (!ps5_prepare_texture(context, context->vs, 0, input_user_data,
+   if (!tessellation_active && !ps5_prepare_texture(context, context->vs, 0, input_user_data,
                             input_user_data_count, input_metadata, NULL)) {
       printf("[ps5-gallium] resource-prepare reject=vertex-textures\n");
       context->last_draw_status = -15;
       return;
    }
-   if (context->gs &&
+   if (context->gs && !tessellation_active &&
        !ps5_prepare_geometry_storage(context, vertex_metadata, user_data,
                                      user_data_count)) {
       printf("[ps5-gallium] resource-prepare reject=geometry-storage\n");
@@ -9569,6 +9707,17 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
             ps5_flush_gpu_data(resource->data + bound->buffer_offset,
                                bound->buffer_size);
       }
+   if (!context->last_draw_status && context->tcs && context->tes) {
+      const struct ps5_shader *stages[] = {context->vs, context->tcs, context->tes};
+      for (unsigned stage = 0; stage < 3; ++stage)
+         for (unsigned i = 0;
+              i < MIN2(ps5_shader_storage_count(stages[stage]), PS5_COMPUTE_STORAGE_SLOTS); ++i) {
+            const struct pipe_shader_buffer *bound = &context->preraster_buffers[stage][i];
+            const struct ps5_resource *resource = (const struct ps5_resource *)bound->buffer;
+            if (resource)
+               ps5_flush_gpu_data(resource->data + bound->buffer_offset, bound->buffer_size);
+         }
+   }
    if (!context->last_draw_status && context->fs)
       for (unsigned i = 0; i < MIN2(context->fs->nir->info.num_images, PS5_COMPUTE_IMAGE_SLOTS); ++i) {
          const struct ps5_resource *resource = (const struct ps5_resource *)context->fragment_images[i].resource;
@@ -11188,12 +11337,18 @@ ps5_select_tessellation_pipeline(struct ps5_context *context,
        (context->gs &&
         !ps5_draw_primitive(context->gs->nir->info.gs.input_primitive, 6,
                             &geometry_primitive_type)) ||
-       !ps5_shader_compile_options(context->vs, address32_hi, layout,
-                                   geometry_primitive_type
-                                      ? geometry_primitive_type : 4,
-                                   false,
-                                   &options.vertex))
+       !ps5_tessellation_buffer_layout(context, &options.vertex))
       return false;
+   options.vertex.target = PSBC_TARGET_PS5;
+   options.vertex.stage = PSBC_STAGE_VERTEX;
+   options.vertex.entrypoint = "main";
+   options.vertex.optimise = true;
+   options.vertex.ngg = true;
+   options.vertex.address32_hi = address32_hi;
+   options.vertex.primitive_type = geometry_primitive_type ? geometry_primitive_type : 4;
+   options.vertex.vertex_attribute_count = layout->count;
+   memcpy(options.vertex.vertex_attributes, layout->attributes,
+          layout->count * sizeof(layout->attributes[0]));
    if (context->tessellation_vs == context->vs &&
        context->tessellation_tcs == context->tcs &&
        context->tessellation_tes == context->tes &&
@@ -12335,6 +12490,7 @@ ps5_create_shader_state(struct pipe_screen *screen,
    }
    if (stage != PSBC_STAGE_GEOMETRY && stage != PSBC_STAGE_TESS_CTRL &&
        stage != PSBC_STAGE_TESS_EVAL &&
+       !(stage == PSBC_STAGE_VERTEX && ps5_shader_uses_storage(shader)) &&
        !ps5_select_shader_variant(shader, address32_hi, &layout, 0, false,
                                   false, false, false, false, NULL)) {
       ralloc_free(shader->nir);

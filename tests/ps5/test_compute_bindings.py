@@ -108,7 +108,9 @@ code = r'''
 #define PS5_MAX_CONSTANT_BUFFERS 13
 #define PS5_GEOMETRY_STORAGE_OFFSET 2048
 #define PS5_CONSTANT_DATA_OFFSET 2560
-#define PS5_DESCRIPTOR_STORAGE_BYTES (2560+4*PS5_MAX_CONSTANT_BUFFER_SIZE)
+#define PS5_TESSELLATION_BUFFER_OFFSET (2560+4*PS5_MAX_CONSTANT_BUFFER_SIZE)
+#define PS5_TESSELLATION_BUFFER_STRIDE ((PS5_MAX_CONSTANT_BUFFERS+16)*16)
+#define PS5_DESCRIPTOR_STORAGE_BYTES (PS5_TESSELLATION_BUFFER_OFFSET+4*PS5_TESSELLATION_BUFFER_STRIDE)
 #define PS5_FRAGMENT_UBO_OFFSET 512
 #define PS5_TEXTURE_DESCRIPTOR_BYTES 1536
 #define PS5_DIRECT_ALIGNMENT 16384
@@ -137,7 +139,7 @@ struct ps5_compute_shader { PsbcShaderOutput output; unsigned ssbos, ubos, image
 struct ps5_sampler_state { struct pipe_sampler_state base; };
 struct test_nir { struct { unsigned num_ssbos, num_images, num_ubos, num_textures; bool first_ubo_is_default_ubo; } info; };
 struct test_variant { PsbcShaderOutput output; };
-struct ps5_shader { struct test_nir *nir; struct test_variant *active; };
+struct ps5_shader { struct test_nir *nir; struct test_variant *active; PsbcStage stage; };
 static unsigned ps5_shader_texture_count(const struct ps5_shader *shader) { return shader->nir->info.num_textures; }
 struct ps5_constant_state { bool valid, copied; unsigned size, offset; struct pipe_resource *buffer; };
 struct ps5_context {
@@ -153,6 +155,7 @@ struct ps5_context {
     bool geometry_bindings_invalid;
     struct ps5_shader *fs;
     struct ps5_shader *gs;
+    struct ps5_shader *vs, *tcs, *tes;
     struct ps5_constant_state constants[5][13];
     struct pipe_resource *descriptor_storage[2];
     struct pipe_image_view compute_images[8];
@@ -191,7 +194,7 @@ static bool fragment_mode;
 static unsigned fragment_drains;
 static void ps5_draw_batch_drain(void) { ++fragment_drains; }
 static bool ps5_render_condition_passes(const struct ps5_context *context) { (void)context; return render_condition_pass; }
-static void ps5_flush_gpu_data(const void *address, size_t size) { assert(address && (fragment_mode ? size==64 || size==256 || size==512 || size==768 || size==PS5_DESCRIPTOR_STORAGE_BYTES : size==12)); }
+static void ps5_flush_gpu_data(const void *address, size_t size) { assert(address && (fragment_mode ? size==64 || size==256 || size==512 || size==768 || size==4*PS5_TESSELLATION_BUFFER_STRIDE || size==PS5_DESCRIPTOR_STORAGE_BYTES : size==12)); }
 ''' + texel_format + texel_descriptor + r'''
 static bool ps5_uses_merged_geometry_metadata(const struct ps5_context *c, const struct ps5_shader *s, const PsbcShaderMetadata *m) { return false; }
 static unsigned ps5_texture_count(const struct ps5_context *c, const struct ps5_shader *s, const PsbcShaderMetadata *m) { return s->nir->info.num_textures; }
@@ -734,7 +737,77 @@ static void preraster_binding_contract(void) {
     }
     assert(data->reference.count==1);
 }
+static void test_tessellation_buffers(void) {
+    struct pipe_screen screen={0}, foreign={0};
+    struct ps5_context ctx={.base.screen=&screen};
+    uint8_t data[PS5_DESCRIPTOR_STORAGE_BYTES], buffers[4][64];
+    memset(data, 0xa5, sizeof(data));
+    struct ps5_resource table={.base={.screen=&screen,.target=PIPE_BUFFER},
+        .data=data,.size=sizeof(data)}, resources[4];
+    struct test_nir nir[4]={0};
+    struct ps5_shader shaders[4]={0};
+    ctx.descriptor_storage[0]=&table.base;
+    ctx.vs=&shaders[0]; ctx.tcs=&shaders[1]; ctx.tes=&shaders[2]; ctx.gs=&shaders[3];
+    const unsigned slots[]={0,3,4,2};
+    for(unsigned i=0;i<4;++i) {
+        nir[i].info.num_ubos=nir[i].info.num_ssbos=1;
+        nir[i].info.first_ubo_is_default_ubo=true;
+        shaders[i].nir=&nir[i]; shaders[i].stage=PSBC_STAGE_VERTEX+i;
+        resources[i]=(struct ps5_resource){.base={.screen=&screen,.target=PIPE_BUFFER},
+            .data=buffers[i],.size=64};
+        ctx.constants[slots[i]][0]=(struct ps5_constant_state){.valid=true,.copied=true,.size=64};
+        struct pipe_shader_buffer bound={.buffer=&resources[i].base,.buffer_size=64};
+        if(i==3) ctx.geometry_buffers[0]=bound; else ctx.preraster_buffers[i][0]=bound;
+    }
+    PsbcCompileOptions options={0};
+    assert(ps5_tessellation_buffer_layout(&ctx,&options));
+    assert(options.descriptor_binding_count==8 && options.gallium_buffer_arrays);
+    PsbcShaderMetadata metadata={.descriptor_binding_count=8,.descriptor_set0_valid=true,
+        .descriptor_set0_user_data_dword=2,.address32_hi=(uintptr_t)data>>32};
+    memcpy(metadata.descriptor_bindings,options.descriptor_bindings,sizeof(options.descriptor_bindings));
+    uint32_t user[8]={0};
+    fragment_mode=true;
+    for(unsigned sgpr=2;sgpr<4;++sgpr) {
+        metadata.descriptor_set0_user_data_dword=sgpr;
+        assert(ps5_prepare_tessellation_buffers(&ctx,&metadata,user,8));
+        assert(user[sgpr]==(uint32_t)(uintptr_t)data);
+    }
+    for(unsigned i=0;i<PS5_TESSELLATION_BUFFER_OFFSET;++i) assert(data[i]==0xa5);
+    for(unsigned i=0;i<4;++i) {
+        uint32_t *ubo=(uint32_t *)(data+options.descriptor_bindings[2*i].offset);
+        uint32_t *ssbo=(uint32_t *)(data+options.descriptor_bindings[2*i+1].offset);
+        uintptr_t addr=(uintptr_t)data+ps5_copied_constant_offset(slots[i]);
+        assert(ubo[0]==(uint32_t)addr && ubo[1]==addr>>32 && ubo[2]==64);
+        assert(ssbo[0]==(uint32_t)(uintptr_t)buffers[i] && ssbo[2]==64);
+    }
+    metadata.descriptor_set0_user_data_dword=8;
+    assert(!ps5_prepare_tessellation_buffers(&ctx,&metadata,user,8));
+    metadata.descriptor_set0_user_data_dword=2;
+    ++metadata.descriptor_bindings[7].offset;
+    assert(!ps5_prepare_tessellation_buffers(&ctx,&metadata,user,8));
+    --metadata.descriptor_bindings[7].offset;
+    ctx.preraster_bindings_invalid[1]=true;
+    assert(!ps5_prepare_tessellation_buffers(&ctx,&metadata,user,8));
+    ctx.preraster_bindings_invalid[1]=false;
+    resources[2].base.screen=&foreign;
+    assert(!ps5_prepare_tessellation_buffers(&ctx,&metadata,user,8));
+    resources[2].base.screen=&screen;
+    ctx.preraster_buffers[2][0].buffer_offset=1;
+    assert(!ps5_prepare_tessellation_buffers(&ctx,&metadata,user,8));
+    ctx.preraster_buffers[2][0].buffer_offset=0;
+    ctx.constants[4][0].valid=false;
+    assert(!ps5_prepare_tessellation_buffers(&ctx,&metadata,user,8));
+    ctx.constants[4][0].valid=true;
+    nir[1].info.num_images=1;
+    assert(!ps5_tessellation_buffer_layout(&ctx,&options));
+    nir[1].info.num_images=0;
+    nir[1].info.num_ssbos=17;
+    assert(!ps5_tessellation_buffer_layout(&ctx,&options));
+    fragment_mode=false;
+}
+
 int main(void) {
+    test_tessellation_buffers();
     preraster_binding_contract();
     atomic_handoff_contract();
     stale_cleanup_regression();
