@@ -2200,7 +2200,9 @@ ps5_texel_buffer_descriptor(const struct pipe_sampler_view *view,
        resource->base.target != PIPE_BUFFER || view->target != PIPE_BUFFER ||
        !ps5_texel_buffer_format(view->format) || !texel_size ||
        offset > resource->size || size > resource->size - offset ||
-       (offset % texel_size) || (size % texel_size) ||
+       /* RGB32 ranges need component alignment, not 12-byte alignment.
+        * The descriptor count below excludes any incomplete trailing texel. */
+       (offset % (texel_size == 12 ? 4 : texel_size)) ||
        size / texel_size > PS5_MAX_TEXEL_BUFFER_ELEMENTS ||
        (uint32_t)(((uintptr_t)resource->data + offset) >> 32) != address32_hi)
       return false;

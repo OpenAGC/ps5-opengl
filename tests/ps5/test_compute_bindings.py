@@ -680,6 +680,20 @@ static void texel_buffer_descriptor_contract(void) {
     assert(ps5_resource_texel_buffer_descriptor_owned(&resource.base,descriptor));
     view.u.buf.offset=17;
     assert(!ps5_texel_buffer_descriptor(&view,(uintptr_t)data>>32,descriptor));
+    const enum pipe_format rgb32[]={PIPE_FORMAT_R32G32B32_FLOAT,
+        PIPE_FORMAT_R32G32B32_UINT,PIPE_FORMAT_R32G32B32_SINT};
+    for(unsigned f=0;f<ARRAY_SIZE(rgb32);++f) {
+        view.format=rgb32[f];
+        view.u.buf.offset=16; view.u.buf.size=47;
+        assert(ps5_texel_buffer_descriptor(&view,(uintptr_t)data>>32,descriptor));
+        assert(descriptor[0]==(uint32_t)(uintptr_t)(data+16));
+        assert(descriptor[1]>>16==12 && descriptor[2]==3);
+        assert(!ps5_resource_texel_buffer_descriptor_owned(&resource.base,descriptor));
+        view.u.buf.size=49;
+        assert(!ps5_texel_buffer_descriptor(&view,(uintptr_t)data>>32,descriptor));
+        view.u.buf.offset=17; view.u.buf.size=47;
+        assert(!ps5_texel_buffer_descriptor(&view,(uintptr_t)data>>32,descriptor));
+    }
     struct pipe_image_view image={.resource=&resource.base,.format=PIPE_FORMAT_R32_SINT,
         .access=PIPE_IMAGE_ACCESS_READ_WRITE};
     image.u.buf.offset=16; image.u.buf.size=32;
