@@ -259,6 +259,21 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
     assert(out.runtime.final_offchip_layout_user_data_dword<
            out.tes.metadata.user_sgpr_count);
     assert(out.runtime.final_offchip_layout);
+    /* The later buffer-array path must not change a resource-free pipeline. */
+    PsbcTessellationCompileOptions array_options=options;
+    array_options.vertex.gallium_buffer_arrays=true;
+    PsbcTessellationOutput array_out={0};
+    assert(psbc_compile_nir_tessellation_pipeline(inputs[0],inputs[1],inputs[2],gs,
+           &array_options,&array_out)==PSBC_RESULT_OK);
+    assert(out.hs.machine_code_size==array_out.hs.machine_code_size);
+    assert(out.tes.machine_code_size==array_out.tes.machine_code_size);
+    assert(!memcmp(out.hs.machine_code,array_out.hs.machine_code,out.hs.machine_code_size));
+    assert(!memcmp(out.tes.machine_code,array_out.tes.machine_code,out.tes.machine_code_size));
+    assert(!memcmp(&out.runtime,&array_out.runtime,sizeof(out.runtime)));
+    assert(!memcmp(&out.hs.metadata,&array_out.hs.metadata,sizeof(out.hs.metadata)));
+    assert(!memcmp(&out.tes.metadata,&array_out.tes.metadata,sizeof(out.tes.metadata)));
+    psbc_free_tessellation_output(&array_out);
+    puts("PASS resource-free buffer-array parity: code, metadata, runtime");
     psbc_free_tessellation_output(&out); ralloc_free(gs);
     /* Gallium supplies lowered built-in outputs as well as position. Keep
      * these alive in the final GS so ACO must actually compile the exports. */
