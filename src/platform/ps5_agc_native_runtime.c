@@ -676,7 +676,9 @@ int ps5_agc_gate2_set_point_coord_input(uint32_t enabled)
 #define TEXTURE_WIDTH 64u
 #define TEXTURE_HEIGHT 64u
 #define TESS_OFFCHIP_WORKGROUPS 160u
-#define TESS_OFFCHIP_BYTES (TESS_OFFCHIP_WORKGROUPS * 32768u)
+/* Diagnostic capacity: cover the GFX10.3 ten-bit offchip slot range while
+ * leaving the requested buffering count unchanged. */
+#define TESS_OFFCHIP_BYTES (1024u * 32768u)
 #define TESS_FACTOR_BYTES 0x4000u
 #define NATIVE_COLOR_FORMAT_RGBA8_UNORM 1u
 #define NATIVE_COLOR_SWIZZLE_64KB_R_X 27u
@@ -3770,7 +3772,7 @@ int main(void)
         if (!result && runtime_hs_package) {
             unsigned active = 0;
             flush_gpu_data(memory + WORK_BYTES, TESS_OFFCHIP_BYTES);
-            for (unsigned block = 0; block < TESS_OFFCHIP_WORKGROUPS; ++block) {
+            for (unsigned block = 0; block < TESS_OFFCHIP_BYTES / 32768u; ++block) {
                 const uint32_t *p = (const uint32_t *)(memory + WORK_BYTES + block * 32768u);
                 if (!(p[0] | p[1] | p[2] | p[3]))
                     continue;
