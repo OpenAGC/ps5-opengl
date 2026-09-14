@@ -39,6 +39,8 @@ for name in ("radv_graphics_shaders_fill_linked_vs_io_info",
 helpers += function(util_source, "static unsigned get_tcs_wg_output_mem_size(")
 helpers += function((ROOT / "src/gallium/ps5/ps5_screen.c").read_text(),
                     "static void\nps5_lower_default_uniforms(")
+helpers += function((ROOT / "src/gallium/ps5/ps5_screen.c").read_text(),
+                    "static nir_shader *\nps5_stream_output_carrier_nir(")
 
 code = r'''
 #include <assert.h>
@@ -310,6 +312,51 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
         assert(psbc_compile_nir_tessellation_pipeline(
             inputs[0],inputs[1],inputs[2],gs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
         expect_empty(&out); ralloc_free(gs);
+    }
+    /* Only the final linked stage owns feedback, with explicit global counters. */
+    for (unsigned with_gs=0; with_gs<2; ++with_gs) {
+        nir_shader *xfb_gs=with_gs ? build(MESA_SHADER_GEOMETRY,false,ci) : NULL;
+        nir_shader *final=with_gs ? xfb_gs : inputs[2];
+        nir_xfb_info *xfb=rzalloc_size(final,nir_xfb_info_size(1));
+        xfb->buffers_written=xfb->streams_written=1;
+        xfb->buffers[0].stride=16; xfb->buffers[0].varying_count=1;
+        xfb->output_count=1;
+        xfb->outputs[0]=(nir_xfb_output_info){.location=VARYING_SLOT_POS,.component_mask=15};
+        final->xfb_info=xfb;
+        final->info.has_transform_feedback_varyings=true;
+        final->info.xfb_stride[0]=4;
+        PsbcTessellationCompileOptions xfb_options=options;
+        assert(psbc_compile_nir_tessellation_pipeline(inputs[0],inputs[1],inputs[2],
+            xfb_gs,&xfb_options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+        xfb_options.vertex.ps5_global_streamout=true;
+        /* Separable upstream declarations must be stripped without modifying
+         * the shader object, while the final capture declaration survives. */
+        inputs[0]->xfb_info=ralloc_memdup(inputs[0],xfb,nir_xfb_info_size(1));
+        inputs[0]->info.has_transform_feedback_varyings=true;
+        inputs[0]->info.xfb_stride[0]=4;
+        assert(psbc_compile_nir_tessellation_pipeline(inputs[0],inputs[1],inputs[2],
+            xfb_gs,&xfb_options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+        nir_shader *carrier=ps5_stream_output_carrier_nir(inputs[0]);
+        assert(carrier && !carrier->xfb_info && !carrier->info.has_transform_feedback_varyings);
+        assert(inputs[0]->xfb_info && inputs[0]->info.xfb_stride[0]==4);
+        PsbcResult xfb_result=psbc_compile_nir_tessellation_pipeline(
+            carrier,inputs[1],inputs[2],xfb_gs,&xfb_options,&out);
+        ralloc_free(carrier);
+        ralloc_free(inputs[0]->xfb_info); inputs[0]->xfb_info=NULL;
+        inputs[0]->info.has_transform_feedback_varyings=false; inputs[0]->info.xfb_stride[0]=0;
+        printf("linked streamout gs=%u result=%d\n",with_gs,xfb_result); fflush(stdout);
+        assert(xfb_result==PSBC_RESULT_OK);
+        assert(!out.hs.metadata.streamout_valid && out.tes.metadata.streamout_valid);
+        assert(out.tes.metadata.streamout_enabled_stream_buffers_mask==1);
+        assert(out.tes.metadata.streamout_strides_dwords[0]==4);
+        uint8_t *xfb_package=NULL; size_t xfb_size=0;
+        assert(!ps5_agc_package_build(&out.tes,with_gs ? 1 : 0,&xfb_package,&xfb_size));
+        free(xfb_package); psbc_free_tessellation_output(&out);
+        final->xfb_info=NULL; final->info.has_transform_feedback_varyings=false;
+        final->info.xfb_stride[0]=0; ralloc_free(xfb);
+        assert(psbc_compile_nir_tessellation_pipeline(inputs[0],inputs[1],inputs[2],
+            xfb_gs,&xfb_options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+        ralloc_free(xfb_gs);
     }
     /* Each linked stage reads its own UBO and uses the returned SSBO atomic
      * value. This tests actual resource lowering, not resource masks alone. */
