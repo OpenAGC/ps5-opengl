@@ -68,11 +68,43 @@ static void check(const unsigned *locations, unsigned count, uint64_t expected) 
     psbc_free_output(&out);
     ralloc_free(b.shader);
 }
+static void check_double_halves(void) {
+    nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_VERTEX,
+        psbc_get_nir_options(PSBC_STAGE_VERTEX), "double-halves");
+    b.shader->info.io_lowered=true;
+    nir_def *zero=nir_imm_int(&b,0);
+    nir_def *low=nir_load_input(&b,4,32,zero,.dest_type=nir_type_uint32,
+        .io_semantics.location=VERT_ATTRIB_GENERIC0);
+    nir_def *high=nir_load_input(&b,4,32,zero,.dest_type=nir_type_uint32,
+        .io_semantics.location=VERT_ATTRIB_GENERIC0,.io_semantics.high_dvec2=1);
+    nir_store_output(&b,nir_iadd(&b,low,high),zero,
+        .src_type=nir_type_uint32,.io_semantics.location=VARYING_SLOT_POS);
+    nir_lower_io_to_scalar(b.shader,nir_var_shader_in,NULL,NULL);
+    nir_opt_vectorize_io(b.shader,nir_var_shader_in,false);
+    unsigned lows=0,highs=0;
+    nir_foreach_block(block,nir_shader_get_entrypoint(b.shader)) nir_foreach_instr(instr,block) {
+        if(instr->type!=nir_instr_type_intrinsic) continue;
+        nir_intrinsic_instr *i=nir_instr_as_intrinsic(instr);
+        if(i->intrinsic==nir_intrinsic_load_input) {
+            if(nir_intrinsic_io_semantics(i).high_dvec2) ++highs; else ++lows;
+        }
+    }
+    assert(lows==1 && highs==1);
+    PsbcCompileOptions options={.target=PSBC_TARGET_PS5,.stage=PSBC_STAGE_VERTEX,
+        .optimise=true,.ngg=true,.primitive_type=6,.address32_hi=2,.vertex_attribute_count=1};
+    options.vertex_attributes[0]=(PsbcVertexAttribute){.location=0,.binding=0,
+        .format=PSBC_VERTEX_FORMAT_R64G64B64A64_FLOAT,.stride=32,.alignment=8};
+    PsbcShaderOutput out={0};
+    assert(psbc_compile_nir(b.shader,&options,&out)==PSBC_RESULT_OK);
+    psbc_free_output(&out);
+    ralloc_free(b.shader);
+}
 int main(void) {
     const unsigned meta[] = {VERT_ATTRIB_POS};
     const unsigned mixed[] = {VERT_ATTRIB_POS, VERT_ATTRIB_GENERIC0 + 5};
     const unsigned generic[] = {VERT_ATTRIB_GENERIC0 + 3, VERT_ATTRIB_GENERIC0 + 7};
     psbc_init();
+    check_double_halves();
     check(meta, 1, BITFIELD64_BIT(VERT_ATTRIB_GENERIC0));
     check(mixed, 2, UINT64_C(3) << VERT_ATTRIB_GENERIC0);
     check(generic, 2, BITFIELD64_BIT(VERT_ATTRIB_GENERIC0 + 3) |

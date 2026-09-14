@@ -5094,6 +5094,21 @@ index a3d7296cceee22c5b03bdd7159d075d061911035..5541d5fb184debb3b795750d6acd368e
  # r600/gcn specific instruction that evaluates unnormalized cube texture coordinates
  # and face index
  # The actual texture coordinates are evaluated from this according to
+diff --git a/src/compiler/nir/nir_opt_vectorize_io.c b/src/compiler/nir/nir_opt_vectorize_io.c
+index 0669b6e9a11cc55ab2d84a082e455aa7a999123d..2978df144ed4c406c2042ba119eebf73e8a318dd 100644
+--- a/src/compiler/nir/nir_opt_vectorize_io.c
++++ b/src/compiler/nir/nir_opt_vectorize_io.c
+@@ -58,6 +58,10 @@ compare_is_not_vectorizable(nir_intrinsic_instr *a, nir_intrinsic_instr *b)
+    if (sem0.location != sem1.location)
+       return sem0.location > sem1.location ? 1 : -1;
+ 
++   /* Compact Gallium double vectors share a location, not their data. */
++   if (sem0.high_dvec2 != sem1.high_dvec2)
++      return sem0.high_dvec2 > sem1.high_dvec2 ? 1 : -1;
++
+    /* The mediump flag isn't mergable. */
+    if (sem0.medium_precision != sem1.medium_precision)
+       return sem0.medium_precision > sem1.medium_precision ? 1 : -1;
 diff --git a/src/compiler/nir/nir_shader_compiler_options.h b/src/compiler/nir/nir_shader_compiler_options.h
 index 02f6416aab7613e7073228b031f01f5fc07019b5..6c0bd879325369cd773a1849efb73f8578073160 100644
 --- a/src/compiler/nir/nir_shader_compiler_options.h
