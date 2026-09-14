@@ -261,6 +261,7 @@ struct ps5_context {
    unsigned border_color_count;
    struct pipe_stream_output_target *stream_output_targets[PIPE_MAX_SO_BUFFERS];
    unsigned stream_output_target_count;
+   unsigned split_instance_id;
    enum mesa_prim stream_output_primitive;
    struct ps5_constant_state
       constants[PS5_CONSTANT_STAGE_COUNT][PS5_MAX_CONSTANT_BUFFERS];
@@ -7984,10 +7985,15 @@ ps5_draw_vbo_locked(struct pipe_context *base,
              info->instance_count, info->start_instance);
       for (unsigned instance = 0; instance < info->instance_count; ++instance) {
          struct pipe_draw_info single = *info;
+         const unsigned saved_instance = context->split_instance_id;
 
          single.instance_count = 1;
-         single.start_instance = info->start_instance + instance;
+         if (!context->gs && !context->tcs && !context->tes)
+            context->split_instance_id = instance;
+         else
+            single.start_instance = info->start_instance + instance;
          ps5_draw_vbo_locked(base, &single, drawid_offset, NULL, draws, 1, NULL);
+         context->split_instance_id = saved_instance;
          if (context->last_draw_status != 0)
             return;
       }
@@ -8340,6 +8346,17 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       }
       input_user_data[input_metadata->start_instance_user_data_dword] = info->start_instance;
    }
+   if (input_metadata->instance_id_bias_valid) {
+      if (input_metadata->instance_id_bias_user_data_dword >= input_user_data_count) {
+         context->last_draw_status = -10;
+         return;
+      }
+      input_user_data[input_metadata->instance_id_bias_user_data_dword] =
+         context->split_instance_id;
+   } else if (context->split_instance_id) {
+      context->last_draw_status = -10;
+      return;
+   }
    if (input_metadata->vertex_buffer_table_valid) {
       uint32_t binding_mask = 0;
       uint32_t binding_records[PIPE_MAX_ATTRIBS] = {0};
@@ -8380,7 +8397,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
          }
          if (element->instance_divisor) {
             records = (uint64_t)info->start_instance +
-                      ((uint64_t)info->instance_count - 1u) /
+                      ((uint64_t)context->split_instance_id + info->instance_count - 1u) /
                          element->instance_divisor +
                       1u;
             if (records > UINT32_MAX) {
@@ -11221,13 +11238,16 @@ ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
       return false;
    }
    if (shader->stream_output.num_outputs) {
-      streamout_nir = ps5_stream_output_split_nir(shader->nir);
+      streamout_nir = shader->stage == PSBC_STAGE_VERTEX
+         ? nir_shader_clone(NULL, shader->nir)
+         : ps5_stream_output_split_nir(shader->nir);
       if (!streamout_nir) {
          free(variant->package);
          psbc_free_output(&variant->output);
          free(variant);
          return false;
       }
+      options.split_vertex_instances = shader->stage == PSBC_STAGE_VERTEX;
       result = psbc_compile_nir(streamout_nir, &options,
                                 &variant->streamout_output);
       ralloc_free(streamout_nir);

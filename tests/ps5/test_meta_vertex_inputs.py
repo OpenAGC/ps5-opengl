@@ -46,6 +46,9 @@ static void check(const unsigned *locations, unsigned count, uint64_t expected) 
     for (unsigned i = 0; i < count; ++i)
         position = nir_fadd(&b, position, nir_load_input(&b, 4, 32, nir_imm_int(&b, 0),
                                                        .io_semantics.location = locations[i]));
+    nir_def *ids = nir_vec4(&b, nir_load_instance_id(&b), nir_load_base_instance(&b),
+                            nir_load_draw_id(&b), nir_imm_int(&b, 0));
+    position = nir_fadd(&b, position, nir_u2f32(&b, ids));
     nir_store_output(&b, position, nir_imm_int(&b, 0),
                      .src_type = nir_type_float32, .io_semantics.location = VARYING_SLOT_POS);
     nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
@@ -65,6 +68,14 @@ static void check(const unsigned *locations, unsigned count, uint64_t expected) 
     PsbcShaderOutput out;
     assert(psbc_compile_nir(b.shader, &options, &out) == PSBC_RESULT_OK);
     assert(out.machine_code_size && out.metadata.vertex_buffer_table_valid);
+    psbc_free_output(&out);
+    options.split_vertex_instances = true;
+    options.vertex_attributes[0].instance_divisor = 2;
+    assert(psbc_compile_nir(b.shader, &options, &out) == PSBC_RESULT_OK);
+    assert(out.metadata.instance_id_bias_valid);
+    assert(out.metadata.instance_id_bias_user_data_dword < out.metadata.user_sgpr_count);
+    assert(out.metadata.start_instance_valid);
+    assert(out.metadata.instance_id_bias_user_data_dword != out.metadata.start_instance_user_data_dword);
     psbc_free_output(&out);
     ralloc_free(b.shader);
 }

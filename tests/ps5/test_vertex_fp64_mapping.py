@@ -31,8 +31,9 @@ static nir_io_semantics nir_intrinsic_io_semantics(nir_intrinsic_instr *i) { ret
 struct gfx { struct { unsigned attributes_valid; enum pipe_format vertex_attribute_formats[16]; } vi; };
 typedef struct { const struct gfx *gfx_state; bool compact_vertex_inputs; } lower_vs_inputs_state;
 ''' + mapping + r'''
-struct context { int last_draw_status; };
-struct metadata { bool start_instance_valid; unsigned start_instance_user_data_dword; };
+struct context { int last_draw_status; unsigned split_instance_id; };
+struct metadata { bool start_instance_valid; unsigned start_instance_user_data_dword;
+                  bool instance_id_bias_valid; unsigned instance_id_bias_user_data_dword; };
 struct draw { unsigned start_instance; };
 static void setup(struct context *context, const struct metadata *input_metadata,
                   unsigned input_user_data_count, uint32_t *input_user_data,
@@ -56,7 +57,8 @@ int main(void) {
     g.vi.vertex_attribute_formats[0]=F32;
     assert(location_from_intrinsic(&i,&s,&upper)==1 && upper==0);
     for(unsigned value=0;value<17;++value) for(unsigned present=0;present<2;++present) {
-        struct context c={0}; struct draw d={value}; struct metadata m={present,1};
+        struct context c={0}; struct draw d={value};
+        struct metadata m={.start_instance_valid=present,.start_instance_user_data_dword=1};
         uint32_t data[3]={99,99,99};
         setup(&c,&m,3,data,&d);
         assert(!c.last_draw_status && data[0]==99 && data[2]==99);
@@ -65,6 +67,18 @@ int main(void) {
         setup(&c,&m,3,data,&d);
         assert(c.last_draw_status==(present ? -10 : 0));
     }
+    struct context c={.split_instance_id=7}; struct draw d={5};
+    struct metadata m={.start_instance_valid=true,.start_instance_user_data_dword=1,
+                       .instance_id_bias_valid=true,.instance_id_bias_user_data_dword=2};
+    uint32_t data[3]={99,99,99};
+    setup(&c,&m,3,data,&d);
+    assert(!c.last_draw_status && data[0]==99 && data[1]==5 && data[2]==7);
+    m.instance_id_bias_user_data_dword=3;
+    setup(&c,&m,3,data,&d);
+    assert(c.last_draw_status==-10);
+    c.last_draw_status=0; m.instance_id_bias_valid=false;
+    setup(&c,&m,3,data,&d);
+    assert(c.last_draw_status==-10);
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
