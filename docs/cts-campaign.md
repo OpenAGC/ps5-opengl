@@ -11,6 +11,39 @@ and 3.3 regressions during feature development, then a complete campaign on the
 frozen 4.6 candidate. An engineering matrix and a Khronos-approved submission
 are separate milestones.
 
+## Efficient development runs
+
+Reuse `summarize-cts-qpa.py --inventory` and `plan-cts-campaign.py`; do not
+rebuild the native app when only the selected case list changes.
+
+- Pack measured fast cases into time-budgeted batches, with startup overhead
+  and a safety margin inside the two-minute observation limit.
+  Each batch stays within one family (DSA is additionally split by object type),
+  preserving inventory order within the selection. Larger bulk batches are
+  prioritized; there is no fixed case-count cap. Hundreds or thousands of cheap
+  measured cases can share one launch, but memory isolation still takes priority.
+- Use `--resume discovery` to defer clean completed historical results during
+  exploration. `--resume candidate --candidate-sha256 HASH` restricts this to
+  the executable identity supplied. Neither mode establishes release acceptance:
+  dependencies, CTS revision and required configurations still need qualification.
+- Preserve Pass, NotSupported and warning dispositions separately. Resume only
+  an ordered completed prefix with recorded app entry, teardown and post-health
+  evidence. Failed or incomplete cases remain pending.
+- After a code change, use `--retest 'affected.family.*'` for affected families
+  and regression controls. A final frozen-build campaign remains separate.
+- Use `--family-estimates` after three passing sibling samples; re-inventory and
+  re-plan after each bounded run. Unknown-family placeholder batches are a
+  discovery queue, not thousands of launches to execute unchanged or an ETA.
+- Keep first-failure stopping. Isolate previous failures and use `--isolate`
+  for known allocation-heavy cases. Recorded heap peaks of at least 64 MiB or
+  allocation failures also trigger isolation. Receipt-wide peaks are only a
+  conservative hint, not an additive per-case memory model; unknown combinations
+  still need bounded observation.
+
+Use `--manifest-only` to avoid generating thousands of folders. Materialize only
+the next reviewed selection, retain hashed inputs and receipts, and refresh the
+queue after its result. This changes scheduling, not upstream test semantics.
+
 ## G1: establish the right target before a full run
 
 Do not spend a full campaign validating the wrong test revision or configuration.

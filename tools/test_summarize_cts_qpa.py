@@ -138,6 +138,8 @@ class QpaSummaryTest(unittest.TestCase):
                     '--deqp-base-seed=1', '--deqp-base-seed=1 --deqp-surface-type=pbuffer')
                 Path(f"{prefix}-{namespace}-cts.qpa").write_text(selected_command + text)
                 Path(f"{prefix}-cts-shard.txt").write_text("KHR-GL33.a\nKHR-GL33.optional\n")
+                Path(f"{prefix}-{namespace}.log").write_text(
+                    '[ps5-opengl-heap] phase=cts-progress peak_bytes=73400320 blocks=20 failures=0\n')
                 Path(f"{prefix}-result.json").write_text(json.dumps(dict(
                     ebootSha256=str(index)*64, outcome="entered-eboot",
                     teardownSignal="runtime-layers-released")))
@@ -153,6 +155,8 @@ class QpaSummaryTest(unittest.TestCase):
             self.assertEqual(ledger["timings"], {"KHR-GL33.optional": .002})
             self.assertEqual(ledger["cases"]["0"]["KHR-GL33.optional"]["status"], "NotSupported")
             self.assertTrue(ledger["receipts"][case["receipt"]]["current_binary"])
+            self.assertTrue(ledger['receipts'][case['receipt']]['ordered_prefix'])
+            self.assertEqual(ledger['receipts'][case['receipt']]['heap_peak_bytes'], 73400320)
             self.assertIsNone(ledger["receipts"][case["receipt"]]["post_health"])
             self.assertEqual({row["requested_surface"] for row in ledger["receipts"].values()},
                              {"default", "pbuffer"})

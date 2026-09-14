@@ -93,7 +93,7 @@ def inventory(directory: Path, current_eboot: str | None) -> dict:
                          options.get("--deqp-gl-config-name", "default"))
             # Timing history is not acceptance; retain the actual requested surface.
             config = prepare.configuration_index(signature, allow_implicit_pbuffer=True)
-            prefix, _ = cts_receipt_parts(path)
+            prefix, namespace = cts_receipt_parts(path)
             case_list = Path(prefix + "-cts-shard.txt")
             expected = [s.strip() for s in case_list.read_text().splitlines() if s.strip()] if case_list.is_file() else None
             summary = summarize(text, expected)
@@ -104,10 +104,18 @@ def inventory(directory: Path, current_eboot: str | None) -> dict:
             if not re.fullmatch(r"[0-9a-f]{64}", eboot):
                 raise ValueError("missing executable identity")
             receipt_id = path.relative_to(directory).as_posix()
+            log_path = Path(prefix + '-' + namespace + '.log')
+            log = log_path.read_text(errors='replace') if log_path.is_file() else ''
+            heap = re.findall(r'\[ps5-opengl-heap\][^\n]*peak_bytes=(\d+)[^\n]*failures=(\d+)', log)
+            names = [case['name'] for case in summary['cases']]
             receipts[receipt_id] = dict(
                 eboot_sha256=eboot, libc_sha256=lifecycle.get("libcSha256", "").lower(),
                 configuration=int(config), requested_surface=signature[3],
                 complete=summary["complete"], ordered_inputs=expected is not None,
+                ordered_prefix=bool(expected and names and len(set(names)) == len(names)
+                                    and names == expected[:len(names)]),
+                heap_peak_bytes=max((int(p) for p, _ in heap), default=None),
+                heap_failures=max((int(f) for _, f in heap), default=None),
                 teardown=lifecycle.get("teardownSignal"),
                 entered=lifecycle.get("outcome") == "entered-eboot",
                 current_binary=bool(current_eboot and eboot == current_eboot.lower()),

@@ -19,6 +19,53 @@ PLANNER = importlib.import_module("plan-cts-campaign")
 
 
 class CampaignTests(unittest.TestCase):
+    def test_thousand_case_batches_keep_families_and_inventory_order(self):
+        cases = [f'GL.{group}.{i}' for i in range(1000) for group in ('compile', 'buffer')]
+        history = {'0': {name: dict(status='Pass', seconds=.01) for name in cases}}
+        rows = PLANNER.plan(cases, history, [], configurations=[0])
+        self.assertEqual(len(rows), 2)
+        for row in rows:
+            self.assertEqual(len(row['cases']), 1000)
+            self.assertLessEqual(row['observation_seconds'], 120)
+            self.assertEqual(row['cases'], [n for n in cases if PLANNER.family(n) == row['family']])
+        self.assertEqual(Counter(n for r in rows for n in r['cases']), Counter(cases))
+
+    def test_resume_keeps_build_status_and_failure_boundaries(self):
+        cases = ['GL.f.pass', 'GL.f.skip', 'GL.f.warn', 'GL.f.fail', 'GL.f.open']
+        receipt = dict(eboot_sha256='a'*64, configuration=0, ordered_prefix=True,
+                       entered=True, teardown='runtime-layers-released', post_health=True,
+                       dedicated_console=True, heap_peak_bytes=70*1024**2)
+        ledger = dict(receipts={'r': receipt}, cases={'0': {
+            name: dict(status=status, seconds=.01, receipt='r') for name, status in zip(
+                cases, ['Pass', 'NotSupported', 'CompatibilityWarning', 'Fail', 'Incomplete'])}})
+        completed, isolated = PLANNER.resume_history(set(cases), ledger, 'a'*64)
+        self.assertEqual(set(completed['0']), set(cases[:3]))
+        self.assertEqual(completed['0'][cases[1]]['status'], 'NotSupported')
+        self.assertEqual(isolated, set(cases))
+        self.assertEqual(PLANNER.resume_history(set(cases), ledger, 'b'*64)[0], {})
+        self.assertNotIn(cases[0], PLANNER.resume_history(set(cases), ledger, retest=['*.pass'])[0]['0'])
+        rows = PLANNER.plan(cases, ledger['cases'], [], configurations=[0],
+                            completed=completed, isolated=isolated)
+        self.assertEqual([r['cases'] for r in rows], [[cases[3]], [cases[4]]])
+        for key, bad in [('ordered_prefix', False), ('post_health', False),
+                         ('entered', False), ('teardown', None), ('configuration', 1),
+                         ('eboot_sha256', '')]:
+            old=receipt[key]; receipt[key]=bad
+            self.assertEqual(PLANNER.resume_history(set(cases), ledger)[0], {})
+            receipt[key]=old
+
+    def test_fast_packing_and_memory_isolation(self):
+        cases=[f'GL.family.{i}' for i in range(1000)]
+        history={'0': {n: dict(status='Pass', seconds=.01) for n in cases[:3]}}
+        rows=PLANNER.plan(cases, history, [], configurations=[0], family_estimates=True,
+                          isolated=[cases[10]])
+        self.assertLess(len(rows), 10)
+        self.assertTrue(all(r['observation_seconds']<=120 for r in rows))
+        self.assertEqual(next(r for r in rows if r['lane']=='memory-heavy')['cases'], [cases[10]])
+        self.assertEqual(Counter(n for r in rows for n in r['cases']), Counter(cases))
+        self.assertNotEqual(PLANNER.family('KHR-GL46.direct_state_access.buffers_map'),
+                            PLANNER.family('KHR-GL46.direct_state_access.textures_map'))
+
     def test_family_estimates_preserve_unknowns_and_failure_isolation(self):
         cases = [f"GL.family.{i}" for i in range(103)] + ["GL.other.a", "GL.family.failed"]
         history = {"0": {n: dict(status="Pass", seconds=.01) for n in cases[:3]}}
