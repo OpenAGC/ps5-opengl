@@ -1311,9 +1311,12 @@ int main(void) {
     /* Exact graphics-compatible tiled RGBA8 SRD, with a physical footprint
      * larger than the logical texels. Malformed backing must remain rejected. */
     static _Alignas(65536) uint8_t tiled_pixels[262144];
-    for(unsigned vector=0;vector<2;++vector) for(unsigned array=0;array<2;++array) {
+    const enum pipe_format ms_formats[]={PIPE_FORMAT_R32_FLOAT,PIPE_FORMAT_R32G32B32A32_FLOAT,
+        PIPE_FORMAT_R8G8B8A8_UNORM,PIPE_FORMAT_R8G8B8A8_SINT,PIPE_FORMAT_R8G8B8A8_UINT};
+    for(unsigned f=0;f<5;++f) for(unsigned array=0;array<2;++array) {
+        const bool vector=f==1;
         struct ps5_resource ms=canonical;
-        ms.base.format=vector ? PIPE_FORMAT_R32G32B32A32_FLOAT : PIPE_FORMAT_R32_FLOAT;
+        ms.base.format=ms_formats[f];
         ms.base.target=array ? PIPE_TEXTURE_2D_ARRAY : PIPE_TEXTURE_2D;
         ms.base.nr_samples=ms.base.nr_storage_samples=4;
         ms.base.array_size=array ? 2 : 1;
@@ -1323,7 +1326,9 @@ int main(void) {
         ms.level_stride[0]=17*texel; ms.size=17*3*texel*4*ms.base.array_size;
         ms.layer_stride=array ? 65536 : 17*3*texel;
         assert(!ps5_resource_sampled_image_descriptor(&ms.base,0,0,descriptor));
-        assert(descriptor[3]==((array ? 0xf1b20000u : 0xe1b20000u)|(vector ? 0xfac : 0x204)));
+        assert(descriptor[3]==((array ? 0xf1b20000u : 0xe1b20000u)|(f ? 0xfac : 0x204)));
+        /* AMD query_samples extracts log2(samples) from LAST_LEVEL. */
+        assert((1u<<((descriptor[3]>>16)&15))==ms.base.nr_samples);
         assert(descriptor[4]==array && descriptor[5]==0x00400020);
         assert(ps5_resource_storage_image_descriptor(&ms.base,0,descriptor)<0);
         for(unsigned fault=0;fault<7;++fault) {

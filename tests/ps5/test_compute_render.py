@@ -511,6 +511,35 @@ int main(void) {
         }
         compile(nir,&all_slots);
     }
+    /* Sample-count queries have no coordinate, LOD, or sample-index source. */
+    for(unsigned array=0;array<2;++array) {
+        nir_shader *nir=compute_dimensional(array ? 5 : 4,0);
+        nir_tex_instr *old=NULL;
+        nir_foreach_block(block,nir_shader_get_entrypoint(nir)) nir_foreach_instr(instr,block)
+            if(instr->type==nir_instr_type_tex) old=nir_instr_as_tex(instr);
+        assert(old);
+        nir_builder b=nir_builder_create(nir_shader_get_entrypoint(nir));
+        b.cursor=nir_before_instr(&old->instr);
+        nir_tex_instr *query=nir_tex_instr_create(nir,0);
+        query->op=nir_texop_texture_samples;
+        query->sampler_dim=GLSL_SAMPLER_DIM_MS;
+        query->is_array=array;
+        query->texture_index=old->texture_index;
+        query->dest_type=nir_type_int32;
+        nir_def_init(&query->instr,&query->def,1,32);
+        nir_builder_instr_insert(&b,&query->instr);
+        nir_def *v=&query->def;
+        nir_def_rewrite_uses(&old->def,nir_vec4(&b,v,v,v,v));
+        nir_instr_remove(&old->instr);
+        assert(prepare_compute_nir(nir));
+        unsigned used=0,buffers=0,filtered=0,lods[16],arrays=0;
+        assert(ps5_compute_texture_usage(nir,&used,&buffers,&filtered,lods,&arrays,(uint8_t[16]){0}));
+        assert(used && !buffers && !filtered && !!arrays==!!array);
+        query->texture_index=16;
+        assert(!ps5_compute_texture_usage(nir,&used,&buffers,&filtered,lods,&arrays,(uint8_t[16]){0}));
+        query->texture_index=0;
+        compile(nir,&all_slots);
+    }
     const unsigned layer_counts[]={1,3,8};
     for(unsigned kind=0;kind<3;++kind) for(unsigned count=0;count<3;++count)
       for(unsigned unit=0;unit<=15;unit+=15) for(unsigned op=0;op<(kind ? 2u : 4u);++op)

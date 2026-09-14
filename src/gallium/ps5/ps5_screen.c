@@ -4408,7 +4408,9 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
       const size_t physical_layer = ps5_tiled_color_surface_size(base->format, base->width0 * 2, base->height0 * 2);
       const unsigned binds = PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET;
       if (!tiled || (base->target != PIPE_TEXTURE_2D && base->target != PIPE_TEXTURE_2D_ARRAY) ||
-          (base->format != PIPE_FORMAT_R32_FLOAT && base->format != PIPE_FORMAT_R32G32B32A32_FLOAT) ||
+          (base->format != PIPE_FORMAT_R32_FLOAT && base->format != PIPE_FORMAT_R32G32B32A32_FLOAT &&
+           base->format != PIPE_FORMAT_R8G8B8A8_UNORM && base->format != PIPE_FORMAT_R8G8B8A8_SINT &&
+           base->format != PIPE_FORMAT_R8G8B8A8_UINT) ||
           base->last_level || (base->bind & binds) != binds || (base->bind & ~binds) ||
           resource->render_staging_size || resource->render_staging_offset ||
           ((uintptr_t)resource->data & (PS5_COLOR_TARGET_ALIGNMENT - 1u)) ||
@@ -11769,9 +11771,11 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                continue;
             }
             if (tex->sampler_dim == GLSL_SAMPLER_DIM_MS) {
-               if (tex->op != nir_texop_txf_ms || tex->is_shadow ||
+               const bool query = tex->op == nir_texop_texture_samples;
+               if ((!query && tex->op != nir_texop_txf_ms) || tex->is_shadow ||
                    tex->texture_index >= PS5_COMPUTE_TEXTURE_SLOTS || tex->def.bit_size != 32 ||
-                   tex->num_srcs != 2 || tex->coord_components != 2 + tex->is_array)
+                   tex->num_srcs != (query ? 0 : 2) ||
+                   (query ? tex->def.num_components != 1 : tex->coord_components != 2 + tex->is_array))
                   return false;
                unsigned coords = 0, samples = 0;
                for (unsigned i = 0; i < tex->num_srcs; ++i) {
@@ -11786,7 +11790,7 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                      ++samples;
                   } else return false;
                }
-               if (coords != 1 || samples != 1) return false;
+               if (coords != !query || samples != !query) return false;
                const unsigned bit = 1u << tex->texture_index;
                if ((*used & bit) && (((*arrays & bit) != 0) != tex->is_array)) return false;
                *used |= bit;
