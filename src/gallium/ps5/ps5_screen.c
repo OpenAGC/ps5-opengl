@@ -11117,6 +11117,23 @@ ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
    nir_shader *streamout_nir = NULL;
    const nir_shader *package_nir;
 
+   /* Temporary bounded diagnostic for the active double-input CTS failure. */
+   if (shader->stage == PSBC_STAGE_VERTEX && shader->stream_output.num_outputs &&
+       shader->nir->info.dual_slot_inputs) {
+      static bool captured;
+      if (!captured) {
+         captured = true;
+         printf("[ps5-gallium] fp64-input-diagnostic begin\n");
+         for (unsigned i = 0; i < layout->count; ++i) {
+            const PsbcVertexAttribute *a = &layout->attributes[i];
+            printf("attribute location=%u binding=%u format=%u offset=%u stride=%u\n",
+                   a->location, a->binding, a->format, a->offset, a->stride);
+         }
+         nir_print_shader(shader->nir, stdout);
+         printf("[ps5-gallium] fp64-input-diagnostic end\n");
+      }
+   }
+
    if (!exports)
       exports = &no_exports;
    for (variant = shader->variants; variant; variant = variant->next) {
