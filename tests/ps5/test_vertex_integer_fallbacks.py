@@ -17,3 +17,14 @@ for bits in (8, 16):
             wide = 'PIPE_FORMAT_' + ''.join(f'{c}32' for c in 'RGBA'[:count]) + '_' + kind
             assert pairs.get(narrow) == wide, (narrow, pairs.get(narrow), wide)
 print('PASS: all 16 narrow integer formats preserve signedness and component count')
+
+# GL_DOUBLE feeding a float input is conversion, not the raw dvec/UINT path.
+driver = (root / 'src/gallium/ps5/ps5_screen.c').read_text()
+support = driver.split('ps5_is_format_supported(', 1)[1].split(
+    'if (format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT', 1)[0]
+for count in range(1, 5):
+    wide = 'PIPE_FORMAT_' + ''.join(f'{c}64' for c in 'RGBA'[:count]) + '_FLOAT'
+    converted = 'PIPE_FORMAT_' + ''.join(f'{c}32' for c in 'RGBA'[:count]) + '_FLOAT'
+    assert wide not in support, wide
+    assert pairs.get(wide) == converted, (wide, pairs.get(wide))
+print('PASS: all four double-to-float formats use Mesa numeric conversion')

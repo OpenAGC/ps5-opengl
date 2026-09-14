@@ -4719,17 +4719,15 @@ ps5_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
              storage_sample_count <= 1 &&
              bindings == PIPE_BIND_SAMPLER_VIEW;
 
+   /* R64_FLOAT vertex formats require numeric conversion to float inputs.
+    * Let u_vbuf convert them; real double inputs use raw UINT formats.
+    */
    if (target == PIPE_BUFFER)
       return sample_count <= 1 && storage_sample_count <= 1 &&
              (((format == PIPE_FORMAT_R32_FLOAT ||
                 format == PIPE_FORMAT_R32G32_FLOAT ||
                 format == PIPE_FORMAT_R32G32B32_FLOAT ||
                 format == PIPE_FORMAT_R32G32B32A32_FLOAT ||
-                (PS5_ENABLE_FP64_CANDIDATE &&
-                 (format == PIPE_FORMAT_R64_FLOAT ||
-                  format == PIPE_FORMAT_R64G64_FLOAT ||
-                  format == PIPE_FORMAT_R64G64B64_FLOAT ||
-                  format == PIPE_FORMAT_R64G64B64A64_FLOAT)) ||
                 (PS5_ENABLE_INTEGER_VERTEX_CANDIDATE &&
                  ps5_integer_vertex_format(format)) ||
                 (PS5_ENABLE_PACKED_VERTEX_CANDIDATE &&
