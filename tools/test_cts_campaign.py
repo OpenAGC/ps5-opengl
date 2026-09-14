@@ -19,15 +19,16 @@ PLANNER = importlib.import_module("plan-cts-campaign")
 
 
 class CampaignTests(unittest.TestCase):
-    def test_thousand_case_batches_keep_families_and_inventory_order(self):
+    def test_thousand_case_batches_combine_fast_families_in_inventory_order(self):
         cases = [f'GL.{group}.{i}' for i in range(1000) for group in ('compile', 'buffer')]
         history = {'0': {name: dict(status='Pass', seconds=.01) for name in cases}}
         rows = PLANNER.plan(cases, history, [], configurations=[0])
-        self.assertEqual(len(rows), 2)
+        self.assertEqual(len(rows), 1)
         for row in rows:
-            self.assertEqual(len(row['cases']), 1000)
+            self.assertEqual(len(row['cases']), 2000)
             self.assertLessEqual(row['observation_seconds'], 120)
-            self.assertEqual(row['cases'], [n for n in cases if PLANNER.family(n) == row['family']])
+            self.assertEqual(row['cases'], cases)
+            self.assertEqual(row['families'], ['GL.compile', 'GL.buffer'])
         self.assertEqual(Counter(n for r in rows for n in r['cases']), Counter(cases))
 
     def test_resume_keeps_build_status_and_failure_boundaries(self):

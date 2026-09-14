@@ -18,10 +18,11 @@ rebuild the native app when only the selected case list changes.
 
 - Pack measured fast cases into time-budgeted batches, with startup overhead
   and a safety margin inside the two-minute observation limit.
-  Each batch stays within one family (DSA is additionally split by object type),
-  preserving inventory order within the selection. Larger bulk batches are
-  prioritized; there is no fixed case-count cap. Hundreds or thousands of cheap
-  measured cases can share one launch, but memory isolation still takes priority.
+  Fast families share bulk launches, preserving inventory order and recording
+  each included family. Timing estimates remain family-specific (DSA is split
+  by object type); unknown families and risky cases stay separate. Larger bulk
+  batches are prioritized without a fixed case-count cap. Hundreds or thousands
+  of cheap measured cases can share one launch; memory isolation takes priority.
 - Use `--resume discovery` to defer clean completed historical results during
   exploration. `--resume candidate --candidate-sha256 HASH` restricts this to
   the executable identity supplied. Neither mode establishes release acceptance:

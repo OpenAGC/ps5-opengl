@@ -96,7 +96,8 @@ def plan(cases, history, smoke, budget=120, startup=15, margin=1.5, unknown=30,
             lane = ("long" if seconds > capacity else "previous-failure" if name in previous_failures else
                     "memory-heavy" if name in isolated else "smoke" if name in smoke else
                     "discovery" if name in fallback and name not in estimates else "bulk")
-            groups.setdefault((lane, family(name)), []).append(name)
+            # Fast groups share a launch; unknown families and risky cases stay separate.
+            groups.setdefault((lane, '' if lane == 'bulk' else family(name)), []).append(name)
         for (lane, group_family), remaining in groups.items():
             position = 0
             while position < len(remaining):
@@ -116,7 +117,10 @@ def plan(cases, history, smoke, budget=120, startup=15, margin=1.5, unknown=30,
                         seconds += cost
                         end += 1
                 observation = max(5, math.ceil(startup + margin * seconds))
-                shards.append(dict(configuration=config, lane=lane, family=group_family, cases=selected,
+                shard_families = list(dict.fromkeys(family(name) for name in selected))
+                shards.append(dict(configuration=config, lane=lane,
+                    family=shard_families[0] if len(shard_families) == 1 else 'mixed',
+                    families=shard_families, cases=selected,
                     estimated_test_seconds=round(seconds, 6), observation_seconds=observation,
                     needs_duration_approval=observation > budget,
                     exceeds_runner_limit=observation > 3600,
