@@ -15,6 +15,8 @@ assert "#define PS5_COMPUTE_STORAGE_SLOTS PIPE_MAX_SHADER_BUFFERS" in source
 assert "#define PS5_COMPUTE_IMAGE_SLOTS PS5_AGC_COMPUTE_MAX_IMAGES" in source
 begin = source.index("static void\nps5_set_shader_buffers(")
 functions = source[begin:source.index("\n#endif", begin)]
+setter_at = source.index("static void\nps5_set_constant_buffer(")
+functions += source[setter_at:source.index("static void\nps5_set_vertex_buffers(", setter_at)]
 sampler_at = source.index("static bool\nps5_texture_descriptor_wrap(")
 bits_at = source.index("static uint32_t\nps5_float_bits(")
 sampler_helpers = source[bits_at:source.index("static size_t\nps5_tiled_depth_layer_xor(", bits_at)]
@@ -78,6 +80,8 @@ code = r'''
 #include "amd/common/ac_descriptors.h"
 #include "amd/common/gfx10_format_table.h"
 #define PS5_ENABLE_UBO_CANDIDATE 1
+#define PS5_ENABLE_GEOMETRY_CANDIDATE 1
+#define PS5_ENABLE_TESSELLATION_CANDIDATE 1
 #define PS5_ENABLE_GLSL_430_CANDIDATE 1
 #define PS5_ENABLE_RENDER_TO_TEXTURE_CANDIDATE 1
 #define PS5_ENABLE_LAYERED_RENDER_TARGET_CANDIDATE 1
@@ -104,11 +108,13 @@ code = r'''
 #define PS5_MAX_CONSTANT_BUFFERS 13
 #define PS5_GEOMETRY_STORAGE_OFFSET 2048
 #define PS5_CONSTANT_DATA_OFFSET 2560
-#define PS5_DESCRIPTOR_STORAGE_BYTES (2560+2*PS5_MAX_CONSTANT_BUFFER_SIZE)
+#define PS5_DESCRIPTOR_STORAGE_BYTES (2560+4*PS5_MAX_CONSTANT_BUFFER_SIZE)
 #define PS5_FRAGMENT_UBO_OFFSET 512
 #define PS5_TEXTURE_DESCRIPTOR_BYTES 1536
 #define PS5_DIRECT_ALIGNMENT 16384
 #define PS5_GEOMETRY_CONSTANT_SLOT 2
+#define PS5_TESS_CTRL_CONSTANT_SLOT 3
+#define PS5_TESS_EVAL_CONSTANT_SLOT 4
 #define PS5_COMPUTE_STORAGE_SLOTS 16
 #define PS5_COMPUTE_CONSTANT_SLOTS 15
 #define PS5_COMPUTE_BUFFER_SLOTS 31
@@ -141,11 +147,13 @@ struct ps5_context {
     struct pipe_shader_buffer compute_buffers[31];
     struct pipe_shader_buffer fragment_buffers[16];
     struct pipe_shader_buffer geometry_buffers[16];
+    struct pipe_shader_buffer preraster_buffers[3][16];
+    bool preraster_bindings_invalid[3];
     bool fragment_bindings_invalid;
     bool geometry_bindings_invalid;
     struct ps5_shader *fs;
     struct ps5_shader *gs;
-    struct ps5_constant_state constants[3][13];
+    struct ps5_constant_state constants[5][13];
     struct pipe_resource *descriptor_storage[2];
     struct pipe_image_view compute_images[8];
     struct pipe_image_view fragment_images[8];
@@ -188,7 +196,7 @@ static void ps5_flush_gpu_data(const void *address, size_t size) { assert(addres
 static bool ps5_uses_merged_geometry_metadata(const struct ps5_context *c, const struct ps5_shader *s, const PsbcShaderMetadata *m) { return false; }
 static unsigned ps5_texture_count(const struct ps5_context *c, const struct ps5_shader *s, const PsbcShaderMetadata *m) { return s->nir->info.num_textures; }
 static unsigned ps5_constant_state_binding(const struct ps5_shader *s, unsigned i) { return i+!s->nir->info.first_ubo_is_default_ubo; }
-static size_t ps5_copied_constant_offset(unsigned slot) { return 2560+(slot==2 ? PS5_MAX_CONSTANT_BUFFER_SIZE : 0); }
+''' + source[source.index("static size_t\nps5_copied_constant_offset("):source.index("static unsigned\nps5_shader_storage_count(")] + r'''
 void u_upload_data_ref(struct u_upload_mgr *upload, unsigned minimum, unsigned size,
     unsigned alignment, const void *data, unsigned *offset, struct pipe_resource **buffer) {
     assert(upload && !minimum && alignment==16 && size<=64 && upload_resource);
@@ -678,7 +686,56 @@ static void texel_buffer_descriptor_contract(void) {
     resource.base.target=PIPE_TEXTURE_2D;
     assert(!ps5_image_buffer_descriptor(&image,(uintptr_t)data>>32,image_descriptor));
 }
+static void preraster_binding_contract(void) {
+    struct pipe_screen screen={.resource_destroy=destroy};
+    struct ps5_context c={.base={.screen=&screen}};
+    struct ps5_resource resource={.base={.screen=&screen,.target=PIPE_BUFFER,.width0=64},.size=64};
+    struct pipe_resource *data=&resource.base;
+    pipe_reference_init(&data->reference,1);
+    const mesa_shader_stage stages[]={MESA_SHADER_VERTEX,MESA_SHADER_TESS_CTRL,MESA_SHADER_TESS_EVAL};
+    struct pipe_shader_buffer binding={.buffer=data,.buffer_offset=16,.buffer_size=32};
+    unsigned drains=fragment_drains;
+    for (unsigned s=0;s<3;++s) {
+        ps5_set_shader_buffers(&c.base,stages[s],15,1,&binding,1);
+        assert(!c.preraster_bindings_invalid[stages[s]]);
+        assert(data->reference.count==(int)s+2);
+        for (unsigned other=0;other<3;++other)
+            assert(c.preraster_buffers[other][15].buffer==(other<=s ? data : NULL));
+        struct pipe_shader_buffer invalid=binding; invalid.buffer_size=64;
+        ps5_set_shader_buffers(&c.base,stages[s],15,1,&invalid,1);
+        assert(c.preraster_bindings_invalid[stages[s]]);
+        assert(c.preraster_buffers[stages[s]][15].buffer==data);
+    }
+    for (unsigned s=0;s<3;++s)
+        ps5_set_shader_buffers(&c.base,stages[s],0,16,NULL,0);
+    assert(data->reference.count==1);
+    fragment_drains=drains;
+    _Alignas(16) uint8_t bytes[PS5_DESCRIPTOR_STORAGE_BYTES]={0};
+    struct ps5_resource storage={.base={.screen=&screen},.data=bytes,.size=sizeof(bytes)};
+    c.descriptor_storage[0]=&storage.base;
+    const mesa_shader_stage uniform_stages[]={MESA_SHADER_GEOMETRY,MESA_SHADER_TESS_CTRL,MESA_SHADER_TESS_EVAL};
+    for (unsigned s=0;s<3;++s) {
+        uint32_t value=100+s;
+        struct pipe_constant_buffer cb={.buffer_size=sizeof(value),.user_buffer=&value};
+        ps5_set_constant_buffer(&c.base,uniform_stages[s],0,&cb);
+        assert(c.constants[s+2][0].valid && c.constants[s+2][0].copied);
+        for (unsigned other=0;other<=s;++other) {
+            uint32_t saved; memcpy(&saved,bytes+ps5_copied_constant_offset(other+2),sizeof(saved));
+            assert(saved==100+other);
+        }
+        struct pipe_constant_buffer bound={.buffer=data,.buffer_offset=16,.buffer_size=32};
+        ps5_set_constant_buffer(&c.base,uniform_stages[s],1,&bound);
+        assert(c.constants[s+2][1].buffer==data && c.constants[s+2][1].valid);
+        assert(data->reference.count==(int)s+2);
+    }
+    for (unsigned s=0;s<3;++s) {
+        ps5_set_constant_buffer(&c.base,uniform_stages[s],0,NULL);
+        ps5_set_constant_buffer(&c.base,uniform_stages[s],1,NULL);
+    }
+    assert(data->reference.count==1);
+}
 int main(void) {
+    preraster_binding_contract();
     atomic_handoff_contract();
     stale_cleanup_regression();
     fragment_contract();
@@ -1790,3 +1847,4 @@ print("PASS: R/RG X001/XY01 and identity views, arbitrary remap rejection, atomi
 print("PASS: RGBA16/RGBA8_UNORM real GFX10 encoding, canonical/staged CS/FS bindings, mip/array bounds; guarded base-only tiled RGBA8")
 print("PASS: Mesa atomic handoff CS/FS, SSBO counts 0/1/8 + bindings 0/7, alignment/offset state, refs, isolation, replacement/unbind")
 print("PASS: Mesa CS/FS zero-initialized 0-to-16-to-2-to-0 tracking, stale cleanup, reference counts and stage isolation")
+print("PASS: VS/TCS/TES storage isolation, invalid update preservation, GS/TCS/TES copied uniforms and UBO references")

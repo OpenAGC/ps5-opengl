@@ -58,6 +58,8 @@ _Static_assert(sizeof(nir_instr_type) == 1, "NIR enums must be packed");
 _Static_assert(sizeof(nir_intrinsic_op) == 4, "unexpected NIR intrinsic enum size");
 _Static_assert(offsetof(nir_intrinsic_instr, intrinsic) == 56,
                "PSBC/Mesa NIR layout mismatch");
+_Static_assert(MESA_SHADER_VERTEX == 0 && MESA_SHADER_TESS_CTRL == 1 &&
+               MESA_SHADER_TESS_EVAL == 2, "pre-raster buffer bank indices");
 _Static_assert(PIPE_FUNC_NEVER == 0 && PIPE_FUNC_LESS == 1 &&
                PIPE_FUNC_EQUAL == 2 && PIPE_FUNC_LEQUAL == 3 &&
                PIPE_FUNC_GREATER == 4 && PIPE_FUNC_NOTEQUAL == 5 &&
@@ -155,8 +157,10 @@ ps5_draw_batch_drain(void)
 #define PS5_MAX_CONSTANT_BUFFERS 15u
 #define PS5_DESCRIPTOR_STAGE_COUNT 2u
 #define PS5_TEXTURE_STAGE_COUNT 3u
-#define PS5_CONSTANT_STAGE_COUNT 3u
+#define PS5_CONSTANT_STAGE_COUNT 5u
 #define PS5_GEOMETRY_CONSTANT_SLOT 2u
+#define PS5_TESS_CTRL_CONSTANT_SLOT 3u
+#define PS5_TESS_EVAL_CONSTANT_SLOT 4u
 #define PS5_GEOMETRY_TEXTURE_SLOT 2u
 #define PS5_MAX_RENDER_TARGETS 8u
 #define PS5_TEXTURE_DESCRIPTOR_STRIDE 48u
@@ -291,6 +295,8 @@ struct ps5_context {
    struct pipe_shader_buffer compute_buffers[PS5_COMPUTE_BUFFER_SLOTS];
    struct pipe_shader_buffer fragment_buffers[PS5_COMPUTE_STORAGE_SLOTS];
    struct pipe_shader_buffer geometry_buffers[PS5_COMPUTE_STORAGE_SLOTS];
+   struct pipe_shader_buffer preraster_buffers[3][PS5_COMPUTE_STORAGE_SLOTS];
+   bool preraster_bindings_invalid[3];
    bool fragment_bindings_invalid;
    bool geometry_bindings_invalid;
    struct pipe_image_view compute_images[PS5_COMPUTE_IMAGE_SLOTS];
@@ -481,7 +487,7 @@ ps5_streamout_buffer_stream(unsigned stream_buffer_mask, unsigned buffer);
 #define PS5_FRAGMENT_UBO_OFFSET (PS5_COMPUTE_STORAGE_SLOTS * 16u + PS5_COMPUTE_IMAGE_SLOTS * 32u)
 #define PS5_FRAGMENT_TEXTURE_OFFSET (PS5_FRAGMENT_UBO_OFFSET + PS5_MAX_CONSTANT_BUFFERS * 16u)
 #define PS5_DESCRIPTOR_STORAGE_BYTES \
-   (PS5_CONSTANT_DATA_OFFSET + 2u * PS5_MAX_CONSTANT_BUFFER_SIZE)
+   (PS5_CONSTANT_DATA_OFFSET + 4u * PS5_MAX_CONSTANT_BUFFER_SIZE)
 #define PS5_MAX_TEXTURE_2D_SIZE PS5_MAX_RENDER_SIZE
 #define PS5_MAX_TEXTURE_CUBE_LEVELS 15u
 #define PS5_MAX_TEXTURE_CUBE_SIZE (1u << (PS5_MAX_TEXTURE_CUBE_LEVELS - 1u))
@@ -2503,8 +2509,8 @@ static size_t
 ps5_copied_constant_offset(unsigned state_slot)
 {
    return PS5_CONSTANT_DATA_OFFSET +
-          (state_slot == PS5_GEOMETRY_CONSTANT_SLOT
-              ? PS5_MAX_CONSTANT_BUFFER_SIZE : 0u);
+          (state_slot >= PS5_GEOMETRY_CONSTANT_SLOT
+              ? (state_slot - 1u) * PS5_MAX_CONSTANT_BUFFER_SIZE : 0u);
 }
 
 static unsigned
@@ -11884,6 +11890,12 @@ ps5_set_shader_buffers(struct pipe_context *base, mesa_shader_stage stage,
       invalid = &context->geometry_bindings_invalid;
       bound_buffers = context->geometry_buffers;
       break;
+   case MESA_SHADER_VERTEX:
+   case MESA_SHADER_TESS_CTRL:
+   case MESA_SHADER_TESS_EVAL:
+      invalid = &context->preraster_bindings_invalid[stage];
+      bound_buffers = context->preraster_buffers[stage];
+      break;
    default:
       return;
    }
@@ -12895,6 +12907,14 @@ ps5_set_constant_buffer(struct pipe_context *base, mesa_shader_stage shader,
       slot = PS5_GEOMETRY_CONSTANT_SLOT;
       descriptor_slot = 0;
       break;
+   case MESA_SHADER_TESS_CTRL:
+   case MESA_SHADER_TESS_EVAL:
+      if (!PS5_ENABLE_TESSELLATION_CANDIDATE)
+         return;
+      slot = shader == MESA_SHADER_TESS_CTRL
+         ? PS5_TESS_CTRL_CONSTANT_SLOT : PS5_TESS_EVAL_CONSTANT_SLOT;
+      descriptor_slot = 0;
+      break;
    default:
       return;
    }
@@ -13186,6 +13206,9 @@ ps5_context_destroy(struct pipe_context *base)
       pipe_resource_reference(&context->fragment_buffers[index].buffer, NULL);
    for (index = 0; index < PS5_COMPUTE_STORAGE_SLOTS; ++index)
       pipe_resource_reference(&context->geometry_buffers[index].buffer, NULL);
+   for (unsigned stage = 0; stage < 3; ++stage)
+      for (index = 0; index < PS5_COMPUTE_STORAGE_SLOTS; ++index)
+         pipe_resource_reference(&context->preraster_buffers[stage][index].buffer, NULL);
    for (index = 0; index < PS5_COMPUTE_IMAGE_SLOTS; ++index)
       pipe_resource_reference(&context->compute_images[index].resource, NULL);
    for (index = 0; index < PS5_COMPUTE_IMAGE_SLOTS; ++index)
