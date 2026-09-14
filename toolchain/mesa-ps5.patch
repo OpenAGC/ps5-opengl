@@ -559,9 +559,32 @@ diff --git a/src/gallium/auxiliary/util/u_vbuf.c b/src/gallium/auxiliary/util/u_
 diff --git a/src/compiler/glsl/gl_nir_lower_xfb_varying.c b/src/compiler/glsl/gl_nir_lower_xfb_varying.c
 --- a/src/compiler/glsl/gl_nir_lower_xfb_varying.c
 +++ b/src/compiler/glsl/gl_nir_lower_xfb_varying.c
+@@ -95,1 +95,1 @@
+-      *type = glsl_without_array(*type);
++      *type = glsl_get_array_element(*type);
 @@ -101,1 +101,1 @@
 -      assert(*type != NULL && glsl_type_is_struct(*type) && field != NULL);
 +      assert(*type != NULL && glsl_type_is_struct_or_ifc(*type) && field != NULL);
+@@ -119,2 +119,19 @@
+       *type = toplevel_var->type;
++      if (toplevel_var->data.from_named_ifc_block) {
++         /* Named-block lowering already made the member a variable. Keep
++          * block array indices, but remove the now-redundant member name.
++          */
++         const char *member = strchr(name, '.');
++         size_t len = strlen(toplevel_var->name);
++         if (!member || strncmp(member + 1, toplevel_var->name, len) ||
++             (member[1 + len] && member[1 + len] != '[' && member[1 + len] != '.'))
++            return false;
++         char *suffix = ralloc_asprintf(b->shader, "%.*s%s",
++                                       (int)(member - name), name, member + 1 + len);
++         if (!suffix)
++            return false;
++         bool result = get_deref(b, suffix, NULL, deref, type);
++         ralloc_free(suffix);
++         return result;
++      }
+       return get_deref(b, name, NULL, deref, type);
 diff --git a/src/util/os_file.c b/src/util/os_file.c
 --- a/src/util/os_file.c
 +++ b/src/util/os_file.c

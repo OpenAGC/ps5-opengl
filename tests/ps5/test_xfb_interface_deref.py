@@ -35,6 +35,27 @@ int main(void) {
    assert(type==glsl_vec4_type() && deref->deref_type==nir_deref_type_array);
    assert(nir_src_as_uint(deref->arr.index)==index);
  }
+ for(unsigned outer=0;outer<3;++outer) for(unsigned index=0;index<16;++index) {
+   const struct glsl_type *member=field.type;
+   nir_variable *var=nir_variable_create(b.shader,nir_var_shader_out,
+      outer ? glsl_array_type(member,3,0) : member,"attrib");
+   var->data.from_named_ifc_block=1;
+   var->interface_type=outer ? glsl_array_type(types[1],3,0) : types[1];
+   char name[64];
+   if(outer) snprintf(name,sizeof(name),"StageData[%u].attrib[%u]",outer,index);
+   else snprintf(name,sizeof(name),"StageData.attrib[%u]",index);
+   nir_deref_instr *deref=NULL; const struct glsl_type *type=NULL;
+   assert(get_deref(&b,name,var,&deref,&type));
+   assert(type==glsl_vec4_type() && deref->deref_type==nir_deref_type_array);
+   assert(nir_src_as_uint(deref->arr.index)==index);
+   nir_deref_instr *parent=nir_src_as_deref(deref->parent);
+   if(outer) {
+      assert(parent->deref_type==nir_deref_type_array);
+      assert(nir_src_as_uint(parent->arr.index)==outer);
+      parent=nir_src_as_deref(parent->parent);
+   }
+   assert(parent->deref_type==nir_deref_type_var && parent->var==var);
+ }
  ralloc_free(b.shader); psbc_shutdown();
 }
 '''
@@ -49,4 +70,4 @@ with tempfile.TemporaryDirectory() as directory:
                     '-x','c','-c','-o',obj,'-'], input=code,text=True,check=True)
     subprocess.run(['g++','-o',exe,obj,str(psbc/'libpsbc.a'),'-pthread','-lm'],check=True)
     subprocess.run([exe],check=True)
-print('PASS: struct and interface-block XFB member arrays, all 16 indices')
+print('PASS: struct, interface and lowered interface/array XFB members, all 16 indices')
