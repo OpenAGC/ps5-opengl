@@ -13788,6 +13788,8 @@ ps5_screen_create(void)
    caps->vs_instanceid = true;
    caps->start_instance = PS5_ENABLE_GLSL_420_CANDIDATE;
    caps->vertex_element_instance_divisor = true;
+   /* Vertex fetches use DWORD loads; let u_vbuf align byte-packed inputs. */
+   caps->vertex_input_alignment = PIPE_VERTEX_INPUT_ALIGNMENT_4BYTE;
    caps->texture_swizzle = PS5_ENABLE_TEXTURE_SWIZZLE_CANDIDATE;
    caps->fragment_shader_texture_lod = PS5_ENABLE_SHADER_TEXTURE_LOD_CANDIDATE;
    caps->max_texture_lod_bias =

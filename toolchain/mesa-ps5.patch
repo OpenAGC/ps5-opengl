@@ -552,6 +552,10 @@ diff --git a/src/gallium/auxiliary/util/u_vbuf.c b/src/gallium/auxiliary/util/u_
 +   { PIPE_FORMAT_R16G16B16A16_SINT, PIPE_FORMAT_R32G32B32A32_SINT },
 +   { PIPE_FORMAT_R16G16B16A16_UINT, PIPE_FORMAT_R32G32B32A32_UINT },
     { PIPE_FORMAT_R32_FIXED,            PIPE_FORMAT_R32_FLOAT },
+@@ -816,2 +830,3 @@
+             struct translate_element *te = &key[type].element[elem_index[type][i]];
++            mgr->fallback_velems.velems[i] = mgr->ve->ve[i];
+             mgr->fallback_velems.velems[i].instance_divisor = mgr->ve->ve[i].instance_divisor;
 diff --git a/src/util/os_file.c b/src/util/os_file.c
 --- a/src/util/os_file.c
 +++ b/src/util/os_file.c
