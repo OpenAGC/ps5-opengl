@@ -3,6 +3,20 @@ PS5 modifications by BlackBearReloaded, 2026.
 Upstream copyrights and per-file licenses remain unchanged.
 See THIRD_PARTY_NOTICES.md for source and license references.
 
+diff --git a/src/gallium/auxiliary/translate/translate.c b/src/gallium/auxiliary/translate/translate.c
+--- a/src/gallium/auxiliary/translate/translate.c
++++ b/src/gallium/auxiliary/translate/translate.c
+@@ -38,7 +38,9 @@ struct translate *translate_create( const struct translate_key *key )
+ {
+    struct translate *translate = NULL;
+ 
+-#if DETECT_ARCH_X86 || DETECT_ARCH_X86_64
++/* PS5 allocations for this CPU helper are non-executable. Use the existing
++ * generic converter rather than selecting generated SSE code. */
++#if (DETECT_ARCH_X86 || DETECT_ARCH_X86_64) && !defined(__PROSPERO__)
+    translate = translate_sse2_create( key );
+    if (translate)
+       return translate;
 diff --git a/src/mesa/state_tracker/st_atom_storagebuf.c b/src/mesa/state_tracker/st_atom_storagebuf.c
 --- a/src/mesa/state_tracker/st_atom_storagebuf.c
 +++ b/src/mesa/state_tracker/st_atom_storagebuf.c
