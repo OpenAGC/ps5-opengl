@@ -79,6 +79,7 @@ def encode_arguments(configuration):
         f"--deqp-base-seed={seed}",
         *extra,
         "--deqp-terminate-on-device-lost=disable",
+        "--deqp-terminate-on-fail=enable",
         "--deqp-watchdog=disable",
         "--deqp-crashhandler=disable",
         "--deqp-log-images=disable",

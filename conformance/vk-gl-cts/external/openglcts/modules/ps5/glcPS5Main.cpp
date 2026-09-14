@@ -32,6 +32,7 @@ struct LibcMallocManagedSize {
 extern "C" void malloc_stats_fast(LibcMallocManagedSize *stats);
 extern "C" void psbc_glsl_type_cache_print_stats(unsigned iteration);
 extern "C" void ps5_opengl_heap_stats_print(unsigned iteration);
+extern "C" void ps5_opengl_heap_snapshot(const char *phase, unsigned iteration);
 
 tcu::Platform *createPlatform(void);
 
@@ -198,10 +199,21 @@ int main(void) {
     tcu::App app(*platform, archive, log, commandLine);
 
     unsigned iteration = 0;
-    while (app.iterate())
+    int completedCases = -1;
+    ps5_opengl_heap_snapshot("cts-start", 0);
+    while (app.iterate()) {
       printHeapStats(++iteration);
+      const tcu::TestRunStatus progress = app.getResult();
+      if (progress.numExecuted != completedCases) {
+        completedCases = progress.numExecuted;
+        ps5_opengl_heap_snapshot("cts-progress", completedCases);
+        writeStatus("running", &progress);
+        std::fflush(stdout);
+      }
+    }
 
     const tcu::TestRunStatus result = app.getResult();
+    ps5_opengl_heap_snapshot("cts-finished", result.numExecuted);
     // Match the upstream tcuMain acceptance rule. The GL must-pass list also
     // contains optional-extension cases, for which NotSupported is valid.
     const bool passed = result.isComplete && result.numExecuted > 0 &&

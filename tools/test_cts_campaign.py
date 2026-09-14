@@ -67,6 +67,7 @@ class CampaignTests(unittest.TestCase):
     def test_every_profile_selects_its_surface_explicitly(self):
         for config, surface in enumerate(("pbuffer", "pbuffer", "fbo", "fbo")):
             args = PLANNER.PREPARE.encode_arguments(config).decode().splitlines()
+            self.assertIn("--deqp-terminate-on-fail=enable", args)
             self.assertEqual([arg for arg in args if arg.startswith("--deqp-surface-type=")],
                              [f"--deqp-surface-type={surface}"])
         root = Path(__file__).resolve().parent.parent
