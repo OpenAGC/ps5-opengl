@@ -532,6 +532,26 @@ diff --git a/src/compiler/nir/nir_intrinsics.py b/src/compiler/nir/nir_intrinsic
  # Etnaviv-specific load/glboal intrinsics. They take a 32-bit base address and
  # a 32-bit offset, which doesn't need to be an immediate.
  # src[] = { value, address, 32-bit offset }.
+diff --git a/src/gallium/auxiliary/util/u_vbuf.c b/src/gallium/auxiliary/util/u_vbuf.c
+--- a/src/gallium/auxiliary/util/u_vbuf.c
++++ b/src/gallium/auxiliary/util/u_vbuf.c
+@@ -213,2 +213,16 @@
+ } vbuf_format_fallbacks[] = {
++   { PIPE_FORMAT_R8_SINT, PIPE_FORMAT_R32_SINT },
++   { PIPE_FORMAT_R8_UINT, PIPE_FORMAT_R32_UINT },
++   { PIPE_FORMAT_R8G8_SINT, PIPE_FORMAT_R32G32_SINT },
++   { PIPE_FORMAT_R8G8_UINT, PIPE_FORMAT_R32G32_UINT },
++   { PIPE_FORMAT_R8G8B8_SINT, PIPE_FORMAT_R32G32B32_SINT },
++   { PIPE_FORMAT_R8G8B8_UINT, PIPE_FORMAT_R32G32B32_UINT },
++   { PIPE_FORMAT_R8G8B8A8_SINT, PIPE_FORMAT_R32G32B32A32_SINT },
++   { PIPE_FORMAT_R8G8B8A8_UINT, PIPE_FORMAT_R32G32B32A32_UINT },
++   { PIPE_FORMAT_R16_SINT, PIPE_FORMAT_R32_SINT },
++   { PIPE_FORMAT_R16_UINT, PIPE_FORMAT_R32_UINT },
++   { PIPE_FORMAT_R16G16_SINT, PIPE_FORMAT_R32G32_SINT },
++   { PIPE_FORMAT_R16G16_UINT, PIPE_FORMAT_R32G32_UINT },
++   { PIPE_FORMAT_R16G16B16A16_SINT, PIPE_FORMAT_R32G32B32A32_SINT },
++   { PIPE_FORMAT_R16G16B16A16_UINT, PIPE_FORMAT_R32G32B32A32_UINT },
+    { PIPE_FORMAT_R32_FIXED,            PIPE_FORMAT_R32_FLOAT },
 diff --git a/src/util/os_file.c b/src/util/os_file.c
 --- a/src/util/os_file.c
 +++ b/src/util/os_file.c
