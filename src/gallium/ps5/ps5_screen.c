@@ -13117,7 +13117,8 @@ ps5_delete_shader_state(struct pipe_context *base, void *state)
       ps5_release_geometry_pipeline(context);
    if (context->tessellation_vs == shader ||
        context->tessellation_tcs == shader ||
-       context->tessellation_tes == shader)
+       context->tessellation_tes == shader ||
+       context->tessellation_gs == shader)
       ps5_release_tessellation_pipeline(context);
    while ((variant = shader->variants)) {
       shader->variants = variant->next;
