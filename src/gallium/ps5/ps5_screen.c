@@ -11372,6 +11372,16 @@ ps5_select_tessellation_pipeline(struct ps5_context *context,
    result = psbc_compile_nir_tessellation_pipeline(
       context->vs->nir, context->tcs->nir, tes_nir, gs_nir,
       &options, &output);
+#ifndef PS5_RUNTIME_QUIET
+   if (result == PSBC_RESULT_INVALID_ARGUMENT) {
+      const nir_shader *inputs[] = {context->vs->nir, context->tcs->nir, tes_nir, gs_nir};
+      for (unsigned stage = 0; stage < 4; ++stage)
+         if (inputs[stage]) {
+            printf("[ps5-gallium] rejected-tessellation-input stage=%u\n", stage);
+            nir_print_shader((nir_shader *)inputs[stage], stdout);
+         }
+   }
+#endif
    ralloc_free(final_carrier);
    printf("[ps5-gallium] compile-tessellation result=%d hs=%zu final=%zu gs=%u patches=%u\n",
           result, output.hs.machine_code_size, output.tes.machine_code_size,
