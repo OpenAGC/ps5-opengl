@@ -11409,10 +11409,10 @@ ps5_select_tessellation_pipeline(struct ps5_context *context,
       inputs[0], inputs[1], inputs[2], inputs[3],
       &options, &output);
 #ifndef PS5_RUNTIME_QUIET
-   if (result == PSBC_RESULT_INVALID_ARGUMENT) {
+   if (result == PSBC_RESULT_INVALID_ARGUMENT || result == PSBC_RESULT_OK) {
       for (unsigned stage = 0; stage < 4; ++stage)
          if (inputs[stage]) {
-            printf("[ps5-gallium] rejected-tessellation-input stage=%u\n", stage);
+            printf("[ps5-gallium] tessellation-input result=%d stage=%u\n", result, stage);
             nir_print_shader((nir_shader *)inputs[stage], stdout);
          }
    }
