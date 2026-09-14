@@ -309,6 +309,49 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
             inputs[0],inputs[1],inputs[2],gs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
         expect_empty(&out); ralloc_free(gs);
     }
+    /* Each linked stage reads its own UBO and uses the returned SSBO atomic
+     * value. This tests actual resource lowering, not resource masks alone. */
+    for (unsigned tested=0; tested<4; ++tested) {
+        nir_shader *resource_gs=tested==3 ? build(MESA_SHADER_GEOMETRY,false,ci) : NULL;
+        nir_shader **resource_input=tested==3 ? &resource_gs : &inputs[tested];
+        nir_shader *saved=*resource_input;
+        *resource_input=nir_shader_clone(NULL,saved);
+        nir_builder b=nir_builder_at(nir_before_cf_list(
+            &nir_shader_get_entrypoint(*resource_input)->body));
+        nir_def *value=nir_load_ubo(&b,1,32,nir_imm_int(&b,0),nir_imm_int(&b,0),
+            .align_mul=4,.range=4);
+        nir_def *old=nir_ssbo_atomic(&b,32,nir_imm_int(&b,0),nir_imm_int(&b,0),value,
+            .atomic_op=nir_atomic_op_iadd);
+        nir_store_ssbo(&b,old,nir_imm_int(&b,0),nir_imm_int(&b,4),
+            .write_mask=1,.align_mul=4);
+        (*resource_input)->info.num_ubos=1;
+        (*resource_input)->info.num_ssbos=1;
+        nir_validate_shader(*resource_input,"linked buffer input");
+        PsbcTessellationCompileOptions resource_options=options;
+        resource_options.vertex.gallium_buffer_arrays=true;
+        resource_options.vertex.descriptor_binding_count=2;
+        resource_options.vertex.descriptor_bindings[0]=(PsbcDescriptorBinding){
+            .binding=4*tested+1,.type=PSBC_DESCRIPTOR_UNIFORM_BUFFER,
+            .array_size=1,.offset=0,.stride=16};
+        resource_options.vertex.descriptor_bindings[1]=(PsbcDescriptorBinding){
+            .binding=4*tested+2,.type=PSBC_DESCRIPTOR_STORAGE_BUFFER,
+            .array_size=1,.offset=16,.stride=16};
+        PsbcResult result=psbc_compile_nir_tessellation_pipeline(
+            inputs[0],inputs[1],inputs[2],resource_gs,&resource_options,&out);
+        printf("linked buffers stage=%u result=%d\n",tested,result);
+        assert(result==PSBC_RESULT_OK);
+        assert(out.hs.metadata.descriptor_set0_valid && out.tes.metadata.descriptor_set0_valid);
+        assert(out.hs.metadata.descriptor_binding_count==2 && out.tes.metadata.descriptor_binding_count==2);
+        psbc_free_tessellation_output(&out); expect_empty(&out);
+        resource_options.vertex.descriptor_bindings[1].binding=4*tested+1;
+        assert(checked_compile(inputs,&resource_options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+        expect_empty(&out);
+        resource_options.vertex.descriptor_binding_count=PSBC_MAX_DESCRIPTOR_BINDINGS+1;
+        assert(checked_compile(inputs,&resource_options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+        expect_empty(&out);
+        ralloc_free(*resource_input); *resource_input=saved;
+        ralloc_free(resource_gs);
+    }
     mesa_shader_stage stage=inputs[0]->info.stage;
     inputs[0]->info.stage=MESA_SHADER_FRAGMENT;
     assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_UNSUPPORTED_STAGE);
