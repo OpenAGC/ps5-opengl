@@ -86,6 +86,7 @@ code = r'''
 #define PS5_ENABLE_RENDER_TO_TEXTURE_CANDIDATE 1
 #define PS5_ENABLE_LAYERED_RENDER_TARGET_CANDIDATE 1
 #define PS5_ENABLE_TEXTURE_CUBE_ARRAY_CANDIDATE 1
+#define PS5_ENABLE_TEXTURE_RECTANGLE_CANDIDATE 1
 #define PS5_ENABLE_DYNAMIC_COLOR_TARGET_CANDIDATE 1
 #define PS5_ENABLE_CORE_RENDER_FORMATS_CANDIDATE 1
 #define PS5_ENABLE_CORE_TEXTURE_FORMATS_CANDIDATE 1
@@ -1102,10 +1103,14 @@ int main(void) {
             ps5_set_shader_images(&context.base,which,0,0,1,NULL);
             assert(dimensional.base.reference.count==1);
         }
-        /* Mesa attaches a render-target hint even to dimensions for which
-         * resource creation deliberately allocates no render staging. */
+        /* Rectangle render targets now require staging; 1D hints do not. */
         if (target != 2) {
             dimensional.base.bind |= PIPE_BIND_RENDER_TARGET;
+            if (target == 3) {
+                assert(ps5_resource_sampled_image_descriptor(&dimensional.base,0,0,descriptor)<0);
+                dimensional.render_staging_offset=65536;
+                dimensional.render_staging_size=65536;
+            }
             assert(!ps5_resource_sampled_image_descriptor(&dimensional.base,0,0,descriptor));
         }
         struct ps5_resource bad=dimensional;

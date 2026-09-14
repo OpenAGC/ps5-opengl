@@ -1309,6 +1309,8 @@ static bool
 ps5_color_render_target(enum pipe_texture_target target)
 {
    return target == PIPE_TEXTURE_2D ||
+          (PS5_ENABLE_TEXTURE_RECTANGLE_CANDIDATE &&
+           target == PIPE_TEXTURE_RECT) ||
           (PS5_ENABLE_LAYERED_RENDER_TARGET_CANDIDATE &&
            (target == PIPE_TEXTURE_2D_ARRAY ||
             ps5_cube_texture_target(target) ||
@@ -1322,6 +1324,8 @@ ps5_depth_render_target(enum pipe_texture_target target)
            (target == PIPE_TEXTURE_1D ||
             target == PIPE_TEXTURE_1D_ARRAY)) ||
           target == PIPE_TEXTURE_2D ||
+          (PS5_ENABLE_TEXTURE_RECTANGLE_CANDIDATE &&
+           target == PIPE_TEXTURE_RECT) ||
           (PS5_ENABLE_LAYERED_RENDER_TARGET_CANDIDATE &&
            (target == PIPE_TEXTURE_2D_ARRAY ||
             ps5_cube_texture_target(target) ||
@@ -1387,7 +1391,7 @@ ps5_depth_staging_required(const struct pipe_resource *resource)
    return PS5_ENABLE_RENDER_TO_TEXTURE_CANDIDATE && resource &&
           (resource->format == PIPE_FORMAT_Z32_FLOAT ||
            resource->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT) &&
-          resource->last_level > 0 &&
+          (resource->last_level > 0 || resource->target == PIPE_TEXTURE_RECT) &&
           (resource->bind & PIPE_BIND_DEPTH_STENCIL) &&
           ps5_depth_render_target(resource->target);
 }
@@ -9772,7 +9776,9 @@ ps5_set_framebuffer_state(struct pipe_context *base,
 
          colors_valid = colors_valid &&
             surface->level <= surface->texture->last_level &&
-            ((surface->texture->target == PIPE_TEXTURE_2D &&
+            (((surface->texture->target == PIPE_TEXTURE_2D ||
+               (PS5_ENABLE_TEXTURE_RECTANGLE_CANDIDATE &&
+                surface->texture->target == PIPE_TEXTURE_RECT)) &&
               surface->first_layer == 0 && single_layer) ||
              (PS5_ENABLE_LAYERED_RENDER_TARGET_CANDIDATE &&
               (surface->texture->target == PIPE_TEXTURE_2D_ARRAY ||
