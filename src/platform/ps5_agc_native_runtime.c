@@ -809,6 +809,17 @@ static uint32_t *set_linkage_uc_state(const agc_api_t *agc,
         };
     }
     if (runtime_hs_package) {
+        /* Mesa si_emit_vgt_flush: reset ring pointers before rewriting VGT
+         * UCONFIG state, even after the previous draw has retired. */
+        static const uint32_t reset[] = {
+            UINT32_C(0xc0004600), UINT32_C(0x0000040f), /* VS_PARTIAL_FLUSH */
+            UINT32_C(0xc0004600), UINT32_C(0x00000024), /* VGT_FLUSH */
+        };
+        if (command->up < command->bottom || command->up > command->down ||
+            command->down > command->top || command->down - command->up < 4)
+            return NULL;
+        memcpy(command->up, reset, sizeof(reset));
+        command->up += 4;
         uintptr_t factor = (uintptr_t)(memory + WORK_BYTES +
                                        TESS_OFFCHIP_BYTES);
         uc[count++] = (agc_register_t){0x024e, 0,
@@ -2302,7 +2313,8 @@ static int build_frame_slot_command(const agc_api_t *agc, int video_handle,
     agc->wait_rendering(&command.up, agc->wait_size(), 0,
                         (uint32_t)video_handle, (int)buffer_index);
     agc->set_cx(&command, cx, cx_count);
-    set_linkage_uc_state(agc, &command, shared_memory);
+    if (!set_linkage_uc_state(agc, &command, shared_memory))
+        return -1;
     agc->set_sh(&command, sh, sh_count);
 
     memset(vertex_user_data, 0, sizeof(vertex_user_data));
@@ -3243,7 +3255,8 @@ int main(void)
 #if defined(AGC_BLEND_VARIANT)
     agc.set_cx(&command, memory + 0x4700, 1);
 #endif
-    set_linkage_uc_state(&agc, &command, memory);
+    if (!set_linkage_uc_state(&agc, &command, memory))
+        goto receipt;
     agc.set_sh(&command, sh, sh_count);
 #ifdef AGC_RUNTIME_PACKAGES
     if (runtime_hs_package) {
