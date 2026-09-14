@@ -2,7 +2,7 @@
 # PS5 OpenGL - OpenGL implementation for PlayStation 5.
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
-"""Check actual runtime ring-reset ordering, non-tessellation path and bounds."""
+"""Check ring capacity, reset ordering, ordinary draws and command bounds."""
 import subprocess
 import tempfile
 from pathlib import Path
@@ -11,6 +11,8 @@ root = Path(__file__).resolve().parents[2]
 source = (root / "src/platform/ps5_agc_native_runtime.c").read_text()
 start = source.index("static uint32_t *set_linkage_uc_state(")
 function = source[start:source.index("\n}\n", start) + 3]
+ring_defines = "\n".join(line for line in source.splitlines()
+                         if line.startswith("#define TESS_"))
 code = r'''
 #include <assert.h>
 #include <stdint.h>
@@ -21,9 +23,7 @@ typedef struct { uint32_t *(*set_uc)(void *, const void *, uint32_t); } agc_api_
 static int runtime_ngg_ge_pc_alloc_valid, runtime_hs_package;
 static uint32_t runtime_ngg_ge_pc_alloc;
 #define WORK_BYTES 0x10000u
-#define TESS_OFFCHIP_WORKGROUPS 160u
-#define TESS_OFFCHIP_BYTES (TESS_OFFCHIP_WORKGROUPS * 32768u)
-#define TESS_FACTOR_BYTES 0x4000u
+''' + ring_defines + r'''
 static unsigned calls;
 static uint32_t *set_uc(void *ptr, const void *regs, uint32_t count) {
     agc_command_buffer_t *c = ptr;
@@ -40,6 +40,11 @@ static uint32_t *set_uc(void *ptr, const void *regs, uint32_t count) {
 ''' + function + r'''
 int main(void) {
     static uint8_t memory[WORK_BYTES + TESS_OFFCHIP_BYTES + TESS_FACTOR_BYTES];
+    /* The native SPIR-V receipt used slot 166 despite 160 requested slots.
+     * The full architectural slot range must precede the factor/code region. */
+    assert(167u * 32768u <= TESS_OFFCHIP_BYTES);
+    assert(1024u * 32768u <= TESS_OFFCHIP_BYTES);
+    assert(TESS_OFFCHIP_BYTES > TESS_OFFCHIP_WORKGROUPS * 32768u);
     uint32_t words[5];
     agc_api_t api = {set_uc};
     for (unsigned tess=0;tess<2;++tess) {
@@ -66,4 +71,4 @@ with tempfile.TemporaryDirectory() as tmp:
                     "-fsanitize=address,undefined", "-x", "c", "-o", executable, "-"],
                    input=code, text=True, check=True)
     subprocess.run([executable], check=True)
-print("PASS: tessellation ring reset precedes UCONFIG writes; bounds and ordinary draws preserved")
+print("PASS: driver slot 166/full slot range backed; reset ordering, command bounds and ordinary draws preserved")
