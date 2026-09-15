@@ -1040,7 +1040,8 @@ static struct ps5_fragment_exports
 ps5_fragment_exports_for_framebuffer(const struct pipe_framebuffer_state *fb)
 {
    struct ps5_fragment_exports exports = {.formats = UINT32_C(0x99999999)};
-   exports.ignore_sample_mask = fb->samples <= 1;
+   /* Zero means non-multisample; a one-sample MS texture still uses the mask. */
+   exports.ignore_sample_mask = fb->samples == 0;
 
    for (unsigned i = 0; i < fb->nr_cbufs; ++i) {
       enum pipe_format format = fb->cbufs[i].format;

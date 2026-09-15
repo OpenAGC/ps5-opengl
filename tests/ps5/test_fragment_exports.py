@@ -119,7 +119,7 @@ int main(void) {
             }
         assert(found); psbc_free_output(&out); ralloc_free(b.shader);
     }
-    puts("PASS sample-mask export: removed for single-sample, preserved for multisample");
+    puts("PASS sample-mask export: removed for non-multisample, preserved for multisample");
     static const struct { enum pipe_format format; unsigned export, int8, int10; } cases[] = {
         {PIPE_FORMAT_R8G8B8A8_UNORM, 4, 0, 0},
         {PIPE_FORMAT_R8G8B8A8_SRGB, 4, 0, 0},
@@ -138,6 +138,11 @@ int main(void) {
     };
     struct pipe_resource target = {0};
     struct pipe_framebuffer_state fb = {.nr_cbufs = 1};
+    for (unsigned samples=0;samples<=4;++samples) {
+        fb.samples=samples;
+        assert(ps5_fragment_exports_for_framebuffer(&fb).ignore_sample_mask == (samples==0));
+    }
+    fb.samples=0;
     fb.cbufs[0].texture = &target;
     psbc_init();
     compile_legacy_clear(false, 1, 4, 0);
