@@ -222,6 +222,53 @@ static void expect_empty(const PsbcTessellationOutput* out) {
 static int type_size_vec4(const struct glsl_type* type,bool bindless) {
     return glsl_count_attribute_slots(type,false);
 }
+static void wide_io_tests(const struct radv_compiler_info *ci) {
+    nir_shader *inputs[] = {build(MESA_SHADER_VERTEX,false,ci),
+                           build(MESA_SHADER_TESS_CTRL,false,ci),
+                           build(MESA_SHADER_TESS_EVAL,false,ci)};
+    for (unsigned stage=0;stage<3;++stage) {
+        nir_builder b=nir_builder_at(nir_before_impl(nir_shader_get_entrypoint(inputs[stage])));
+        for (unsigned slot=0;slot<31;++slot) {
+            nir_def *value;
+            if (!stage) {
+                value=nir_load_ssbo(&b,4,32,nir_imm_int(&b,0),nir_imm_int(&b,slot*16),
+                                    .align_mul=16);
+                inputs[stage]->info.num_ssbos=1;
+            } else {
+                nir_variable *in=varying(&b,nir_var_shader_in,
+                    glsl_array_type(glsl_vec4_type(),3,0),VARYING_SLOT_VAR0+slot,false);
+                value=nir_load_deref(&b,element(&b,in,stage==1 ? nir_load_invocation_id(&b)
+                                                                      : nir_imm_int(&b,0)));
+            }
+            nir_variable *out=varying(&b,nir_var_shader_out,stage==1 ?
+                glsl_array_type(glsl_vec4_type(),3,0) : glsl_vec4_type(),VARYING_SLOT_VAR0+slot,false);
+            if (stage==1)
+                nir_store_deref(&b,element(&b,out,nir_load_invocation_id(&b)),value,15);
+            else
+                nir_store_var(&b,out,value,15);
+        }
+        nir_shader_gather_info(inputs[stage],nir_shader_get_entrypoint(inputs[stage]));
+        nir_validate_shader(inputs[stage],"128-component stage IO");
+    }
+    PsbcTessellationCompileOptions options={
+        .input_patch_vertices=3,.offchip_workgroup_capacity_dwords=8192,.address32_hi=2
+    };
+    options.vertex.gallium_buffer_arrays=true;
+    options.vertex.vertex_attribute_count=1;
+    options.vertex.vertex_attributes[0]=(PsbcVertexAttribute){
+        .location=0,.binding=0,.format=PSBC_VERTEX_FORMAT_R32G32B32_FLOAT,.stride=12,.alignment=4};
+    options.vertex.descriptor_binding_count=1;
+    options.vertex.descriptor_bindings[0]=(PsbcDescriptorBinding){
+        .binding=2,.type=PSBC_DESCRIPTOR_STORAGE_BUFFER,.array_size=1,.offset=0,.stride=16};
+    PsbcTessellationOutput out={0};
+    assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_OK);
+    assert(out.runtime.valid && out.runtime.num_patches && out.runtime.lds_bytes<=65536);
+    printf("PASS 128-component linked IO: patches=%u LDS=%u HS=%zu TES=%zu\n",
+           out.runtime.num_patches,out.runtime.lds_bytes,out.hs.machine_code_size,out.tes.machine_code_size);
+    psbc_free_tessellation_output(&out);
+    for(unsigned i=0;i<3;++i) ralloc_free(inputs[i]);
+}
+
 static void api_tests(const struct radv_compiler_info* ci,bool cross,
                       PsbcTessellationOutput* reference) {
     nir_shader* inputs[]={build(MESA_SHADER_VERTEX,cross,ci),
@@ -640,6 +687,7 @@ int main(int argc,char **argv) {
     ci.key.family=ci.debug.family=CHIP_NAVI21;
     ci.key.ge_wave_size=64; ci.key.ps_wave_size=32; ci.key.use_ngg=true;
     ci.hw.address32_hi=2; radv_get_nir_options(&ci);
+    wide_io_tests(&ci);
     PsbcTessellationOutput reference={0};
     api_tests(&ci,cross,&reference);
     struct radv_graphics_state_key gfx={0}; gfx.ts.patch_control_points=3;

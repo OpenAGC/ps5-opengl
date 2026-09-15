@@ -14039,7 +14039,7 @@ ps5_screen_create(void)
    vs_caps->max_tex_indirections = 16;
    vs_caps->max_control_flow_depth = 32;
    vs_caps->max_inputs = 16;
-   vs_caps->max_outputs = 16;
+   vs_caps->max_outputs = 32;
    vs_caps->max_const_buffer0_size =
       PS5_MAX_DEFAULT_CONSTANT_BUFFER_SIZE;
    vs_caps->max_const_buffers =
@@ -14063,8 +14063,8 @@ ps5_screen_create(void)
    if (PS5_ENABLE_TESSELLATION_CANDIDATE) {
       *tcs_caps = *vs_caps;
       *tes_caps = *vs_caps;
-      tcs_caps->max_inputs = tcs_caps->max_outputs = 16;
-      tes_caps->max_inputs = tes_caps->max_outputs = 16;
+      tcs_caps->max_inputs = tcs_caps->max_outputs = 32;
+      tes_caps->max_inputs = tes_caps->max_outputs = 32;
       tcs_caps->max_texture_samplers = tcs_caps->max_sampler_views = PS5_MAX_TEXTURE_UNITS;
       tes_caps->max_texture_samplers = tes_caps->max_sampler_views = PS5_MAX_TEXTURE_UNITS;
       /* Mesa's UBO capability is all-stage: fewer than 15 here would also

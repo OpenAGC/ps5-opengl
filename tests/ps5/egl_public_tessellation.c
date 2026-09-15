@@ -159,6 +159,80 @@ done:
    return passed;
 }
 
+/* Keep every lane live with distinct SSBO data, and test a deliberate bad
+ * lane as well as the all-correct case. No constant/uniform-only varyings. */
+static int
+wide_io(void)
+{
+   const GLenum limits[] = {GL_MAX_TESS_CONTROL_INPUT_COMPONENTS,
+      GL_MAX_TESS_CONTROL_OUTPUT_COMPONENTS, GL_MAX_TESS_EVALUATION_INPUT_COMPONENTS,
+      GL_MAX_TESS_EVALUATION_OUTPUT_COMPONENTS};
+   for (unsigned i = 0; i < sizeof(limits) / sizeof(limits[0]); ++i) {
+      GLint value = 0;
+      glGetIntegerv(limits[i], &value);
+      if (value < 128 || glGetError() != GL_NO_ERROR)
+         return 0;
+   }
+   const char *sources[] = {
+      "#version 430 core\n"
+      "layout(std430,binding=0) readonly buffer Data{vec4 data[];};"
+      "out vec4 v[32];void main(){for(int i=0;i<32;i++)"
+      "v[i]=data[gl_VertexID*32+i];}",
+      "#version 430 core\nlayout(vertices=3) out;"
+      "in vec4 v[][32];out vec4 t[][32];"
+      "void main(){for(int i=0;i<32;i++)"
+      "t[gl_InvocationID][i]=v[gl_InvocationID][i]+vec4(1);"
+      "gl_TessLevelOuter[0]=1;gl_TessLevelOuter[1]=1;"
+      "gl_TessLevelOuter[2]=1;gl_TessLevelInner[0]=1;}",
+      "#version 430 core\nlayout(triangles,equal_spacing,ccw) in;"
+      "in vec4 t[][32];flat out vec4 e[31];"
+      "void main(){bool ok=true;for(int j=0;j<3;j++)for(int i=0;i<32;i++)"
+      "ok=ok&&all(equal(t[j][i],vec4(float(j*128+i*4+1))+vec4(0,1,2,3)));"
+      "for(int i=0;i<31;i++)e[i]=t[0][i];if(!ok)e[30].w=-1;"
+      "gl_Position=vec4(-0.8+1.6*gl_TessCoord.y,-0.8+1.6*gl_TessCoord.z,0,1);}",
+      "#version 430 core\nflat in vec4 e[31];out vec4 color;"
+      "void main(){bool ok=true;for(int i=0;i<31;i++)"
+      "ok=ok&&all(equal(e[i],vec4(float(i*4+1))+vec4(0,1,2,3)));"
+      "color=ok?vec4(0,1,0,1):vec4(1,0,0,1);}",
+   };
+   const GLenum types[] = {GL_VERTEX_SHADER, GL_TESS_CONTROL_SHADER,
+                          GL_TESS_EVALUATION_SHADER, GL_FRAGMENT_SHADER};
+   GLuint p = program(sources, types, 4), buffer = 0;
+   float values[3 * 128];
+   int passed = p != 0;
+   if (!p)
+      return 0;
+   glGenBuffers(1, &buffer);
+   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffer);
+   glUseProgram(p);
+   glViewport(0, 0, SIZE, SIZE);
+   glPatchParameteri(GL_PATCH_VERTICES, 3);
+   for (unsigned bad = 0; bad < 2; ++bad) {
+      for (unsigned i = 0; i < 3 * 128; ++i)
+         values[i] = (float)i;
+      if (bad)
+         values[3 * 128 - 1] = -99;
+      glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(values), values, GL_STATIC_DRAW);
+      glClear(GL_COLOR_BUFFER_BIT);
+      glDrawArrays(GL_PATCHES, 0, 3);
+      unsigned green = matching(UINT32_C(0xff00ff00));
+      unsigned red = matching(UINT32_C(0xff0000ff));
+      int status = ps5_egl_current_draw_status(NULL);
+      GLenum error = glGetError();
+      int ok = !status && error == GL_NO_ERROR &&
+               (bad ? red > 500 && green == 0 : green > 500 && red == 0);
+      printf("[ps5-egl-tess-wide-io] components=128 bad=%u green=%u red=%u "
+             "status=%d error=%x result=%s\n", bad, green, red, status, error,
+             ok ? "pass" : "fail");
+      passed &= ok;
+   }
+   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0);
+   glDeleteBuffers(1, &buffer);
+   glUseProgram(0);
+   glDeleteProgram(p);
+   return passed;
+}
+
 int
 main(void)
 {
@@ -250,7 +324,7 @@ main(void)
       EGL_NONE,
    };
    const EGLint context_attrs[] = {
-      EGL_CONTEXT_MAJOR_VERSION_KHR, 3, EGL_CONTEXT_MINOR_VERSION_KHR, 3,
+      EGL_CONTEXT_MAJOR_VERSION_KHR, 4, EGL_CONTEXT_MINOR_VERSION_KHR, 6,
       EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR,
       EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR, EGL_NONE,
    };
@@ -309,6 +383,8 @@ main(void)
             magenta_count > 20 && blue_count > 500;
    if (passed)
       passed = layered_routing(tess_sources);
+   if (passed)
+      passed = wide_io();
 
 done:
    printf("[ps5-egl-tessellation] green=%u yellow=%u magenta=%u blue=%u "
