@@ -5791,6 +5791,14 @@ ps5_transfer_map(struct pipe_context *context, struct pipe_resource *base,
                memcpy((uint8_t *)transfer->staging +
                          y * staging_stride + x * format_size,
                       resource->data + tiled, format_size);
+               /* Temporary diagnostic for the isolated R16 MSAA-array case. */
+               if (format_size == 2 && base->width0 == 2 &&
+                   base->height0 == 3) {
+                  uint16_t value;
+                  memcpy(&value, resource->data + tiled, sizeof(value));
+                  printf("[ps5-gallium] r16-readback format=%u layer=%d x=%u y=%u offset=%zu value=%u\n",
+                         base->format, box->z, x, y, tiled, (unsigned)value);
+               }
             }
          }
       }
