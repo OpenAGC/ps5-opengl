@@ -332,6 +332,7 @@ struct ps5_fragment_exports {
    uint32_t int8_mask;
    uint32_t int10_mask;
    uint32_t color_mask;
+   bool ignore_sample_mask;
 };
 
 struct ps5_shader_variant {
@@ -1039,6 +1040,7 @@ static struct ps5_fragment_exports
 ps5_fragment_exports_for_framebuffer(const struct pipe_framebuffer_state *fb)
 {
    struct ps5_fragment_exports exports = {.formats = UINT32_C(0x99999999)};
+   exports.ignore_sample_mask = fb->samples <= 1;
 
    for (unsigned i = 0; i < fb->nr_cbufs; ++i) {
       enum pipe_format format = fb->cbufs[i].format;
@@ -8292,6 +8294,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
        ((fragment_primitive_type >= 4 && fragment_primitive_type <= 6) &&
         context->rasterizer->poly_smooth));
    fragment_exports = ps5_fragment_exports_for_framebuffer(&context->framebuffer);
+   fragment_exports.ignore_sample_mask |= !context->rasterizer || !context->rasterizer->multisample;
    if (!pixel_descriptor_resource || !fragment_primitive_type ||
        !ps5_select_shader_variant(
           context->fs,
@@ -11253,6 +11256,18 @@ ps5_lower_poly_line_smooth_enabled(nir_builder *builder,
 }
 
 static bool
+ps5_remove_sample_mask(nir_builder *builder, nir_intrinsic_instr *intrinsic, void *data)
+{
+   (void)builder;
+   (void)data;
+   if (intrinsic->intrinsic != nir_intrinsic_store_output ||
+       nir_intrinsic_io_semantics(intrinsic).location != FRAG_RESULT_SAMPLE_MASK)
+      return false;
+   nir_instr_remove(&intrinsic->instr);
+   return true;
+}
+
+static bool
 ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
                           const struct ps5_vertex_layout *layout,
                           uint32_t primitive_type,
@@ -11275,6 +11290,9 @@ ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
 
    if (!exports)
       exports = &no_exports;
+   const bool remove_sample_mask = shader->stage == PSBC_STAGE_FRAGMENT &&
+      exports->ignore_sample_mask &&
+      (shader->nir->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK));
    for (variant = shader->variants; variant; variant = variant->next) {
       if (variant->primitive_type == primitive_type &&
           variant->provoking_vtx_last == provoking_vtx_last &&
@@ -11286,6 +11304,7 @@ ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
           variant->exports.int8_mask == exports->int8_mask &&
           variant->exports.int10_mask == exports->int10_mask &&
           variant->exports.color_mask == exports->color_mask &&
+          variant->exports.ignore_sample_mask == exports->ignore_sample_mask &&
           !memcmp(&variant->layout, layout, sizeof(*layout))) {
          shader->active = variant;
          return true;
@@ -11319,11 +11338,18 @@ ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
         shader->nir->info.fs.uses_sample_shading))
       options.rasterization_samples = 4;
    package_nir = shader->nir;
-   if (alpha_to_one || poly_line_smooth || broadcast_color) {
+   if (alpha_to_one || poly_line_smooth || broadcast_color || remove_sample_mask) {
       if (shader->stage != PSBC_STAGE_FRAGMENT ||
           !(variant_nir = nir_shader_clone(NULL, shader->nir))) {
          free(variant);
          return false;
+      }
+      /* OpenGL ignores shader sample-mask writes without multisampling.
+       * Remove user writes before optional line/polygon smoothing adds its own. */
+      if (remove_sample_mask) {
+         nir_shader_intrinsics_pass(variant_nir, ps5_remove_sample_mask,
+                                    nir_metadata_control_flow, NULL);
+         nir_shader_gather_info(variant_nir, nir_shader_get_entrypoint(variant_nir));
       }
       if (broadcast_color) {
          unsigned mask = exports->color_mask;

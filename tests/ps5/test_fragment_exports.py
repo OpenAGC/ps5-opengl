@@ -29,8 +29,8 @@ code = r'''
 #include "util/format/u_format.h"
 #include "psbc_compile.h"
 #define PS5_ENABLE_CORE_RENDER_FORMATS_CANDIDATE 1
-struct ps5_fragment_exports { uint32_t formats, int8_mask, int10_mask, color_mask; };
-''' + "static bool\n" + function("ps5_core_render_target_format") + "\nstatic uint32_t\n" + function("ps5_color_target_info") + "\nstatic struct ps5_fragment_exports\n" + function("ps5_fragment_exports_for_framebuffer") + "\nstatic bool\n" + function("ps5_lower_fragment_color") + r'''
+struct ps5_fragment_exports { uint32_t formats, int8_mask, int10_mask, color_mask; bool ignore_sample_mask; };
+''' + "static bool\n" + function("ps5_core_render_target_format") + "\nstatic uint32_t\n" + function("ps5_color_target_info") + "\nstatic struct ps5_fragment_exports\n" + function("ps5_fragment_exports_for_framebuffer") + "\nstatic bool\n" + function("ps5_lower_fragment_color") + "\nstatic bool\n" + function("ps5_remove_sample_mask") + r'''
 static unsigned export_format(const PsbcShaderOutput *out) {
     for (unsigned i = 0; i < out->metadata.context_register_count; ++i)
         if (out->metadata.context_registers[i].offset == 0x1c5)
@@ -95,6 +95,31 @@ static void compile_legacy_clear(bool lowered, unsigned mask, unsigned formats, 
     ralloc_free(b.shader);
 }
 int main(void) {
+    for (unsigned remove=0;remove<2;++remove) {
+        nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
+            psbc_get_nir_options(PSBC_STAGE_FRAGMENT),"sample-mask export");
+        nir_store_output(&b,nir_imm_vec4(&b,1,0,0,1),nir_imm_int(&b,0),
+            .write_mask=15,.io_semantics={.location=FRAG_RESULT_DATA0,.num_slots=1});
+        nir_store_output(&b,nir_imm_int(&b,0),nir_imm_int(&b,0),
+            .write_mask=1,.io_semantics={.location=FRAG_RESULT_SAMPLE_MASK,.num_slots=1});
+        if (remove)
+            assert(nir_shader_intrinsics_pass(b.shader,ps5_remove_sample_mask,
+                                              nir_metadata_control_flow,NULL));
+        nir_shader_gather_info(b.shader,nir_shader_get_entrypoint(b.shader));
+        assert(!!(b.shader->info.outputs_written & BITFIELD64_BIT(FRAG_RESULT_SAMPLE_MASK)) == !remove);
+        PsbcCompileOptions options={.target=PSBC_TARGET_PS5,.stage=PSBC_STAGE_FRAGMENT,
+            .entrypoint="main",.optimise=true,.rasterization_samples=remove ? 1 : 4};
+        PsbcShaderOutput out={0};
+        assert(psbc_compile_nir(b.shader,&options,&out)==PSBC_RESULT_OK);
+        bool found=false;
+        for (unsigned i=0;i<out.metadata.context_register_count;++i)
+            if (out.metadata.context_registers[i].offset==0x203) {
+                assert(!!(out.metadata.context_registers[i].value & S_02880C_MASK_EXPORT_ENABLE(1)) == !remove);
+                found=true;
+            }
+        assert(found); psbc_free_output(&out); ralloc_free(b.shader);
+    }
+    puts("PASS sample-mask export: removed for single-sample, preserved for multisample");
     static const struct { enum pipe_format format; unsigned export, int8, int10; } cases[] = {
         {PIPE_FORMAT_R8G8B8A8_UNORM, 4, 0, 0},
         {PIPE_FORMAT_R8G8B8A8_SRGB, 4, 0, 0},
