@@ -162,7 +162,7 @@ done:
 /* Keep every lane live with distinct buffer-texture data, and test a deliberate bad
  * lane as well as the all-correct case. No constant/uniform-only varyings. */
 static int
-wide_io(void)
+wide_io(int patch)
 {
    const GLenum limits[] = {GL_MAX_TESS_CONTROL_INPUT_COMPONENTS,
       GL_MAX_TESS_CONTROL_OUTPUT_COMPONENTS, GL_MAX_TESS_EVALUATION_INPUT_COMPONENTS,
@@ -173,6 +173,10 @@ wide_io(void)
       if (value < 128 || glGetError() != GL_NO_ERROR)
          return 0;
    }
+   GLint patch_components = 0;
+   glGetIntegerv(GL_MAX_TESS_PATCH_COMPONENTS, &patch_components);
+   if (patch && (patch_components < 120 || glGetError() != GL_NO_ERROR))
+      return 0;
    const char *sources[] = {
       "#version 430 core\n"
       "layout(binding=0) uniform samplerBuffer data;"
@@ -195,6 +199,17 @@ wide_io(void)
       "ok=ok&&all(equal(e[i],vec4(float(i*4+1))+vec4(0,1,2,3)));"
       "color=ok?vec4(0,1,0,1):vec4(1,0,0,1);}",
    };
+   if (patch) {
+      sources[1] = "#version 430 core\nlayout(vertices=3) out;"
+         "in vec4 v[][32];patch out vec4 p[30];void main(){"
+         "if(gl_InvocationID==0){for(int i=0;i<30;i++)p[i]=v[0][i]+vec4(1);"
+         "gl_TessLevelOuter[0]=1;gl_TessLevelOuter[1]=1;"
+         "gl_TessLevelOuter[2]=1;gl_TessLevelInner[0]=1;}}";
+      sources[2] = "#version 430 core\nlayout(triangles,equal_spacing,ccw) in;"
+         "patch in vec4 p[30];flat out vec4 e[31];void main(){"
+         "for(int i=0;i<30;i++)e[i]=p[i];e[30]=vec4(121,122,123,124);"
+         "gl_Position=vec4(-0.8+1.6*gl_TessCoord.y,-0.8+1.6*gl_TessCoord.z,0,1);}";
+   }
    const GLenum types[] = {GL_VERTEX_SHADER, GL_TESS_CONTROL_SHADER,
                           GL_TESS_EVALUATION_SHADER, GL_FRAGMENT_SHADER};
    GLuint p = program(sources, types, 4), buffer = 0, texture = 0;
@@ -216,7 +231,7 @@ wide_io(void)
       for (unsigned i = 0; i < 3 * 128; ++i)
          values[i] = (float)i;
       if (bad)
-         values[3 * 128 - 1] = -99;
+         values[patch ? 119 : 3 * 128 - 1] = -99;
       glBufferSubData(GL_TEXTURE_BUFFER, 0, sizeof(values), values);
       glClear(GL_COLOR_BUFFER_BIT);
       glDrawArrays(GL_PATCHES, 0, 3);
@@ -226,8 +241,8 @@ wide_io(void)
       GLenum error = glGetError();
       int ok = !status && error == GL_NO_ERROR &&
                (bad ? red > 500 && green == 0 : green > 500 && red == 0);
-      printf("[ps5-egl-tess-wide-io] components=128 bad=%u green=%u red=%u "
-             "status=%d error=%x result=%s\n", bad, green, red, status, error,
+      printf("[ps5-egl-tess-wide-io] patch=%d components=%u bad=%u green=%u red=%u "
+             "status=%d error=%x result=%s\n", patch, patch ? 120 : 128, bad, green, red, status, error,
              ok ? "pass" : "fail");
       passed &= ok;
    }
@@ -391,7 +406,7 @@ main(void)
    if (passed)
       passed = layered_routing(tess_sources);
    if (passed)
-      passed = wide_io();
+      passed = wide_io(0) && wide_io(1);
 
 done:
    printf("[ps5-egl-tessellation] green=%u yellow=%u magenta=%u blue=%u "

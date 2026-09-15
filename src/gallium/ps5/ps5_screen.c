@@ -13917,7 +13917,7 @@ ps5_screen_create(void)
       PS5_ENABLE_VIEWPORT_ARRAY_CANDIDATE ? PS5_MAX_VIEWPORTS : 1;
    caps->max_varyings = 16;
    caps->max_shader_patch_varyings =
-      PS5_ENABLE_TESSELLATION_CANDIDATE ? 1 : 0;
+      PS5_ENABLE_TESSELLATION_CANDIDATE ? 30 : 0;
    caps->max_stream_output_buffers =
       PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDATE ? PIPE_MAX_SO_BUFFERS : 0;
    caps->max_stream_output_separate_components =
