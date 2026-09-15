@@ -3022,6 +3022,9 @@ ps5_prepare_tessellation_buffers(struct ps5_context *context,
    return true;
 }
 
+static size_t ps5_tiled_color_offset(enum pipe_format format, unsigned x,
+                                      unsigned y, unsigned width, unsigned layer);
+
 static bool
 ps5_prepare_texture(struct ps5_context *context,
                     const struct ps5_shader *shader, unsigned slot,
@@ -3416,6 +3419,26 @@ ps5_prepare_texture(struct ps5_context *context,
                        (anisotropy ? 1u << 29 : 0u);
       descriptor[11] = sampler_state->border_color_ptr |
                        ((uint32_t)sampler_state->border_color_type << 30);
+#ifdef PS5_NATIVE_TITLE_RUNTIME
+      if (texture->base.target == PIPE_TEXTURE_2D &&
+          texture->base.format == PIPE_FORMAT_R8G8B8A8_UNORM &&
+          texture->base.width0 == 64 && texture->base.height0 == 64 &&
+          !texture->base.last_level) {
+         const size_t center = tiled_render_target
+            ? ps5_tiled_color_offset(texture->base.format, 32, 32, 64, 0)
+            : 32 * texture->level_stride[0] + 32 * sizeof(uint32_t);
+         if (texture->allocation_size >= sizeof(uint32_t) &&
+             center <= texture->allocation_size - sizeof(uint32_t)) {
+            uint32_t pixel;
+            memcpy(&pixel, texture->data + center, sizeof(pixel));
+            printf("[ps5-gallium] graphics-fetch slot=%u binding=%u table=%p offset=%u texture=%p center=%08x srd=%08x/%08x/%08x/%08x sampler=%08x/%08x/%08x/%08x\n",
+                   state_slot, binding->binding, (void *)table->data,
+                   binding->offset, (void *)texture->data, pixel,
+                   descriptor[0], descriptor[1], descriptor[2], descriptor[3],
+                   descriptor[8], descriptor[9], descriptor[10], descriptor[11]);
+         }
+      }
+#endif
       if (sampler->compare_mode) {
          uint32_t first_depth;
 
