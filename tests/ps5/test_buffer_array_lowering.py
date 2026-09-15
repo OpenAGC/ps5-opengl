@@ -224,9 +224,10 @@ static void image_contract(void) {
                 if(instr->type!=nir_instr_type_intrinsic) continue;
                 nir_intrinsic_instr *intr=nir_instr_as_intrinsic(instr);
                 if(intr->intrinsic!=nir_intrinsic_image_load) continue;
-                if(fault==4) nir_intrinsic_set_image_dim(intr,GLSL_SAMPLER_DIM_3D);
-                if(fault==5) nir_intrinsic_set_image_dim(intr,GLSL_SAMPLER_DIM_CUBE);
-                if(fault==6) nir_intrinsic_set_format(intr,PIPE_FORMAT_R16_FLOAT);
+                /* 3D, cube and R16F images are supported now; keep real negatives. */
+                if(fault==4) nir_intrinsic_set_image_dim(intr,GLSL_SAMPLER_DIM_MS);
+                if(fault==5) nir_intrinsic_set_image_dim(intr,GLSL_SAMPLER_DIM_EXTERNAL);
+                if(fault==6) nir_intrinsic_set_format(intr,PIPE_FORMAT_R64_UINT);
             }
         }
         /* Exercise the actual boundary independently, before whole-shader optimization. */
