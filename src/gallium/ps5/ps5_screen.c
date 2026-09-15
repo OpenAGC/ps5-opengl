@@ -332,6 +332,7 @@ struct ps5_fragment_exports {
    uint32_t int8_mask;
    uint32_t int10_mask;
    uint32_t color_mask;
+   unsigned rasterization_samples;
    bool ignore_sample_mask;
 };
 
@@ -1042,6 +1043,7 @@ ps5_fragment_exports_for_framebuffer(const struct pipe_framebuffer_state *fb)
    struct ps5_fragment_exports exports = {.formats = UINT32_C(0x99999999)};
    /* Zero means non-multisample; a one-sample MS texture still uses the mask. */
    exports.ignore_sample_mask = fb->samples == 0;
+   exports.rasterization_samples = fb->samples;
 
    for (unsigned i = 0; i < fb->nr_cbufs; ++i) {
       enum pipe_format format = fb->cbufs[i].format;
@@ -8296,6 +8298,8 @@ ps5_draw_vbo_locked(struct pipe_context *base,
         context->rasterizer->poly_smooth));
    fragment_exports = ps5_fragment_exports_for_framebuffer(&context->framebuffer);
    fragment_exports.ignore_sample_mask |= !context->rasterizer || !context->rasterizer->multisample;
+   if (fragment_exports.ignore_sample_mask)
+      fragment_exports.rasterization_samples = 0;
    if (!pixel_descriptor_resource || !fragment_primitive_type ||
        !ps5_select_shader_variant(
           context->fs,
@@ -11306,6 +11310,7 @@ ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
           variant->exports.int10_mask == exports->int10_mask &&
           variant->exports.color_mask == exports->color_mask &&
           variant->exports.ignore_sample_mask == exports->ignore_sample_mask &&
+          variant->exports.rasterization_samples == exports->rasterization_samples &&
           !memcmp(&variant->layout, layout, sizeof(*layout))) {
          shader->active = variant;
          return true;
@@ -11334,10 +11339,8 @@ ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
    options.primitive_id_per_primitive = primitive_id_per_primitive;
    options.color_is_int8 = exports->int8_mask;
    options.color_is_int10 = exports->int10_mask;
-   if (poly_line_smooth ||
-       (shader->stage == PSBC_STAGE_FRAGMENT &&
-        shader->nir->info.fs.uses_sample_shading))
-      options.rasterization_samples = 4;
+   if (shader->stage == PSBC_STAGE_FRAGMENT)
+      options.rasterization_samples = poly_line_smooth ? 4 : exports->rasterization_samples;
    package_nir = shader->nir;
    if (alpha_to_one || poly_line_smooth || broadcast_color || remove_sample_mask) {
       if (shader->stage != PSBC_STAGE_FRAGMENT ||

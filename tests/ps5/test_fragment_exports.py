@@ -29,7 +29,7 @@ code = r'''
 #include "util/format/u_format.h"
 #include "psbc_compile.h"
 #define PS5_ENABLE_CORE_RENDER_FORMATS_CANDIDATE 1
-struct ps5_fragment_exports { uint32_t formats, int8_mask, int10_mask, color_mask; bool ignore_sample_mask; };
+struct ps5_fragment_exports { uint32_t formats, int8_mask, int10_mask, color_mask; unsigned rasterization_samples; bool ignore_sample_mask; };
 ''' + "static bool\n" + function("ps5_core_render_target_format") + "\nstatic uint32_t\n" + function("ps5_color_target_info") + "\nstatic struct ps5_fragment_exports\n" + function("ps5_fragment_exports_for_framebuffer") + "\nstatic bool\n" + function("ps5_lower_fragment_color") + "\nstatic bool\n" + function("ps5_remove_sample_mask") + r'''
 static unsigned export_format(const PsbcShaderOutput *out) {
     for (unsigned i = 0; i < out->metadata.context_register_count; ++i)
@@ -141,6 +141,7 @@ int main(void) {
     for (unsigned samples=0;samples<=4;++samples) {
         fb.samples=samples;
         assert(ps5_fragment_exports_for_framebuffer(&fb).ignore_sample_mask == (samples==0));
+        assert(ps5_fragment_exports_for_framebuffer(&fb).rasterization_samples == samples);
     }
     fb.samples=0;
     fb.cbufs[0].texture = &target;
