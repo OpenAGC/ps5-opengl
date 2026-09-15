@@ -72,6 +72,13 @@ int main(void)
     }
     sampler.base.min_lod = 0;
     sampler.base.max_lod = 1000;
+    /* Clamp-to-edge and rectangle-coordinate normalization are supported. */
+    sampler.base.wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE;
+    sampler.base.unnormalized_coords = 1;
+    ps5_set_compute_sampler_states(&c.base, 7, 1, states);
+    assert(!c.compute_samplers_invalid && c.compute_sampler_mask == (1u << 7));
+    sampler.base.wrap_t = PIPE_TEX_WRAP_REPEAT;
+    sampler.base.unnormalized_coords = 0;
     struct ps5_sampler_state bad = sampler;
     states[1] = &bad;
     const float invalid[][2] = {
@@ -79,7 +86,7 @@ int main(void)
         {NAN, 1000}, {0, NAN}, {INFINITY, INFINITY},
         {0, INFINITY}, {-INFINITY, 1000}, {0, -INFINITY},
     };
-    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]) + 7; ++i) {
+    for (unsigned i = 0; i < sizeof(invalid) / sizeof(invalid[0]) + 5; ++i) {
         bad = sampler;
         if (i < sizeof(invalid) / sizeof(invalid[0])) {
             bad.base.min_lod = invalid[i][0];
@@ -91,8 +98,6 @@ int main(void)
             case 2: bad.base.lod_bias = INFINITY; break;
             case 3: bad.base.compare_mode = 1; break;
             case 4: bad.base.max_anisotropy = 17; break;
-            case 5: bad.base.wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE; break;
-            case 6: bad.base.unnormalized_coords = 1; break;
             }
         }
         uint32_t saved[16][4];
