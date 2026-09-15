@@ -469,14 +469,21 @@ int main(void) {
         compile(write_mip(level,array,kind), &options);
     /* Sampled descriptors coexist with the three existing compute banks.
      * This is compiler/package coverage, not native sampler qualification. */
-    for(unsigned unit=0;unit<=15;unit+=15) for(unsigned component=0;component<4;++component) {
+    for(unsigned unit=0;unit<=15;unit+=15) for(unsigned variant=0;variant<5;++variant) {
         nir_shader *nir=compute_sample(4,unit);
         nir_tex_instr *tex=NULL;
         nir_foreach_block(block,nir_shader_get_entrypoint(nir)) nir_foreach_instr(instr,block)
             if(instr->type==nir_instr_type_tex) tex=nir_instr_as_tex(instr);
         assert(tex);
         nir_tex_instr_remove_src(tex,nir_tex_instr_src_index(tex,nir_tex_src_lod));
-        tex->op=nir_texop_tg4; tex->component=component;
+        tex->op=nir_texop_tg4; tex->component=variant<4 ? variant : 0;
+        if(variant==4) {
+            nir_builder b=nir_builder_at(nir_before_instr(&tex->instr));
+            tex->is_shadow=true;
+            unsigned used,buffers,filtered,lods[16],arrays;
+            assert(!ps5_compute_texture_usage(nir,&used,&buffers,&filtered,lods,&arrays,(uint8_t[16]){0}));
+            nir_tex_instr_add_src(tex,nir_tex_src_comparator,nir_imm_float(&b,.5f));
+        }
         unsigned used=0,buffers=0,filtered=0,lods[16],arrays=0;
         assert(ps5_compute_texture_usage(nir,&used,&buffers,&filtered,lods,&arrays,(uint8_t[16]){0}));
         assert(used==(1u<<unit) && filtered==used && !buffers && !arrays && !lods[unit]);

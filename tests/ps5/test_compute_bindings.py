@@ -142,7 +142,7 @@ code = r'''
 #define PS5_MAX_CONSTANT_BUFFER_SIZE 0x4000u
 struct ps5_resource {
     struct pipe_resource base; uint8_t *data;
-    size_t size, allocation_size, render_staging_offset, render_staging_size, depth_staging_size, layer_stride;
+    size_t size, allocation_size, render_staging_offset, render_staging_size, depth_staging_offset, depth_staging_size, layer_stride;
     unsigned level_stride[PIPE_MAX_TEXTURE_LEVELS];
     size_t level_offset[PIPE_MAX_TEXTURE_LEVELS];
 };
@@ -1083,6 +1083,20 @@ int main(void) {
     assert(descriptor[0]==(uint32_t)((uintptr_t)pixels>>8));
     assert(descriptor[2]==(4u|(2u<<14)|0x80000000u));
     assert(descriptor[3]==0x90000204 && descriptor[4]==63 && descriptor[5]==0x400000);
+    {
+        struct ps5_resource depth=image;
+        depth.base.format=PIPE_FORMAT_Z32_FLOAT;
+        depth.base.bind=PIPE_BIND_SAMPLER_VIEW;
+        assert(!ps5_resource_sampled_image_descriptor(&depth.base,0,0,descriptor));
+        assert((descriptor[3]&0xfff)==0x204);
+        assert(ps5_resource_storage_image_descriptor(&depth.base,0,descriptor));
+        depth.depth_staging_offset=depth.size;
+        depth.depth_staging_size=256;
+        assert(ps5_resource_sampled_image_descriptor(&depth.base,0,0,descriptor));
+        depth.depth_staging_size=0;
+        depth.level_stride[0]-=4;
+        assert(ps5_resource_sampled_image_descriptor(&depth.base,0,0,descriptor));
+    }
     _Alignas(256) uint8_t image_buffer_data[64];
     struct ps5_resource image_buffer={.base={.screen=&screen,.target=PIPE_BUFFER,
         .format=PIPE_FORMAT_R8_UNORM,.width0=sizeof(image_buffer_data)},.data=image_buffer_data,
@@ -1926,10 +1940,15 @@ int main(void) {
     ps5_set_compute_sampler_states(&context.base,0,8,states);
     assert(!context.compute_samplers_invalid);
     assert(context.compute_samplers[7][0]==0x92u && context.compute_samplers[7][3]==0);
-    for(unsigned fault=3;fault<17;++fault) {
-        if(fault==4) continue;
+    for(unsigned compare=0;compare<8;++compare) {
+        sampler=valid; sampler.base.compare_mode=PIPE_TEX_COMPARE_R_TO_TEXTURE;
+        sampler.base.compare_func=compare;
+        ps5_set_compute_sampler_states(&context.base,0,8,states);
+        assert(!context.compute_samplers_invalid);
+        assert((context.compute_samplers[7][0]&0x7000u)==compare<<12);
+    }
+    for(unsigned fault=5;fault<17;++fault) {
         sampler=valid;
-        if(fault==3) sampler.base.compare_mode=1;
         if(fault==5) sampler.base.max_anisotropy=17;
         if(fault==6) sampler.base.min_mip_filter=3;
         if(fault==7) sampler.base.min_lod=-1;

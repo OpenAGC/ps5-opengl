@@ -743,7 +743,7 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
             if (image || sampled) {
                if (sampled) {
                   const uint32_t anisotropy = (srd[8] >> 9) & 7u;
-                  const uint32_t sampler0 = (srd[8] & 0x1ffu) |
+                  const uint32_t sampler0 = (srd[8] & 0x71ffu) |
                      (anisotropy << 9) | ((anisotropy >> 1) << 16) |
                      (anisotropy << 21);
                   /* Zero for fetch/size; bounded repeat/mirror/edge and mip filtering for txl.

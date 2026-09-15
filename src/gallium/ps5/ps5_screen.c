@@ -4435,8 +4435,10 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
 {
    const struct ps5_resource *resource = (const struct ps5_resource *)base;
    uint32_t format;
-   const unsigned texel_size = base ? ps5_storage_image_texel_size(base->format) : 0;
    const bool sampled = required_bind == PIPE_BIND_SAMPLER_VIEW;
+   const bool depth = base && sampled && base->format == PIPE_FORMAT_Z32_FLOAT &&
+                      ps5_linear_sampled_layout(base);
+   const unsigned texel_size = depth ? 4 : base ? ps5_storage_image_texel_size(base->format) : 0;
    const bool multisampled = base && sampled && base->nr_samples == 4 && base->nr_storage_samples == 4;
    const bool one_d = base &&
       (base->target == PIPE_TEXTURE_1D || base->target == PIPE_TEXTURE_1D_ARRAY);
@@ -4461,8 +4463,9 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
        (!multisampled && (base->nr_samples > 1 || base->nr_storage_samples > 1)) ||
        (!(base->bind & required_bind) &&
         !(required_bind == PIPE_BIND_SHADER_IMAGE && (base->bind & PIPE_BIND_SAMPLER_VIEW))) ||
-       (base->bind & (PIPE_BIND_DEPTH_STENCIL | PIPE_BIND_DISPLAY_TARGET)) ||
-       resource->depth_staging_size || !resource->data ||
+       (base->bind & PIPE_BIND_DISPLAY_TARGET) ||
+       ((base->bind & PIPE_BIND_DEPTH_STENCIL) && !depth) ||
+       (resource->depth_staging_size && !depth) || !resource->data ||
        resource->size > resource->allocation_size ||
        ((uintptr_t)resource->data & 255u) || (uintptr_t)resource->data >> 48 ||
        !ps5_texture_descriptor_format(base->format, &format))
@@ -4505,6 +4508,11 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
           !physical || physical > resource->allocation_size)
          return -1;
    } else {
+      if (depth && resource->depth_staging_size &&
+          (resource->depth_staging_offset < resource->size ||
+           resource->depth_staging_offset > resource->allocation_size ||
+           resource->depth_staging_size > resource->allocation_size - resource->depth_staging_offset))
+         return -1;
       /* Mesa's ordinary textures carry SAMPLER_VIEW|RENDER_TARGET, not an image
        * hint. Their linear data remains authoritative: draws stage it in/out,
        * and compute submission drains pending graphics before using this SRD.
@@ -4540,7 +4548,7 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
     * views validate sublayers below. */
    const uintptr_t address = (uintptr_t)resource->data;
    const unsigned pitch = resource->level_stride[0] / texel_size;
-   const unsigned channels = ps5_storage_image_channels(base->format);
+   const unsigned channels = depth ? 1 : ps5_storage_image_channels(base->format);
    const uint32_t swizzle = channels == 1 ? 0x204u : channels == 2 ? 0x22cu :
                             channels == 3 ? 0x3acu : 0xfacu;
    const uint32_t srd[8] = {
@@ -12007,15 +12015,17 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                 !dimensions || (volume && tex->is_array) ||
                 (gather && tex->sampler_dim != GLSL_SAMPLER_DIM_2D &&
                            tex->sampler_dim != GLSL_SAMPLER_DIM_CUBE) ||
-                tex->is_shadow || tex->texture_index >= PS5_COMPUTE_TEXTURE_SLOTS ||
+                (tex->is_shadow && (!gather || tex->dest_type != nir_type_float32)) ||
+                tex->texture_index >= PS5_COMPUTE_TEXTURE_SLOTS ||
                 tex->def.bit_size != 32 ||
-                tex->num_srcs != (tex->op == nir_texop_txs || gather ? 1 : 2))
+                tex->num_srcs != (tex->op == nir_texop_txs || gather ? 1 : 2) +
+                   tex->is_shadow)
                return false;
             if ((tex->op == nir_texop_txl || gather) && (tex->sampler_index != tex->texture_index ||
                 (tex->dest_type != nir_type_float32 && tex->dest_type != nir_type_int32 &&
                  tex->dest_type != nir_type_uint32)))
                return false;
-            unsigned coords = 0, lods = 0;
+            unsigned coords = 0, lods = 0, comparators = 0;
             for (unsigned i = 0; i < tex->num_srcs; ++i) {
                if (tex->src[i].src_type == nir_tex_src_coord) {
                   if (tex->op == nir_texop_txs || tex->coord_components != dimensions + tex->is_array ||
@@ -12023,6 +12033,11 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                       tex->src[i].src.ssa->bit_size != 32)
                      return false;
                   ++coords;
+               } else if (tex->src[i].src_type == nir_tex_src_comparator) {
+                  if (!tex->is_shadow || tex->src[i].src.ssa->num_components != 1 ||
+                      tex->src[i].src.ssa->bit_size != 32)
+                     return false;
+                  ++comparators;
                } else if (tex->src[i].src_type == nir_tex_src_lod) {
                   nir_src source = tex->src[i].src;
                   if (source.ssa->num_components != 1 || source.ssa->bit_size != 32)
@@ -12054,7 +12069,8 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                   return false;
                }
             }
-            if (lods != !gather || coords != (tex->op == nir_texop_txs ? 0u : 1u))
+            if (comparators != tex->is_shadow || lods != !gather ||
+                coords != (tex->op == nir_texop_txs ? 0u : 1u))
                return false;
             if ((*used & (1u << tex->texture_index)) &&
                 (((*arrays & (1u << tex->texture_index)) != 0) != tex->is_array))
@@ -12412,7 +12428,8 @@ ps5_set_compute_sampler_views(struct pipe_context *base, unsigned start, unsigne
             return;
          continue;
       }
-      const unsigned channels = v ? ps5_storage_image_channels(v->format) : 0;
+      const unsigned channels = v && v->format == PIPE_FORMAT_Z32_FLOAT ? 1 :
+                                v ? ps5_storage_image_channels(v->format) : 0;
       /* The descriptor already supplies missing R/RG channels as zero/one. */
       const bool swizzle_ok = !v || (v->swizzle_r == PIPE_SWIZZLE_X &&
          ((v->swizzle_g == PIPE_SWIZZLE_Y && v->swizzle_b == PIPE_SWIZZLE_Z &&
@@ -12459,7 +12476,8 @@ ps5_set_compute_sampler_states(struct pipe_context *base, unsigned start, unsign
       uint32_t anisotropy = ps5_texture_descriptor_anisotropy(s->max_anisotropy);
       /* Rectangle coordinates are normalized in NIR, including projectors
        * and offsets; keep the hardware sampler normalized for every target. */
-      if (s->compare_mode ||
+      if (s->compare_mode > PIPE_TEX_COMPARE_R_TO_TEXTURE ||
+          (s->compare_mode && s->compare_func > PIPE_FUNC_ALWAYS) ||
           s->max_anisotropy > 16 || !ps5_float_is_finite(s->min_lod) ||
           !ps5_float_is_finite(s->max_lod) ||
           !(s->min_lod >= 0 && s->max_lod >= s->min_lod) ||
@@ -12475,7 +12493,8 @@ ps5_set_compute_sampler_states(struct pipe_context *base, unsigned start, unsign
       descriptors[i][0] = wrap[0] | (wrap[1] << 3) | (wrap[2] << 6) |
                           (anisotropy << 9) |
                           ((anisotropy >> 1) << 16) |
-                          (anisotropy << 21);
+                          (anisotropy << 21) |
+                          (s->compare_mode ? s->compare_func << 12 : 0);
       /* Mesa's default max LOD is 1000. Validate before the existing encoder
        * saturates finite bounds to the supported levels 0..15. */
       descriptors[i][1] = ps5_texture_descriptor_unsigned_lod(s->min_lod) |
@@ -12615,7 +12634,7 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
          return;
       if (context->cs->filtered_textures & (1u << i)) {
          if (!(context->compute_sampler_mask & (1u << i)) ||
-             !ps5_storage_image_texel_size(view->format) ||
+             (!ps5_storage_image_texel_size(view->format) && view->format != PIPE_FORMAT_Z32_FLOAT) ||
              (util_format_is_pure_integer(view->format) &&
               (context->compute_samplers[i][2] &
                ((UINT32_C(3) << 20) | (UINT32_C(3) << 22)))))
