@@ -37,6 +37,7 @@ code = r'''
 #include <stdio.h>
 #include <string.h>
 #include "compiler/nir/nir_builder.h"
+#include "compiler/nir/nir_builtin_builder.h"
 #include "compiler/nir/nir_serialize.h"
 #include "pipe/p_state.h"
 #include "util/blob.h"
@@ -483,6 +484,9 @@ int main(void) {
             unsigned used,buffers,filtered,lods[16],arrays;
             assert(!ps5_compute_texture_usage(nir,&used,&buffers,&filtered,lods,&arrays,(uint8_t[16]){0}));
             nir_tex_instr_add_src(tex,nir_tex_src_comparator,nir_imm_float(&b,.5f));
+            /* Offset lowering queries size on the same shadow sampler; the
+             * query keeps is_shadow but has no comparison source. */
+            nir_get_texture_size(&b,tex);
         }
         unsigned used=0,buffers=0,filtered=0,lods[16],arrays=0;
         assert(ps5_compute_texture_usage(nir,&used,&buffers,&filtered,lods,&arrays,(uint8_t[16]){0}));

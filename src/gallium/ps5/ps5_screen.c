@@ -12008,6 +12008,7 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
             }
             const bool volume = tex->sampler_dim == GLSL_SAMPLER_DIM_3D;
             const bool gather = tex->op == nir_texop_tg4;
+            const bool shadow_compare = tex->is_shadow && gather;
             const unsigned dimensions = tex->sampler_dim == GLSL_SAMPLER_DIM_1D ? 1 :
                tex->sampler_dim == GLSL_SAMPLER_DIM_2D ? 2 :
                (volume || tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE) ? 3 : 0;
@@ -12015,11 +12016,12 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                 !dimensions || (volume && tex->is_array) ||
                 (gather && tex->sampler_dim != GLSL_SAMPLER_DIM_2D &&
                            tex->sampler_dim != GLSL_SAMPLER_DIM_CUBE) ||
-                (tex->is_shadow && (!gather || tex->dest_type != nir_type_float32)) ||
+                (tex->is_shadow && tex->op != nir_texop_txs &&
+                 (!gather || tex->dest_type != nir_type_float32)) ||
                 tex->texture_index >= PS5_COMPUTE_TEXTURE_SLOTS ||
                 tex->def.bit_size != 32 ||
                 tex->num_srcs != (tex->op == nir_texop_txs || gather ? 1 : 2) +
-                   tex->is_shadow)
+                   shadow_compare)
                return false;
             if ((tex->op == nir_texop_txl || gather) && (tex->sampler_index != tex->texture_index ||
                 (tex->dest_type != nir_type_float32 && tex->dest_type != nir_type_int32 &&
@@ -12034,7 +12036,7 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                      return false;
                   ++coords;
                } else if (tex->src[i].src_type == nir_tex_src_comparator) {
-                  if (!tex->is_shadow || tex->src[i].src.ssa->num_components != 1 ||
+                  if (!shadow_compare || tex->src[i].src.ssa->num_components != 1 ||
                       tex->src[i].src.ssa->bit_size != 32)
                      return false;
                   ++comparators;
@@ -12069,7 +12071,7 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                   return false;
                }
             }
-            if (comparators != tex->is_shadow || lods != !gather ||
+            if (comparators != shadow_compare || lods != !gather ||
                 coords != (tex->op == nir_texop_txs ? 0u : 1u))
                return false;
             if ((*used & (1u << tex->texture_index)) &&
