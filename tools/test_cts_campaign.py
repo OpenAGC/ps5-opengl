@@ -61,6 +61,9 @@ class CampaignTests(unittest.TestCase):
         rows=PLANNER.plan(cases, history, [], configurations=[0], family_estimates=True,
                           isolated=[cases[10]])
         self.assertLess(len(rows), 10)
+        bulk = [r for r in rows if r['lane'] == 'bulk']
+        self.assertEqual(len(bulk), 1)
+        self.assertEqual(len(bulk[0]['cases']), 999)
         self.assertTrue(all(r['observation_seconds']<=120 for r in rows))
         self.assertEqual(next(r for r in rows if r['lane']=='memory-heavy')['cases'], [cases[10]])
         self.assertEqual(Counter(n for r in rows for n in r['cases']), Counter(cases))

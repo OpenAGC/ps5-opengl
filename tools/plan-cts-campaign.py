@@ -86,7 +86,7 @@ def plan(cases, history, smoke, budget=120, startup=15, margin=1.5, unknown=30,
             if rows[name].get("status") == "Pass":
                 samples.setdefault(family(name), []).append(seconds)
         # Scheduling hints only: unmeasured cases still require execution.
-        estimates = {name: max(0.25, 4 * max(samples[family(name)]))
+        estimates = {name: max(0.001, 4 * max(samples[family(name)]))
                      for name in fallback if family_estimates and name not in previous_failures
                      and len(samples.get(family(name), [])) >= 3}
         costs = {name: timings.get(name, estimates.get(name, unknown)) for name in cases}
