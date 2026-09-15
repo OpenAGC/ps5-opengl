@@ -18,8 +18,8 @@ start = source.index("static void *\nps5_transfer_map(")
 if "static bool\nps5_transfer_alloc_staging(" in source:
     start = source.index("static bool\nps5_transfer_alloc_staging(")
 transfers = source[start:source.index("static void\nps5_blit_scissor_bounds(")]
-# Exercise the actual color branch and mapper together; depth/MSAA dispatch is
-# outside this regression. No replacement copy algorithm is compiled here.
+# Exercise the actual color branch and mapper together; depth/MSAA blit dispatch
+# is outside this regression. MSAA write maps are covered below.
 blit = source[source.index("static void\nps5_blit("):
               source.index("static void\nps5_texture_subdata(")]
 color_blit = (blit[:blit.index("   ps5_draw_batch_drain();")] +
@@ -51,7 +51,7 @@ enum { PIPE_BUFFER, PIPE_TEXTURE_2D, PIPE_TEXTURE_3D, PIPE_TEXTURE_2D_ARRAY };
 enum pipe_format { COLOR, PIPE_FORMAT_Z32_FLOAT, PIPE_FORMAT_Z32_FLOAT_S8X24_UINT, COLOR_UINT, COLOR16, COMPRESSED };
 enum { PIPE_MAP_READ=1, PIPE_MAP_WRITE=2, PIPE_BIND_RENDER_TARGET=4, PIPE_BIND_DEPTH_STENCIL=8 };
 struct pipe_resource { unsigned bind, target, format, width0, height0, depth0,
-    array_size, last_level, nr_samples; };
+    array_size, last_level, nr_samples, nr_storage_samples; };
 struct pipe_box { int x,y,z,width,height,depth; };
 struct pipe_transfer { struct pipe_resource *resource; unsigned level,usage;
     struct pipe_box box; unsigned stride,layer_stride,offset; };
@@ -79,6 +79,8 @@ static size_t ps5_tiled_stencil_surface_size(unsigned w, unsigned h) { return (s
 static size_t ps5_tiled_depth_offset(unsigned x, unsigned y, unsigned w, unsigned layer) { (void)layer; return ((size_t)y*w+x)*4; }
 static size_t ps5_tiled_stencil_offset(unsigned x, unsigned y, unsigned w, unsigned layer) { (void)layer; return (size_t)y*w+x; }
 static size_t ps5_tiled_color_offset(unsigned f, unsigned x, unsigned y, unsigned w, unsigned layer) { assert(f == COLOR || f == COLOR_UINT); (void)layer; return ((size_t)y*w+x)*4; }
+static size_t ps5_tiled_color_msaa4_offset(unsigned f, unsigned x, unsigned y, unsigned s, unsigned w, unsigned layer) { return ps5_tiled_color_offset(f,x,y,w,layer)*4+s*4; }
+static bool ps5_msaa4_color_format(unsigned f) { return f == COLOR || f == COLOR_UINT; }
 static unsigned ps5_tiled_rgba8_width(const struct ps5_resource *r) { return r->base.width0; }
 static bool force_tiled;
 static bool ps5_linear_sampled_layout(const struct pipe_resource *r) { return !force_tiled && (!r->bind || r->last_level); }
@@ -346,6 +348,29 @@ static void check(unsigned format, unsigned width, unsigned height, unsigned lay
     free(r.data); free(r.stencil_data);
 }
 int main(void) {
+    {
+        uint32_t pixels[2*4*4*4];
+        memset(pixels,0xa5,sizeof(pixels));
+        struct ps5_resource r={.base={.target=PIPE_TEXTURE_2D_ARRAY,.format=COLOR,
+            .width0=4,.height0=4,.depth0=1,.array_size=2,.nr_samples=4,.nr_storage_samples=4,
+            .bind=PIPE_BIND_RENDER_TARGET},.data=(uint8_t *)pixels,.size=sizeof(pixels),
+            .allocation_size=sizeof(pixels),.layer_stride=sizeof(pixels)/2,.level_stride={16}};
+        struct pipe_box box={1,1,1,2,1,1};
+        struct pipe_transfer *mapped=NULL;
+        uint32_t *p=ps5_transfer_map(NULL,&r.base,0,PIPE_MAP_WRITE,&box,&mapped);
+        assert(p && mapped); p[0]=0x11223344; p[1]=0x55667788;
+        ps5_transfer_unmap(NULL,mapped); idle();
+        for (unsigned z=0;z<2;++z) for (unsigned y=0;y<4;++y)
+        for (unsigned x=0;x<4;++x) for (unsigned s=0;s<4;++s)
+            assert(pixels[((z*4+y)*4+x)*4+s] ==
+                (z==1 && y==1 && (x==1 || x==2) ? (x==1 ? 0x11223344u : 0x55667788u) : 0xa5a5a5a5u));
+        assert(!ps5_transfer_map(NULL,&r.base,0,PIPE_MAP_READ,&box,&mapped) && !mapped);
+        box.width=4;
+        assert(!ps5_transfer_map(NULL,&r.base,0,PIPE_MAP_WRITE,&box,&mapped) && !mapped);
+        box.width=2; r.base.nr_storage_samples=2;
+        assert(!ps5_transfer_map(NULL,&r.base,0,PIPE_MAP_WRITE,&box,&mapped) && !mapped);
+        idle(); puts("transfer-msaa-init: PASS all samples, subregion/layer isolation and rejected read/bounds/sample mismatch");
+    }
     check_reinterpreted_copy(false);
     check_reinterpreted_copy(true);
     puts("transfer-reinterpreted-copy: PASS raw bits, tiled/linear and format guards");

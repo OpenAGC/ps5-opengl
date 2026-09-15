@@ -5691,7 +5691,23 @@ ps5_transfer_map(struct pipe_context *context, struct pipe_resource *base,
    if (!out_transfer)
       return NULL;
    *out_transfer = NULL;
-   if (!ps5_map_bounds(resource, level, box, &offset))
+   /* Mesa initializes incomplete multisample fallback textures through a
+    * write map. Broadcast each supplied texel to all samples on unmap;
+    * reads still require the existing explicit resolve path. */
+   struct ps5_resource single_sample;
+   const struct ps5_resource *bounds_resource = resource;
+   if (base->nr_samples > 1) {
+      if (base->nr_samples != 4 || base->nr_storage_samples != 4 ||
+          !(usage & PIPE_MAP_WRITE) || (usage & PIPE_MAP_READ) ||
+          !(base->bind & PIPE_BIND_RENDER_TARGET) ||
+          !ps5_msaa4_color_format(base->format) ||
+          (base->target != PIPE_TEXTURE_2D && base->target != PIPE_TEXTURE_2D_ARRAY))
+         return NULL;
+      single_sample = *resource;
+      single_sample.base.nr_samples = single_sample.base.nr_storage_samples = 1;
+      bounds_resource = &single_sample;
+   }
+   if (!ps5_map_bounds(bounds_resource, level, box, &offset))
       return NULL;
 
    transfer = calloc(1, sizeof(*transfer));
@@ -5949,18 +5965,23 @@ ps5_transfer_unmap(struct pipe_context *context,
 
       for (unsigned y = 0; y < (unsigned)transfer->box.height; ++y) {
          for (unsigned x = 0; x < (unsigned)transfer->box.width; ++x) {
-            size_t tiled = layer_base + ps5_tiled_color_offset(
-               resource->base.format,
-               (unsigned)transfer->box.x + x,
-               (unsigned)transfer->box.y + y,
-               ps5_tiled_rgba8_width(resource), (unsigned)transfer->box.z);
+            const unsigned samples = MAX2(resource->base.nr_samples, 1u);
+            for (unsigned sample = 0; sample < samples; ++sample) {
+               size_t tiled = layer_base + (samples == 4
+                  ? ps5_tiled_color_msaa4_offset(resource->base.format,
+                       (unsigned)transfer->box.x + x, (unsigned)transfer->box.y + y,
+                       sample, resource->base.width0, (unsigned)transfer->box.z)
+                  : ps5_tiled_color_offset(resource->base.format,
+                       (unsigned)transfer->box.x + x, (unsigned)transfer->box.y + y,
+                       ps5_tiled_rgba8_width(resource), (unsigned)transfer->box.z));
 
-            if (tiled <= resource->allocation_size &&
-                resource->allocation_size - tiled >= format_size)
-               memcpy(resource->data + tiled,
-                      (uint8_t *)ps5->staging +
-                         y * transfer->stride + x * format_size,
-                      format_size);
+               if (tiled <= resource->allocation_size &&
+                   resource->allocation_size - tiled >= format_size)
+                  memcpy(resource->data + tiled,
+                         (uint8_t *)ps5->staging +
+                            y * transfer->stride + x * format_size,
+                         format_size);
+            }
          }
       }
       ps5_flush_gpu_data(resource->data, resource->allocation_size);
