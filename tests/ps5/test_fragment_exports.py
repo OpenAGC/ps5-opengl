@@ -120,6 +120,28 @@ int main(void) {
         assert(found); psbc_free_output(&out); ralloc_free(b.shader);
     }
     puts("PASS sample-mask export: removed for non-multisample, preserved for multisample");
+    {
+        nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
+            psbc_get_nir_options(PSBC_STAGE_FRAGMENT),"sample-position inputs");
+        nir_def *position=nir_load_sample_pos(&b);
+        nir_store_output(&b,nir_vec4(&b,nir_channel(&b,position,0),nir_channel(&b,position,1),
+            nir_imm_float(&b,0),nir_imm_float(&b,1)),nir_imm_int(&b,0),
+            .write_mask=15,.io_semantics={.location=FRAG_RESULT_DATA0,.num_slots=1});
+        nir_shader_gather_info(b.shader,nir_shader_get_entrypoint(b.shader));
+        b.shader->info.fs.uses_sample_shading=true;
+        PsbcCompileOptions options={.target=PSBC_TARGET_PS5,.stage=PSBC_STAGE_FRAGMENT,
+            .entrypoint="main",.optimise=true,.rasterization_samples=4};
+        PsbcShaderOutput out={0};
+        assert(psbc_compile_nir(b.shader,&options,&out)==PSBC_RESULT_OK);
+        unsigned inputs=0;
+        for (unsigned i=0;i<out.metadata.context_register_count;++i)
+            if (out.metadata.context_registers[i].offset==0x1b4)
+                inputs=out.metadata.context_registers[i].value;
+        fprintf(stderr,"sample-position SPI_PS_INPUT_ADDR=%08x\n",inputs);
+        assert((inputs & (S_0286D0_POS_X_FLOAT_ENA(1)|S_0286D0_POS_Y_FLOAT_ENA(1))) ==
+                         (S_0286D0_POS_X_FLOAT_ENA(1)|S_0286D0_POS_Y_FLOAT_ENA(1)));
+        psbc_free_output(&out); ralloc_free(b.shader);
+    }
     static const struct { enum pipe_format format; unsigned export, int8, int10; } cases[] = {
         {PIPE_FORMAT_R8G8B8A8_UNORM, 4, 0, 0},
         {PIPE_FORMAT_R8G8B8A8_SRGB, 4, 0, 0},
@@ -190,7 +212,7 @@ with tempfile.TemporaryDirectory() as temporary:
     subprocess.run(["g++", "-o", executable, obj, str(psbc / "libpsbc.a"),
                     "-pthread", "-lm"], check=True)
     subprocess.run([executable], check=True)
-for field in ("formats", "int8_mask", "int10_mask", "color_mask"):
+for field in ("formats", "int8_mask", "int10_mask", "color_mask", "ignore_sample_mask", "rasterization_samples"):
     assert f"variant->exports.{field} == exports->{field}" in source
 assert "nir_lower_io_passes(converted.ir.nir, false);" in source
 print("PASS: 14 formats, integer/MRT/dual-source exports, invalid keys, lowered legacy helper outputs")

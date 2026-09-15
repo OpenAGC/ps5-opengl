@@ -527,7 +527,7 @@ index 945737d..b2755c7 100644
  
  	psbc_free_output(&output);
 diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
-index bacbc6a..0f40be9 100644
+index bacbc6a..332ec13 100644
 --- a/libpsbc/psbc_compile.c
 +++ b/libpsbc/psbc_compile.c
 @@ -12,6 +12,7 @@
@@ -2965,7 +2965,7 @@ index bacbc6a..0f40be9 100644
      /* Set next_stage based on the pipeline graph.
       * For standalone compilation we assume the simplest pipeline:
       *   VS → FS, VS → HS → DS → FS, VS → GS → FS
-@@ -992,46 +3233,288 @@ PsbcResult psbc_compile_shader(
+@@ -992,46 +3233,286 @@ PsbcResult psbc_compile_shader(
      case MESA_SHADER_GEOMETRY:  stage.next_stage = MESA_SHADER_FRAGMENT;     break;
      default:                    stage.next_stage = MESA_SHADER_NONE;         break;
      }
@@ -3196,9 +3196,7 @@ index bacbc6a..0f40be9 100644
 +    /* RADV normally lowers fragment coordinates before collecting shader
 +     * info.  Keep standalone compilation in that order so the PS argument
 +     * map enables POS_FIXED_PT when the optimization selects it. */
-+    if (mesa_stage == MESA_SHADER_FRAGMENT &&
-+        !gfx_state.ms.sample_shading_enable &&
-+        !nir->info.fs.uses_sample_shading)
++    if (mesa_stage == MESA_SHADER_FRAGMENT)
 +        NIR_PASS(_, nir, radv_nir_lower_opt_fs_frag_pos,
 +                 gfx_state.vrs_may_be_enabled,
 +                 gfx_state.ms.sample_shading_enable ||
@@ -3278,7 +3276,7 @@ index bacbc6a..0f40be9 100644
  
      /* Determine previous stage for shader args declaration.
       * HS/GS need previous_stage=VERTEX so that the merged-pipeline args
-@@ -1046,13 +3529,34 @@ PsbcResult psbc_compile_shader(
+@@ -1046,13 +3527,34 @@ PsbcResult psbc_compile_shader(
      default:                    previous_stage = MESA_SHADER_NONE;      break;
      }
  
@@ -3314,7 +3312,7 @@ index bacbc6a..0f40be9 100644
  
      /* For geometry shaders, run the legacy GS lowering pass.
       * On GFX10.3 (PS5), NGG GS requires merging with the previous stage,
-@@ -1080,16 +3584,75 @@ PsbcResult psbc_compile_shader(
+@@ -1080,16 +3582,75 @@ PsbcResult psbc_compile_shader(
              ralloc_free(gs_copy);
      }
  
@@ -3394,7 +3392,7 @@ index bacbc6a..0f40be9 100644
          psbc_shutdown();
          return PSBC_RESULT_COMPILE_ACO;
      }
-@@ -1098,6 +3661,22 @@ PsbcResult psbc_compile_shader(
+@@ -1098,6 +3659,22 @@ PsbcResult psbc_compile_shader(
      struct radv_shader_binary_legacy* legacy =
          (struct radv_shader_binary_legacy*)binary;
  
@@ -3417,7 +3415,7 @@ index bacbc6a..0f40be9 100644
      /* The data layout in radv_shader_binary_legacy is:
       * [stats | code | ir | disasm | debug_info]
       * Code starts at offset stats_size. */
-@@ -1116,28 +3695,104 @@ PsbcResult psbc_compile_shader(
+@@ -1116,28 +3693,104 @@ PsbcResult psbc_compile_shader(
          .psbc_stage = opts->stage,
          .spirv_data = spirv,
          .spirv_size = spirv_size,
@@ -3526,7 +3524,7 @@ index bacbc6a..0f40be9 100644
  }
  
  const char* psbc_result_string(PsbcResult result) {
-@@ -1149,6 +3804,7 @@ const char* psbc_result_string(PsbcResult result) {
+@@ -1149,6 +3802,7 @@ const char* psbc_result_string(PsbcResult result) {
      case PSBC_RESULT_COMPILE_ACO:      return "ACO shader compilation failed";
      case PSBC_RESULT_OUT_OF_MEMORY:    return "out of memory";
      case PSBC_RESULT_INTERNAL_ERROR:   return "internal error";
@@ -4610,21 +4608,18 @@ index 820ebf0..c7f366b 100644
           late_options.color_is_int10 = gfx_state->ps.epilog.color_is_int10;
           late_options.enable_mrt_output_nan_fixup =
 diff --git a/src/amd/vulkan/radv_postprocess_nir_standalone.c b/src/amd/vulkan/radv_postprocess_nir_standalone.c
-index 55c3ea0..41eea8c 100644
+index 55c3ea0..646de2a 100644
 --- a/src/amd/vulkan/radv_postprocess_nir_standalone.c
 +++ b/src/amd/vulkan/radv_postprocess_nir_standalone.c
-@@ -40,6 +40,10 @@ radv_postprocess_nir(const struct radv_compiler_info *compiler_info, const struc
+@@ -40,6 +40,7 @@ radv_postprocess_nir(const struct radv_compiler_info *compiler_info, const struc
        if (!stage->key.optimisations_disabled) {
           NIR_PASS(_, stage->nir, nir_opt_cse);
        }
-+      NIR_PASS(_, stage->nir, radv_nir_lower_opt_fs_frag_pos,
-+               gfx_state->vrs_may_be_enabled,
-+               gfx_state->ms.sample_shading_enable ||
-+                  stage->nir->info.fs.uses_sample_shading);
++      /* psbc lowers fragment positions once, before collecting input metadata. */
        NIR_PASS(_, stage->nir, radv_nir_lower_fs_intrinsics, stage, gfx_state);
     }
  
-@@ -220,6 +224,7 @@ radv_postprocess_nir(const struct radv_compiler_info *compiler_info, const struc
+@@ -220,6 +221,7 @@ radv_postprocess_nir(const struct radv_compiler_info *compiler_info, const struc
  
        if (!late_options.no_color_export) {
           late_options.dual_src_blend = gfx_state->ps.epilog.mrt0_is_dual_src;
