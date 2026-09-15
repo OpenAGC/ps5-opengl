@@ -527,7 +527,7 @@ index 945737d..b2755c7 100644
  
  	psbc_free_output(&output);
 diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
-index bacbc6a..c95cc6b 100644
+index bacbc6a..3425426 100644
 --- a/libpsbc/psbc_compile.c
 +++ b/libpsbc/psbc_compile.c
 @@ -12,6 +12,7 @@
@@ -538,7 +538,7 @@ index bacbc6a..c95cc6b 100644
  #include <stdarg.h>
  #include <stdio.h>
  #include <string.h>
-@@ -26,16 +27,307 @@
+@@ -26,18 +27,321 @@
  #include "ac_binary.h"
  #include "ac_nir.h"
  #include "amd_family.h"
@@ -845,8 +845,22 @@ index bacbc6a..c95cc6b 100644
 +
  /* === Mesa stage mapping === */
  
++static void psbc_setup_descriptor_sizes(struct radv_compiler_info *info) {
++    info->sampled_image_desc_size = 32;
++    info->combined_image_sampler_desc_size = 48;
++    info->combined_image_sampler_offset = 32;
++    info->sampler_descriptor_size = 16;
++    info->sampler_descriptor_alignment = 16;
++    info->image_descriptor_size = 32;
++    info->image_descriptor_alignment = 16;
++    info->buffer_descriptor_size = 16;
++    info->buffer_descriptor_alignment = 16;
++}
++
  static mesa_shader_stage psbc_to_mesa_stage(PsbcStage s) {
-@@ -205,6 +497,12 @@ static uint32_t compute_db_shader_control(const struct radv_shader_info *info) {
+     switch (s) {
+     case PSBC_STAGE_VERTEX:     return MESA_SHADER_VERTEX;
+@@ -205,6 +509,12 @@ static uint32_t compute_db_shader_control(const struct radv_shader_info *info) {
  
  /* === Shader binary builder === */
  
@@ -859,7 +873,7 @@ index bacbc6a..c95cc6b 100644
  typedef struct {
      const struct nir_shader* nir;
      const struct radv_shader_info* rinfo;
-@@ -216,9 +514,708 @@ typedef struct {
+@@ -216,9 +526,708 @@ typedef struct {
      PsbcStage psbc_stage;
      const uint32_t* spirv_data;
      size_t spirv_size;
@@ -1568,7 +1582,7 @@ index bacbc6a..c95cc6b 100644
  /* Build the shader binary into a memory buffer instead of a file. */
  static PsbcResult buildshaderbinary(
      const BuildContext* ctx,
-@@ -287,7 +1284,7 @@ static PsbcResult buildshaderbinary(
+@@ -287,7 +1296,7 @@ static PsbcResult buildshaderbinary(
              outputswritten * sizeof(GnmVertexExportSemantic);
          break;
      case MESA_SHADER_FRAGMENT:
@@ -1577,7 +1591,7 @@ index bacbc6a..c95cc6b 100644
                            sizeof(GnmPixelInputSemantic);
          break;
      case MESA_SHADER_GEOMETRY:
-@@ -433,7 +1430,7 @@ static PsbcResult buildshaderbinary(
+@@ -433,7 +1442,7 @@ static PsbcResult buildshaderbinary(
                          clip_dist_mask,
                  },
              .numinputsemantics =
@@ -1586,7 +1600,7 @@ index bacbc6a..c95cc6b 100644
              .numexportsemantics = outputswritten,
          };
          memcpy(buf + offset, &vsh, sizeof(vsh));
-@@ -465,18 +1462,16 @@ static PsbcResult buildshaderbinary(
+@@ -465,18 +1474,16 @@ static PsbcResult buildshaderbinary(
                          ctx->rinfo->ps.writes_mrt0_alpha
                      ),
                      .spishadercolformat =
@@ -1608,7 +1622,7 @@ index bacbc6a..c95cc6b 100644
                      .dbshadercontrol = compute_db_shader_control(ctx->rinfo),
                      .cbshadermask = ac_get_cb_shader_mask(
                          ctx->rinfo->ps.spi_shader_col_format
-@@ -524,8 +1519,8 @@ static PsbcResult buildshaderbinary(
+@@ -524,8 +1531,8 @@ static PsbcResult buildshaderbinary(
          uint32_t gs_out_prim;
          switch (ctx->nir->info.gs.output_primitive) {
          case MESA_PRIM_POINTS:       gs_out_prim = V_028A6C_POINTLIST; break;
@@ -1619,7 +1633,7 @@ index bacbc6a..c95cc6b 100644
          default:                     gs_out_prim = V_028A6C_TRISTRIP;  break;
          }
  
-@@ -736,10 +1731,11 @@ static PsbcResult buildshaderbinary(
+@@ -736,10 +1743,11 @@ static PsbcResult buildshaderbinary(
          }
          break;
      case MESA_SHADER_FRAGMENT:
@@ -1634,7 +1648,7 @@ index bacbc6a..c95cc6b 100644
              };
              memcpy(buf + offset, &input, sizeof(input));
              offset += sizeof(input);
-@@ -852,19 +1848,21 @@ static PsbcResult buildshaderbinary(
+@@ -852,19 +1860,21 @@ static PsbcResult buildshaderbinary(
  
  static void setup_ac_info(struct ac_compiler_info* ac_info, enum amd_gfx_level gfxlevel) {
      ac_info->gfx_level = gfxlevel;
@@ -1663,7 +1677,7 @@ index bacbc6a..c95cc6b 100644
          ac_info->has_fma_mix = true;
      } else if (gfxlevel == GFX10) {
          ac_info->max_waves_per_simd = 20;
-@@ -928,26 +1926,1232 @@ static void setup_target(PsbcTarget target,
+@@ -928,26 +1938,1231 @@ static void setup_target(PsbcTarget target,
      }
  }
  
@@ -2448,8 +2462,7 @@ index bacbc6a..c95cc6b 100644
 +    setup_ac_info(&ac, GFX10_3);
 +    ac.hs_offchip_workgroup_dw_size = options->offchip_workgroup_capacity_dwords;
 +    struct radv_compiler_info ci = {.ac = &ac};
-+    ci.buffer_descriptor_size = 16;
-+    ci.buffer_descriptor_alignment = 16;
++    psbc_setup_descriptor_sizes(&ci);
 +    ci.key.family = ci.debug.family = CHIP_NAVI21;
 +    ci.key.ge_wave_size = 64;
 +    ci.key.ps_wave_size = 32;
@@ -2900,7 +2913,7 @@ index bacbc6a..c95cc6b 100644
  
      /* Ensure library is initialized */
      psbc_init();
-@@ -961,17 +3165,43 @@ PsbcResult psbc_compile_shader(
+@@ -961,17 +3176,35 @@ PsbcResult psbc_compile_shader(
      /* Construct ac_compiler_info for the target GPU */
      struct ac_compiler_info ac_info = {0};
      setup_ac_info(&ac_info, gfxlevel);
@@ -2924,15 +2937,7 @@ index bacbc6a..c95cc6b 100644
 +    /* The native CS owner supplies three grid dimensions directly, not a
 +     * Vulkan dispatch-parameter pointer with a separate lifetime. */
 +    compiler_info.key.load_grid_size_from_user_sgpr = mesa_stage == MESA_SHADER_COMPUTE;
-+    compiler_info.sampled_image_desc_size = 32;
-+    compiler_info.combined_image_sampler_desc_size = 48;
-+    compiler_info.combined_image_sampler_offset = 32;
-+    compiler_info.sampler_descriptor_size = 16;
-+    compiler_info.sampler_descriptor_alignment = 16;
-+    compiler_info.image_descriptor_size = 32;
-+    compiler_info.image_descriptor_alignment = 16;
-+    compiler_info.buffer_descriptor_size = 16;
-+    compiler_info.buffer_descriptor_alignment = 16;
++    psbc_setup_descriptor_sizes(&compiler_info);
      compiler_info.key.ge_wave_size = 64;
      compiler_info.key.ps_wave_size = (gfxlevel >= GFX10_3) ? 32 : 64;
      compiler_info.key.cs_wave_size = (gfxlevel >= GFX10_3) ? 32 : 64;
@@ -2945,7 +2950,7 @@ index bacbc6a..c95cc6b 100644
      /* ACO uses debug.family for disassembly and init_program assertion */
      compiler_info.debug.family = chipfamily;
  
-@@ -981,6 +3211,7 @@ PsbcResult psbc_compile_shader(
+@@ -981,6 +3214,7 @@ PsbcResult psbc_compile_shader(
      /* Construct radv_shader_stage */
      struct radv_shader_stage stage = {0};
      stage.stage = mesa_stage;
@@ -2953,7 +2958,7 @@ index bacbc6a..c95cc6b 100644
      /* Set next_stage based on the pipeline graph.
       * For standalone compilation we assume the simplest pipeline:
       *   VS → FS, VS → HS → DS → FS, VS → GS → FS
-@@ -992,46 +3223,288 @@ PsbcResult psbc_compile_shader(
+@@ -992,46 +3226,288 @@ PsbcResult psbc_compile_shader(
      case MESA_SHADER_GEOMETRY:  stage.next_stage = MESA_SHADER_FRAGMENT;     break;
      default:                    stage.next_stage = MESA_SHADER_NONE;         break;
      }
@@ -3266,7 +3271,7 @@ index bacbc6a..c95cc6b 100644
  
      /* Determine previous stage for shader args declaration.
       * HS/GS need previous_stage=VERTEX so that the merged-pipeline args
-@@ -1046,13 +3519,34 @@ PsbcResult psbc_compile_shader(
+@@ -1046,13 +3522,34 @@ PsbcResult psbc_compile_shader(
      default:                    previous_stage = MESA_SHADER_NONE;      break;
      }
  
@@ -3302,7 +3307,7 @@ index bacbc6a..c95cc6b 100644
  
      /* For geometry shaders, run the legacy GS lowering pass.
       * On GFX10.3 (PS5), NGG GS requires merging with the previous stage,
-@@ -1080,16 +3574,75 @@ PsbcResult psbc_compile_shader(
+@@ -1080,16 +3577,75 @@ PsbcResult psbc_compile_shader(
              ralloc_free(gs_copy);
      }
  
@@ -3382,7 +3387,7 @@ index bacbc6a..c95cc6b 100644
          psbc_shutdown();
          return PSBC_RESULT_COMPILE_ACO;
      }
-@@ -1098,6 +3651,22 @@ PsbcResult psbc_compile_shader(
+@@ -1098,6 +3654,22 @@ PsbcResult psbc_compile_shader(
      struct radv_shader_binary_legacy* legacy =
          (struct radv_shader_binary_legacy*)binary;
  
@@ -3405,7 +3410,7 @@ index bacbc6a..c95cc6b 100644
      /* The data layout in radv_shader_binary_legacy is:
       * [stats | code | ir | disasm | debug_info]
       * Code starts at offset stats_size. */
-@@ -1116,28 +3685,104 @@ PsbcResult psbc_compile_shader(
+@@ -1116,28 +3688,104 @@ PsbcResult psbc_compile_shader(
          .psbc_stage = opts->stage,
          .spirv_data = spirv,
          .spirv_size = spirv_size,
@@ -3514,7 +3519,7 @@ index bacbc6a..c95cc6b 100644
  }
  
  const char* psbc_result_string(PsbcResult result) {
-@@ -1149,6 +3794,7 @@ const char* psbc_result_string(PsbcResult result) {
+@@ -1149,6 +3797,7 @@ const char* psbc_result_string(PsbcResult result) {
      case PSBC_RESULT_COMPILE_ACO:      return "ACO shader compilation failed";
      case PSBC_RESULT_OUT_OF_MEMORY:    return "out of memory";
      case PSBC_RESULT_INTERNAL_ERROR:   return "internal error";

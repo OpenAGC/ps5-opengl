@@ -3022,11 +3022,6 @@ ps5_prepare_tessellation_buffers(struct ps5_context *context,
    return true;
 }
 
-#ifdef PS5_NATIVE_TITLE_RUNTIME
-static size_t ps5_tiled_color_offset(enum pipe_format format, unsigned x,
-                                      unsigned y, unsigned width, unsigned layer);
-#endif
-
 static bool
 ps5_prepare_texture(struct ps5_context *context,
                     const struct ps5_shader *shader, unsigned slot,
@@ -3421,28 +3416,6 @@ ps5_prepare_texture(struct ps5_context *context,
                        (anisotropy ? 1u << 29 : 0u);
       descriptor[11] = sampler_state->border_color_ptr |
                        ((uint32_t)sampler_state->border_color_type << 30);
-#ifdef PS5_NATIVE_TITLE_RUNTIME
-      if (texture->base.target == PIPE_TEXTURE_2D &&
-          texture->base.format == PIPE_FORMAT_R8G8B8A8_UNORM &&
-          texture->base.width0 == 64 && texture->base.height0 == 64 &&
-          !texture->base.last_level) {
-         if (setenv("PSBC_DEBUG_IO", "1", 1) != 0)
-            return false;
-         const size_t center = tiled_render_target
-            ? ps5_tiled_color_offset(texture->base.format, 32, 32, 64, 0)
-            : 32 * texture->level_stride[0] + 32 * sizeof(uint32_t);
-         if (texture->allocation_size >= sizeof(uint32_t) &&
-             center <= texture->allocation_size - sizeof(uint32_t)) {
-            uint32_t pixel;
-            memcpy(&pixel, texture->data + center, sizeof(pixel));
-            printf("[ps5-gallium] graphics-fetch slot=%u binding=%u table=%p offset=%u texture=%p center=%08x srd=%08x/%08x/%08x/%08x sampler=%08x/%08x/%08x/%08x\n",
-                   state_slot, binding->binding, (void *)table->data,
-                   binding->offset, (void *)texture->data, pixel,
-                   descriptor[0], descriptor[1], descriptor[2], descriptor[3],
-                   descriptor[8], descriptor[9], descriptor[10], descriptor[11]);
-         }
-      }
-#endif
       if (sampler->compare_mode) {
          uint32_t first_depth;
 
@@ -5720,15 +5693,6 @@ ps5_transfer_map(struct pipe_context *context, struct pipe_resource *base,
    *out_transfer = NULL;
    if (!ps5_map_bounds(resource, level, box, &offset))
       return NULL;
-   if ((usage & PIPE_MAP_READ) && base->target == PIPE_TEXTURE_2D &&
-       base->format == PIPE_FORMAT_R8G8B8A8_UNORM && base->width0 == 16 && base->height0 == 16) {
-      uint32_t pixel = 0;
-      if (resource->data && resource->allocation_size >= sizeof(pixel))
-         memcpy(&pixel, resource->data, sizeof(pixel));
-      printf("[ps5-gallium] fetch-readback-map address=%p bind=%x usage=%x box=%d,%d,%d:%d,%d,%d raw=%08x\n",
-             (void *)resource->data, base->bind, usage, box->x, box->y, box->z,
-             box->width, box->height, box->depth, pixel);
-   }
 
    transfer = calloc(1, sizeof(*transfer));
    if (!transfer)
@@ -5899,12 +5863,6 @@ ps5_transfer_map(struct pipe_context *context, struct pipe_resource *base,
       transfer->base.stride = staging_stride;
       transfer->base.layer_stride = staging_size;
       transfer->base.offset = 0;
-      if ((usage & PIPE_MAP_READ) && base->format == PIPE_FORMAT_R8G8B8A8_UNORM &&
-          base->width0 == 16 && base->height0 == 16 && staging_size >= 4) {
-         uint32_t pixel;
-         memcpy(&pixel, transfer->staging, sizeof(pixel));
-         printf("[ps5-gallium] fetch-readback-staging pixel=%08x stride=%zu\n", pixel, staging_stride);
-      }
       return transfer->staging;
    }
    if ((usage & PIPE_MAP_READ) && resource->base.target == PIPE_BUFFER)
@@ -9851,15 +9809,6 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
                         context->tessellation_output.hs.machine_code_size),
              ps5_hash32(context->tessellation_output.tes.machine_code,
                         context->tessellation_output.tes.machine_code_size));
-   if (context->tcs && context->tes && context->fs->active &&
-       getenv("PSBC_DEBUG_IO"))
-      printf("[ps5-gallium] tessellation-packages hs=%08x final=%08x fs=%08x metadata=%08x/%08x/%08x\n",
-             ps5_hash32(context->tessellation_hs_package, context->tessellation_hs_package_size),
-             ps5_hash32(context->tessellation_tes_package, context->tessellation_tes_package_size),
-             ps5_hash32(context->fs->active->package, context->fs->active->package_size),
-             ps5_hash32(&context->tessellation_output.hs.metadata, sizeof(PsbcShaderMetadata)),
-             ps5_hash32(&context->tessellation_output.tes.metadata, sizeof(PsbcShaderMetadata)),
-             ps5_hash32(&context->fs->active->output.metadata, sizeof(PsbcShaderMetadata)));
 #endif
    /* ponytail: storage draws retire synchronously; batching needs retained
     * storage resources and explicit shader-write visibility first. */
@@ -12187,17 +12136,6 @@ ps5_create_compute_state(struct pipe_context *base,
       size_t package_size = 0;
       const PsbcResult compile_result = psbc_compile_nir(nir, &options,
                                                         &shader->output);
-      if (shader->images == 1 && shader->textures == 1 && !shader->ssbos) {
-         printf("[ps5-gallium] fetch-image-diagnostic NIR\n");
-         nir_print_shader(nir, stdout);
-         if (compile_result == PSBC_RESULT_OK) {
-            const unsigned char *code = shader->output.machine_code;
-            printf("[ps5-gallium] fetch-image-diagnostic code=");
-            for (size_t byte = 0; byte < shader->output.machine_code_size; ++byte)
-               printf("%02x", code[byte]);
-            printf("\n");
-         }
-      }
       const int package_result = compile_result == PSBC_RESULT_OK ?
          ps5_agc_package_build(&shader->output, 0, &package, &package_size) : -1;
       if (compile_result != PSBC_RESULT_OK || package_result) {
@@ -12502,41 +12440,6 @@ ps5_set_compute_sampler_states(struct pipe_context *base, unsigned start, unsign
 }
 
 static void
-ps5_log_fetch_image_pixels(struct ps5_context *context, const char *phase)
-{
-#ifdef PS5_NATIVE_TITLE_RUNTIME
-   if (context->cs->images != 1 || context->cs->textures != 1 || context->cs->ssbos)
-      return;
-   struct pipe_resource *resources[] = {context->compute_images[0].resource,
-      context->compute_views[0] ? context->compute_views[0]->texture : NULL};
-   for (unsigned index = 0; index < 2; ++index) {
-      const struct ps5_resource *resource = (const struct ps5_resource *)resources[index];
-      if (!resource || resource->base.format != PIPE_FORMAT_R8G8B8A8_UNORM ||
-          resource->base.target != PIPE_TEXTURE_2D || resource->base.last_level || !resource->data)
-         continue;
-      const unsigned points[][2] = {{0,0}, {1,0}, {2,0}, {3,0}, {16,16}, {32,32}};
-      for (unsigned point = 0; point < 6; ++point) {
-         const unsigned x = points[point][0], y = points[point][1];
-         if (x >= resource->base.width0 || y >= resource->base.height0)
-            continue;
-         const size_t offset = ps5_linear_sampled_layout(&resource->base)
-            ? (size_t)y * resource->level_stride[0] + x * 4u
-            : ps5_tiled_color_offset(resource->base.format, x, y, resource->base.width0, 0);
-         if (offset > resource->allocation_size || 4 > resource->allocation_size - offset)
-            continue;
-         uint32_t pixel;
-         memcpy(&pixel, resource->data + offset, sizeof(pixel));
-         printf("[ps5-gallium] fetch-image-pixel phase=%s resource=%u xy=%u,%u offset=%zu value=%08x\n",
-                phase, index, x, y, offset, pixel);
-      }
-   }
-#else
-   (void)context;
-   (void)phase;
-#endif
-}
-
-static void
 ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
 {
    struct ps5_context *context = (struct ps5_context *)base;
@@ -12667,21 +12570,8 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
       }
       buffers[buffer_count++] = view->texture;
    }
-   if (context->cs->images == 1 && context->cs->textures == 1 && !context->cs->ssbos) {
-      const uint32_t *words = (const uint32_t *)table->data;
-      printf("[ps5-gallium] fetch-image-diagnostic grid=%u,%u,%u image=",
-             groups[0], groups[1], groups[2]);
-      for (unsigned word = 0; word < 8; ++word)
-         printf("%08x,", words[PS5_COMPUTE_BUFFER_SLOTS * 4 + word]);
-      printf(" texture=");
-      for (unsigned word = 0; word < 8; ++word)
-         printf("%08x,", words[PS5_COMPUTE_TEXTURE_OFFSET / 4 + word]);
-      printf("\n");
-   }
-   ps5_log_fetch_image_pixels(context, "before");
    context->last_compute_status = ps5_agc_compute_execute(base->screen, &context->cs->output,
       context->compute_descriptors, buffers, buffer_count, groups);
-   ps5_log_fetch_image_pixels(context, "after");
    if (context->last_compute_status)
       printf("[ps5-gallium] compute submit failed status=%d resources=%u\n",
              context->last_compute_status, buffer_count);

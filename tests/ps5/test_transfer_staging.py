@@ -49,7 +49,6 @@ code = r'''
 #define CLAMP(v,lo,hi) ((v) < (lo) ? (lo) : (v) > (hi) ? (hi) : (v))
 enum { PIPE_BUFFER, PIPE_TEXTURE_2D, PIPE_TEXTURE_3D, PIPE_TEXTURE_2D_ARRAY };
 enum pipe_format { COLOR, PIPE_FORMAT_Z32_FLOAT, PIPE_FORMAT_Z32_FLOAT_S8X24_UINT, COLOR_UINT, COLOR16, COMPRESSED };
-#define PIPE_FORMAT_R8G8B8A8_UNORM COLOR
 enum { PIPE_MAP_READ=1, PIPE_MAP_WRITE=2, PIPE_BIND_RENDER_TARGET=4, PIPE_BIND_DEPTH_STENCIL=8 };
 struct pipe_resource { unsigned bind, target, format, width0, height0, depth0,
     array_size, last_level, nr_samples; };
