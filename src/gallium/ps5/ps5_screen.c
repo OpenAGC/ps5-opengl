@@ -11999,16 +11999,19 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                continue;
             }
             const bool volume = tex->sampler_dim == GLSL_SAMPLER_DIM_3D;
+            const bool gather = tex->op == nir_texop_tg4;
             const unsigned dimensions = tex->sampler_dim == GLSL_SAMPLER_DIM_1D ? 1 :
                tex->sampler_dim == GLSL_SAMPLER_DIM_2D ? 2 :
                (volume || tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE) ? 3 : 0;
-            if ((tex->op != nir_texop_txf && tex->op != nir_texop_txs && tex->op != nir_texop_txl) ||
+            if ((tex->op != nir_texop_txf && tex->op != nir_texop_txs && tex->op != nir_texop_txl && !gather) ||
                 !dimensions || (volume && tex->is_array) ||
+                (gather && tex->sampler_dim != GLSL_SAMPLER_DIM_2D &&
+                           tex->sampler_dim != GLSL_SAMPLER_DIM_CUBE) ||
                 tex->is_shadow || tex->texture_index >= PS5_COMPUTE_TEXTURE_SLOTS ||
                 tex->def.bit_size != 32 ||
-                tex->num_srcs != (tex->op == nir_texop_txs ? 1 : 2))
+                tex->num_srcs != (tex->op == nir_texop_txs || gather ? 1 : 2))
                return false;
-            if (tex->op == nir_texop_txl && (tex->sampler_index != tex->texture_index ||
+            if ((tex->op == nir_texop_txl || gather) && (tex->sampler_index != tex->texture_index ||
                 (tex->dest_type != nir_type_float32 && tex->dest_type != nir_type_int32 &&
                  tex->dest_type != nir_type_uint32)))
                return false;
@@ -12051,7 +12054,7 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                   return false;
                }
             }
-            if (lods != 1 || coords != (tex->op == nir_texop_txs ? 0u : 1u))
+            if (lods != !gather || coords != (tex->op == nir_texop_txs ? 0u : 1u))
                return false;
             if ((*used & (1u << tex->texture_index)) &&
                 (((*arrays & (1u << tex->texture_index)) != 0) != tex->is_array))
@@ -12059,7 +12062,7 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
             *used |= 1u << tex->texture_index;
             binding_size[tex->texture_index] = 1;
             if (tex->is_array) *arrays |= 1u << tex->texture_index;
-            if (tex->op == nir_texop_txl)
+            if (tex->op == nir_texop_txl || gather)
                *filtered |= 1u << tex->texture_index;
          }
       }
@@ -12096,6 +12099,7 @@ ps5_create_compute_state(struct pipe_context *base,
    const nir_lower_tex_options tex_options = {
       .lower_invalid_implicit_lod = true, .lower_txp = ~0u,
       .lower_txp_array = true, .lower_txf_offset = true,
+      .lower_tg4_offsets = true,
       .lower_rect_offset = true, .lower_rect = true,
       .lower_offset_filter = ps5_compute_lower_texture_offset,
    };

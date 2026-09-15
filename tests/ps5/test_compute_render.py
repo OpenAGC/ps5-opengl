@@ -469,6 +469,23 @@ int main(void) {
         compile(write_mip(level,array,kind), &options);
     /* Sampled descriptors coexist with the three existing compute banks.
      * This is compiler/package coverage, not native sampler qualification. */
+    for(unsigned unit=0;unit<=15;unit+=15) for(unsigned component=0;component<4;++component) {
+        nir_shader *nir=compute_sample(4,unit);
+        nir_tex_instr *tex=NULL;
+        nir_foreach_block(block,nir_shader_get_entrypoint(nir)) nir_foreach_instr(instr,block)
+            if(instr->type==nir_instr_type_tex) tex=nir_instr_as_tex(instr);
+        assert(tex);
+        nir_tex_instr_remove_src(tex,nir_tex_instr_src_index(tex,nir_tex_src_lod));
+        tex->op=nir_texop_tg4; tex->component=component;
+        unsigned used=0,buffers=0,filtered=0,lods[16],arrays=0;
+        assert(ps5_compute_texture_usage(nir,&used,&buffers,&filtered,lods,&arrays,(uint8_t[16]){0}));
+        assert(used==(1u<<unit) && filtered==used && !buffers && !arrays && !lods[unit]);
+        tex->sampler_dim=GLSL_SAMPLER_DIM_3D;
+        assert(!ps5_compute_texture_usage(nir,&used,&buffers,&filtered,lods,&arrays,(uint8_t[16]){0}));
+        tex->sampler_dim=GLSL_SAMPLER_DIM_2D;
+        nir_validate_shader(nir,"bounded compute texture gather");
+        compile(nir,&all_slots);
+    }
     for(unsigned unit=0;unit<=15;unit+=15) {
         PsbcCompileOptions sampled=all_slots;
         PsbcShaderOutput output[2]={{0}};
