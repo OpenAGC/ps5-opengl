@@ -47,7 +47,7 @@ for helper, following in (("ps5_cube_texture_target", "ps5_sampled_texture_targe
     start = source.index("static bool\n" + helper + "(")
     linear_helpers += source[start:source.index("static bool\n" + following + "(", start)]
 encoding_at = source.index("static bool\nps5_texture_descriptor_format(")
-format_encoding = source[encoding_at:source.index("static bool\nps5_texture_descriptor_swizzle(", encoding_at)]
+format_encoding = source[encoding_at:source.index("static bool\nps5_texture_descriptor_wrap(", encoding_at)]
 barrier_at = source.index("static void\nps5_memory_barrier(")
 barrier = source[barrier_at:source.index("static bool\nps5_draw_primitive(", barrier_at)]
 fragment_at = source.index("static unsigned\nps5_shader_storage_count(")
@@ -190,6 +190,7 @@ static unsigned with_images;
 static bool with_sampled;
 static unsigned sampled_count=8;
 static uint32_t expected_sampler[4];
+static uint32_t expected_swizzle = UINT32_MAX;
 static unsigned with_filtered;
 static bool multi, with_constants, fail_upload;
 static bool fail_info;
@@ -245,6 +246,8 @@ int ps5_agc_compute_execute(struct pipe_screen *s, const PsbcShaderOutput *shade
         for(unsigned i=0;i<sampled_count;++i) {
             uint32_t expected[12]={0};
             assert(!ps5_resource_sampled_image_descriptor(buffers[i],0,0,expected));
+            if(expected_swizzle != UINT32_MAX)
+                expected[3]=(expected[3]&~0xfffu)|expected_swizzle;
             if (with_filtered & (1u<<i))
                 memcpy(expected+8,expected_sampler,16);
             assert(!memcmp(t->data+PS5_COMPUTE_TEXTURE_OFFSET+i*48,expected,48));
@@ -1820,6 +1823,29 @@ int main(void) {
     unsigned before_sampled=submitted;
     ps5_launch_grid(&context.base,&good);
     assert(!context.last_compute_status && submitted==before_sampled+1);
+    {
+        _Alignas(256) uint8_t rgba[1536];
+        struct ps5_resource saved=image;
+        struct pipe_sampler_view saved_view=sampled;
+        image.base.format=PIPE_FORMAT_R32G32B32A32_FLOAT;
+        image.data=rgba; image.size=image.allocation_size=sizeof(rgba);
+        image.level_stride[0]=512;
+        const unsigned selectors[]={4,5,6,7,0,1};
+        for(unsigned channel=0;channel<4;++channel) for(unsigned swizzle=0;swizzle<6;++swizzle) {
+            sampled=saved_view; sampled.format=image.base.format;
+            if(channel==0) sampled.swizzle_r=swizzle;
+            if(channel==1) sampled.swizzle_g=swizzle;
+            if(channel==2) sampled.swizzle_b=swizzle;
+            if(channel==3) sampled.swizzle_a=swizzle;
+            expected_swizzle=(0xfacu&~(7u<<(3*channel)))|(selectors[swizzle]<<(3*channel));
+            ps5_set_compute_sampler_views(&context.base,0,8,0,sampled_views);
+            assert(!context.compute_views_invalid);
+            ps5_launch_grid(&context.base,&good);
+            assert(!context.last_compute_status);
+        }
+        image=saved; sampled=saved_view; expected_swizzle=UINT32_MAX;
+        before_sampled=submitted-1;
+    }
     cs.array_textures=1;
     ps5_launch_grid(&context.base,&good);
     assert(context.last_compute_status<0 && submitted==before_sampled+1);
@@ -1828,7 +1854,7 @@ int main(void) {
         struct pipe_sampler_view bad=sampled;
         if(fault==0) bad.u.tex.first_level=1;
         if(fault==1) bad.u.tex.last_layer=1;
-        if(fault==2) bad.swizzle_a=PIPE_SWIZZLE_1;
+        if(fault==2) bad.swizzle_a=6;
         if(fault==3) bad.format=PIPE_FORMAT_R32_FLOAT;
         if(fault==4) bad.target=PIPE_TEXTURE_2D_ARRAY;
         if(fault==5) image.base.screen=&other_screen;
@@ -1878,10 +1904,10 @@ int main(void) {
         for(unsigned remap=0;remap<4;++remap) {
             struct pipe_sampler_view bad=cv;
             pipe_reference_init(&bad.reference,1);
-            if(remap==0) bad.swizzle_r=PIPE_SWIZZLE_Y;
-            if(remap==1) bad.swizzle_g=PIPE_SWIZZLE_X;
-            if(remap==2) bad.swizzle_b=PIPE_SWIZZLE_1;
-            if(remap==3) bad.swizzle_a=PIPE_SWIZZLE_0;
+            if(remap==0) bad.swizzle_r=6;
+            if(remap==1) bad.swizzle_g=6;
+            if(remap==2) bad.swizzle_b=6;
+            if(remap==3) bad.swizzle_a=6;
             struct pipe_sampler_view *pair[2]={&identity,&bad};
             ps5_set_compute_sampler_views(&context.base,0,2,1,pair);
             assert(context.compute_views_invalid && bad.reference.count==1);
@@ -2044,7 +2070,7 @@ with tempfile.TemporaryDirectory() as directory:
     subprocess.run([executable], check=True, timeout=10)
 print("PASS: Gallium 39-resource bindings, image descriptors/lifetime, upload failure, direct/indirect guards and unbind")
 print("PASS: Mesa sampler+render canonical SRDs without image hint; staging/allocation/layout guards, CS/FS refs and format mismatch")
-print("PASS: R/RG X001/XY01 and identity views, arbitrary remap rejection, atomic replacement/trailing unbind and references")
+print("PASS: R/RG default views, 24 RGBA channel/constant swizzles, reserved selector rejection, atomic replacement/unbind and references")
 print("PASS: RGBA16/RGBA8_UNORM real GFX10 encoding, canonical/staged CS/FS bindings, mip/array bounds; guarded base-only tiled RGBA8")
 print("PASS: Mesa atomic handoff CS/FS, SSBO counts 0/1/8 + bindings 0/7, alignment/offset state, refs, isolation, replacement/unbind")
 print("PASS: Mesa CS/FS zero-initialized 0-to-16-to-2-to-0 tracking, stale cleanup, reference counts and stage isolation")

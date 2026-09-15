@@ -768,6 +768,15 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
                         (srd[3] >> 28) >= 14 ? 0 : (srd[3] >> 12) & 15u,
                         (srd[3] >> 28) >= 14 ? 0 : (srd[3] >> 16) & 15u, expected) :
                      ps5_resource_storage_image_descriptor_owned(buffers[j], srd);
+                  if (!rc && sampled && !texel) {
+                     /* View swizzles cannot change the owned address or extent.
+                      * Only zero, one and the four channel selectors are valid. */
+                     for (unsigned channel = 0; channel < 4; ++channel) {
+                        unsigned selector = (srd[3] >> (channel * 3)) & 7u;
+                        if (selector == 2 || selector == 3) rc = -1;
+                     }
+                     expected[3] = (expected[3] & ~0xfffu) | (srd[3] & 0xfffu);
+                  }
                   if (!rc && (texel || image || !memcmp(srd, expected, sizeof(expected))))
                      owned = true;
                }

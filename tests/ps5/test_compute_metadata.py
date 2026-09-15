@@ -307,19 +307,25 @@ static void submission_contract(PsbcShaderOutput *out) {
     assert(!ps5_resource_sampled_image_descriptor(&image,0,0,sampled));
     assert(!ps5_agc_compute_execute(&screen,out,&table,all,47,groups));
     for(unsigned word=0;word<8;++word) {
-        sampled[word]^=1;
+        sampled[word]^=word==3 ? 1u<<12 : 1u;
         assert(ps5_agc_compute_execute(&screen,out,&table,all,47,groups)<0);
-        sampled[word]^=1;
+        sampled[word]^=word==3 ? 1u<<12 : 1u;
     }
     sampled_msaa=false;
+    memcpy(sampled,expected,32);
+    for(unsigned channel=0;channel<4;++channel) for(unsigned selector=0;selector<8;++selector) {
+        sampled[3]=(expected[3]&~(7u<<(channel*3)))|(selector<<(channel*3));
+        int result=ps5_agc_compute_execute(&screen,out,&table,all,47,groups);
+        assert((selector==2 || selector==3) ? result<0 : result==0);
+    }
     memcpy(sampled,expected,32);
     const unsigned sampled_submissions=submissions;
     for(unsigned word=0;word<12;++word) {
         if(word==8) continue; /* Independent wrap bits have multiple valid values. */
-        sampled[word]^=1;
+        sampled[word]^=word==3 ? 1u<<12 : 1u;
         assert(ps5_agc_compute_execute(&screen,out,&table,all,47,groups)<0);
         assert(!allocations && !locked && submissions==sampled_submissions);
-        sampled[word]^=1;
+        sampled[word]^=word==3 ? 1u<<12 : 1u;
     }
     memset(sampled,0,48);
     sampled[0]=(uintptr_t)output;

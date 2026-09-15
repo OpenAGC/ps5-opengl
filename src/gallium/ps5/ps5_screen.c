@@ -12430,15 +12430,12 @@ ps5_set_compute_sampler_views(struct pipe_context *base, unsigned start, unsigne
             return;
          continue;
       }
-      const unsigned channels = v && v->format == PIPE_FORMAT_Z32_FLOAT ? 1 :
-                                v ? ps5_storage_image_channels(v->format) : 0;
-      /* The descriptor already supplies missing R/RG channels as zero/one. */
-      const bool swizzle_ok = !v || (v->swizzle_r == PIPE_SWIZZLE_X &&
-         ((v->swizzle_g == PIPE_SWIZZLE_Y && v->swizzle_b == PIPE_SWIZZLE_Z &&
-           v->swizzle_a == PIPE_SWIZZLE_W) ||
-          (v->swizzle_b == PIPE_SWIZZLE_0 && v->swizzle_a == PIPE_SWIZZLE_1 &&
-           ((channels == 1 && v->swizzle_g == PIPE_SWIZZLE_0) ||
-            (channels == 2 && v->swizzle_g == PIPE_SWIZZLE_Y)))));
+      uint32_t selector;
+      const bool swizzle_ok = !v ||
+         (ps5_texture_descriptor_swizzle(v->swizzle_r, v->format, &selector) &&
+          ps5_texture_descriptor_swizzle(v->swizzle_g, v->format, &selector) &&
+          ps5_texture_descriptor_swizzle(v->swizzle_b, v->format, &selector) &&
+          ps5_texture_descriptor_swizzle(v->swizzle_a, v->format, &selector));
       if (v && (!v->texture || v->texture->screen != base->screen ||
           v->target != v->texture->target || v->format != v->texture->format ||
           v->u.tex.first_layer ||
@@ -12627,6 +12624,15 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
       if (ps5_resource_sampled_image_descriptor(view->texture,
             view->u.tex.first_level, view->u.tex.last_level, descriptor))
          return;
+      const unsigned swizzles[] = {view->swizzle_r, view->swizzle_g,
+                                   view->swizzle_b, view->swizzle_a};
+      for (unsigned channel = 0; channel < 4; ++channel) {
+         uint32_t selector;
+         if (!ps5_texture_descriptor_swizzle(swizzles[channel], view->format, &selector))
+            return;
+         descriptor[3] = (descriptor[3] & ~(7u << (channel * 3))) |
+                         (selector << (channel * 3));
+      }
       if (context->cs->texture_lod[i] > view->u.tex.last_level - view->u.tex.first_level)
          return;
       if ((view->target == PIPE_TEXTURE_1D_ARRAY ||
