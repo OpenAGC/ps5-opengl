@@ -30,6 +30,7 @@ def main():
         (mesa / "source").write_text("original")
         (mesa / "build.ninja").write_text("rule copy\n  command = cp $in $out\n" + "".join(
             f"build {path.relative_to(mesa)}: copy source\n" for path in archives))
+        subprocess.run(command + [str(runtime / "runtime-config.txt")], check=True)
         # All native objects are already current. Only Mesa needs dependency checking.
         for name in ("ps5_egl.o", "ps5_screen.o", "ps5_agc_package.o", "ps5_agc_runtime_backend.o",
                      "u_framebuffer.o", "agc_link_stub.o", "agc_driver_link_stub.o",
