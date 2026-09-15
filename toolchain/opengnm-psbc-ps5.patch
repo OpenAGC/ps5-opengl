@@ -5177,6 +5177,33 @@ index a3d7296..5541d5f 100644
  # r600/gcn specific instruction that evaluates unnormalized cube texture coordinates
  # and face index
  # The actual texture coordinates are evaluated from this according to
+diff --git a/src/compiler/nir/nir_opt_varyings.c b/src/compiler/nir/nir_opt_varyings.c
+index 883f0cb..110e0fc 100644
+--- a/src/compiler/nir/nir_opt_varyings.c
++++ b/src/compiler/nir/nir_opt_varyings.c
+@@ -2687,15 +2687,16 @@ clone_ssa_impl(struct linkage_info *linkage, nir_builder *b, nir_def *ssa)
+                 NIR_MAX_VEC_COMPONENTS);
+       }
+ 
+-      clone = nir_builder_alu_instr_finish_and_insert(b, alu_clone);
+-
+-      alu_clone->def.num_components = alu->def.num_components;
+-      alu_clone->def.bit_size = alu->def.bit_size;
+-
+-      /* nir_builder_alu_instr_finish_and_insert overwrites fp_math_ctrl. */
++      /* Preserve explicit swizzles: the generic ALU builder clamps lanes
++       * beyond the source width, corrupting e.g. a vec3's .xxxx to .xxxz.
++       */
++      nir_def_init(&alu_clone->instr, &alu_clone->def,
++                   alu->def.num_components, alu->def.bit_size);
+       alu_clone->fp_math_ctrl = alu->fp_math_ctrl;
+       alu_clone->no_signed_wrap = alu->no_signed_wrap;
+       alu_clone->no_unsigned_wrap = alu->no_unsigned_wrap;
++      nir_builder_instr_insert(b, &alu_clone->instr);
++      clone = &alu_clone->def;
+       break;
+    }
+ 
 diff --git a/src/compiler/nir/nir_opt_vectorize_io.c b/src/compiler/nir/nir_opt_vectorize_io.c
 index 0669b6e..2978df1 100644
 --- a/src/compiler/nir/nir_opt_vectorize_io.c

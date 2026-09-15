@@ -119,4 +119,5 @@ test-compiler:
 	python3 tests/ps5/test_compute_render.py
 	python3 tests/ps5/test_compute_api_caps.py
 	python3 tests/ps5/test_compiler_descriptor_sizes.py
+	python3 tests/ps5/test_varying_clone_swizzles.py
 	python3 tests/ps5/test_tessellation_link.py
