@@ -177,8 +177,9 @@ static void check_registers(const struct layout *c)
              (ps5_agc_mrt_samples == 4 ? 0x12000u : 0)));
       assert(reg(0x3b0 + i) == (c->heights[i] - 1u) + ((encoded_width - 1u) << 14));
       assert(((attrib3 >> 14) & 31) == (c->pitches[i] ? 0 : 27));
-      assert((attrib3 & 0x1fff) == 0 && ((attrib3 >> 24) & 3) == 1);
-      assert(attrib3 == (c->pitches[i] ? 0x4d000000u : 0x4d06c000u));
+      uint32_t depth = c->pitches[i] ? 0 : ((ps5_agc_mrt_views[i] >> 13) & 0x7ffu) + 1u;
+      assert((attrib3 & 0x1fff) == depth && ((attrib3 >> 24) & 3) == 1);
+      assert(attrib3 == (c->pitches[i] ? 0x4d000000u : 0x4d06c000u | depth));
    }
    template_attrib3 = reg(0x3b8);
    template_alpha ^= 1u << 17; /* Test both setting and clearing absent alpha. */

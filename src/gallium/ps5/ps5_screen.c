@@ -5331,6 +5331,17 @@ ps5_surface_layer_count(const struct pipe_surface *surface)
 }
 
 static unsigned
+ps5_color_surface_first_layer(const struct pipe_surface *surface)
+{
+   /* Native array tiling includes the absolute layer in its address XOR.
+    * Staged surfaces are deliberately copied to a layer-zero allocation. */
+   return surface->texture &&
+          surface->texture->target == PIPE_TEXTURE_2D_ARRAY &&
+          !((const struct ps5_resource *)surface->texture)->render_staging_size
+             ? surface->first_layer : 0;
+}
+
+static unsigned
 ps5_linear_color_pitch(const struct pipe_surface *surface)
 {
    /* Render one existing linear mip/layer directly. Keep allocated staging for
@@ -5801,23 +5812,6 @@ ps5_transfer_map(struct pipe_context *context, struct pipe_resource *base,
    }
    if ((usage & PIPE_MAP_READ) && resource->base.target == PIPE_BUFFER)
       ps5_flush_gpu_data(resource->data + offset, (size_t)box->width);
-   /* Temporary diagnostic for the isolated R16 MSAA-array case. */
-   if ((usage & PIPE_MAP_READ) && base->width0 == 2 && base->height0 == 3 &&
-       ps5_texture_format_size(base->format) == 2) {
-      for (unsigned z = 0; z < (unsigned)box->depth; ++z)
-         for (unsigned y = 0; y < (unsigned)box->height; ++y)
-            for (unsigned x = 0; x < (unsigned)box->width; ++x) {
-               const size_t at = offset + z * (size_t)transfer->base.layer_stride +
-                                 y * (size_t)transfer->base.stride + x * 2u;
-               uint16_t value;
-               if (at > resource->allocation_size ||
-                   resource->allocation_size - at < sizeof(value))
-                  continue;
-               memcpy(&value, resource->data + at, sizeof(value));
-               printf("[ps5-gallium] r16-readback format=%u layer=%u x=%u y=%u offset=%zu value=%u\n",
-                      base->format, (unsigned)box->z + z, x, y, at, (unsigned)value);
-            }
-   }
    return resource->data + offset;
 }
 
@@ -8772,6 +8766,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
             ? (struct ps5_resource *)surface->texture
             : fallback;
          size_t layer_offset = 0;
+         const unsigned first_layer = ps5_color_surface_first_layer(surface);
          /* ponytail: qualify single-target mip/layer draws first; MRT retains
           * existing staging until mixed-layout native coverage is available. */
          target_pitches[i] = color_target_count == 1 ? ps5_linear_color_pitch(surface) : 0;
@@ -8786,7 +8781,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
                layer_offset = target->render_staging_offset;
             } else {
                layer_offset =
-                  (size_t)surface->first_layer * target->layer_stride +
+                  (size_t)(surface->first_layer - first_layer) * target->layer_stride +
                   target->level_offset[surface->level];
             }
          }
@@ -8805,10 +8800,9 @@ ps5_draw_vbo_locked(struct pipe_context *base,
           * Raster bounds and depth dimensions still use the real framebuffer. */
          target_widths[i] = surface->texture ? ps5_surface_width(surface) : 1;
          target_heights[i] = surface->texture ? ps5_surface_height(surface) : 1;
-         target_views[i] = surface->texture &&
-                           surface->last_layer > surface->first_layer
-                              ? (surface->last_layer -
-                                 surface->first_layer) << 13
+         target_views[i] = surface->texture
+                              ? first_layer | ((surface->last_layer -
+                                 surface->first_layer + first_layer) << 13)
                               : 0;
          target_info[i] = surface->texture
             ? ps5_color_target_info(surface->format)

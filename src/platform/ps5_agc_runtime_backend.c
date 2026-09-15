@@ -396,8 +396,12 @@ ps5_agc_set_cx_mrt(void *command, const void *table, uint32_t count)
          uint32_t value = records[attrib3].value & ~UINT32_C(0x0007c000);
          if (ps5_agc_mrt_pitches[target])
             value = (value & ~UINT32_C(0x03f83fff)) | UINT32_C(0x01000000);
-         else
+         else {
             value |= UINT32_C(0x0006c000); /* 64KB_R_X, including after reset. */
+            /* Preserve absolute array slices instead of rebasing their XOR. */
+            value = (value & ~UINT32_C(0x1fff)) |
+                    (((ps5_agc_mrt_views[target] >> 13) & 0x7ffu) + 1u);
+         }
          records[attrib3].value = value;
       }
    }
