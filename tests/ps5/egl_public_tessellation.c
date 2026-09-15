@@ -159,7 +159,7 @@ done:
    return passed;
 }
 
-/* Keep every lane live with distinct SSBO data, and test a deliberate bad
+/* Keep every lane live with distinct buffer-texture data, and test a deliberate bad
  * lane as well as the all-correct case. No constant/uniform-only varyings. */
 static int
 wide_io(void)
@@ -175,9 +175,9 @@ wide_io(void)
    }
    const char *sources[] = {
       "#version 430 core\n"
-      "layout(std430,binding=0) readonly buffer Data{vec4 data[];};"
+      "layout(binding=0) uniform samplerBuffer data;"
       "out vec4 v[32];void main(){for(int i=0;i<32;i++)"
-      "v[i]=data[gl_VertexID*32+i];}",
+      "v[i]=texelFetch(data,gl_VertexID*32+i);}",
       "#version 430 core\nlayout(vertices=3) out;"
       "in vec4 v[][32];out vec4 t[][32];"
       "void main(){for(int i=0;i<32;i++)"
@@ -197,13 +197,18 @@ wide_io(void)
    };
    const GLenum types[] = {GL_VERTEX_SHADER, GL_TESS_CONTROL_SHADER,
                           GL_TESS_EVALUATION_SHADER, GL_FRAGMENT_SHADER};
-   GLuint p = program(sources, types, 4), buffer = 0;
+   GLuint p = program(sources, types, 4), buffer = 0, texture = 0;
    float values[3 * 128];
    int passed = p != 0;
    if (!p)
       return 0;
    glGenBuffers(1, &buffer);
-   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, buffer);
+   glBindBuffer(GL_TEXTURE_BUFFER, buffer);
+   glBufferData(GL_TEXTURE_BUFFER, sizeof(values), NULL, GL_STATIC_DRAW);
+   glGenTextures(1, &texture);
+   glActiveTexture(GL_TEXTURE0);
+   glBindTexture(GL_TEXTURE_BUFFER, texture);
+   glTexBuffer(GL_TEXTURE_BUFFER, GL_RGBA32F, buffer);
    glUseProgram(p);
    glViewport(0, 0, SIZE, SIZE);
    glPatchParameteri(GL_PATCH_VERTICES, 3);
@@ -212,7 +217,7 @@ wide_io(void)
          values[i] = (float)i;
       if (bad)
          values[3 * 128 - 1] = -99;
-      glBufferData(GL_SHADER_STORAGE_BUFFER, sizeof(values), values, GL_STATIC_DRAW);
+      glBufferSubData(GL_TEXTURE_BUFFER, 0, sizeof(values), values);
       glClear(GL_COLOR_BUFFER_BIT);
       glDrawArrays(GL_PATCHES, 0, 3);
       unsigned green = matching(UINT32_C(0xff00ff00));
@@ -226,7 +231,9 @@ wide_io(void)
              ok ? "pass" : "fail");
       passed &= ok;
    }
-   glBindBufferBase(GL_SHADER_STORAGE_BUFFER, 0, 0);
+   glBindTexture(GL_TEXTURE_BUFFER, 0);
+   glDeleteTextures(1, &texture);
+   glBindBuffer(GL_TEXTURE_BUFFER, 0);
    glDeleteBuffers(1, &buffer);
    glUseProgram(0);
    glDeleteProgram(p);
