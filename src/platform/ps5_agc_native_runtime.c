@@ -3752,6 +3752,25 @@ int main(void)
         status[3] = *completion_marker;
 #ifdef PS5_NATIVE_TITLE_RUNTIME
         runtime_require_retirement(submit_rc == 0 && suspend_rc == 0 && waits < 2000);
+        if (runtime_hs_package && getenv("PSBC_DEBUG_IO") &&
+            submit_rc == 0 && suspend_rc == 0 && waits < 2000 &&
+            work_bytes >= WORK_BYTES + TESS_OFFCHIP_BYTES) {
+            /* Diagnostic: bounded samples of this submission's owned ring.
+             * The hardware slot need not start at zero; log at most 16 records. */
+            const uint8_t *slot = memory + WORK_BYTES;
+            unsigned records = 0;
+            flush_gpu_data(slot, TESS_OFFCHIP_BYTES);
+            for (unsigned offset = 0; offset < TESS_OFFCHIP_BYTES && records < 16; offset += 2048) {
+                uint32_t values[4];
+                memcpy(values, slot + offset, sizeof(values));
+                if (!(values[0] | values[1] | values[2] | values[3]))
+                    continue;
+                printf("[ps5-tess-output] offset=%u values=%08x/%08x/%08x/%08x\n",
+                       offset, values[0], values[1], values[2], values[3]);
+                ++records;
+            }
+            printf("[ps5-tess-output] records=%u\n", records);
+        }
 #endif
 #ifdef PS5_DRAW_BATCH_PROBE
         batch_wait_ns = os_time_get_nano() - batch_start;
