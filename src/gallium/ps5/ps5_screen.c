@@ -3387,9 +3387,9 @@ ps5_prepare_texture(struct ps5_context *context,
                       (swizzle[3] << 9) |
                       (view->u.tex.first_level << 12) |
                       (view->u.tex.last_level << 16);
-      /* CUBE encodes cube count, while array images encode face/layer bounds. */
+      /* GFX10 DEPTH is the last accessible face/layer, including cube views. */
       descriptor[4] = ps5_cube_texture_target(view->target)
-                         ? view_layers / 6u - 1u
+                         ? view_layers - 1u
                       : view->target == PIPE_TEXTURE_3D
                          ? texture->base.depth0 - 1
                       : view->target == PIPE_TEXTURE_1D_ARRAY ||
@@ -4562,7 +4562,7 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
        array ? UINT32_C(0xd0000000) : UINT32_C(0x90000000)) | swizzle |
          (first_level << 12) | (last_level << 16),
       multisampled ? (array ? base->array_size - 1 : 0) : tiled ? 0 : volume ? base->depth0 - 1 :
-         sampled && cube ? base->array_size / 6u - 1u : array ? base->array_size - 1 :
+         array ? base->array_size - 1 :
          !one_d && !base->last_level && pitch > base->width0 ? pitch - 1u : 0,
       UINT32_C(0x00400000) | ((multisampled ? 2u : base->last_level) << 4), 0, 0,
    };

@@ -1245,7 +1245,11 @@ int main(void) {
         cube.data=pixels; cube.size=cube.allocation_size=sizeof(pixels);
         cube.layer_stride=512;
         assert(!ps5_resource_sampled_image_descriptor(&cube.base,0,0,descriptor));
-        assert((descriptor[3]>>28)==11 && descriptor[4]==1);
+        assert((descriptor[3]>>28)==11 && descriptor[4]==11);
+        cube.base.array_size=6; cube.base.target=PIPE_TEXTURE_CUBE;
+        assert(!ps5_resource_sampled_image_descriptor(&cube.base,0,0,descriptor));
+        assert((descriptor[3]>>28)==11 && descriptor[4]==5);
+        cube.base.array_size=12; cube.base.target=PIPE_TEXTURE_CUBE_ARRAY;
         struct pipe_image_view v={.resource=&cube.base,.format=cube.base.format,
             .access=PIPE_IMAGE_ACCESS_READ_WRITE};
         v.u.tex.last_layer=11;
