@@ -35,6 +35,8 @@ tiled_at = source.index("static size_t\nps5_tiled_color_surface_size(")
 tiled_helper = source[tiled_at:source.index("static uint32_t\nps5_color_target_info(", tiled_at)]
 array_at = source.index("static unsigned\nps5_storage_image_texel_size(")
 array_layout = source[array_at:source.index("static unsigned\nps5_texture_format_size(", array_at)]
+size_at = source.index("static unsigned\nps5_texture_format_size(")
+size_helper = source[size_at:source.index("static bool\nps5_texture_descriptor_format(", size_at)]
 format_at = source.index("static bool\nps5_integer_texture_format(")
 linear_helpers = source[format_at:source.index("static bool\nps5_msaa4_color_format(", format_at)]
 format_at = source.index("static bool\nps5_core_sampled_texture_format(")
@@ -196,7 +198,7 @@ static bool multi, with_constants, fail_upload;
 static bool fail_info;
 static bool render_condition_pass=true;
 static struct ps5_resource *upload_resource;
-''' + extent_helper + array_layout + linear_helpers + format_encoding + tiled_helper + image_descriptor + r'''
+''' + extent_helper + array_layout + linear_helpers + size_helper + format_encoding + tiled_helper + image_descriptor + r'''
 static int ps5_resource_info(struct pipe_resource *base, void **address, size_t *size, size_t *allocation) {
     (void)allocation;
     if (fail_info) return -1;
@@ -1087,6 +1089,14 @@ int main(void) {
     assert(descriptor[2]==(4u|(2u<<14)|0x80000000u));
     assert(descriptor[3]==0x90000204 && descriptor[4]==63 && descriptor[5]==0x400000);
     {
+        struct ps5_resource srgb=image;
+        srgb.base.format=PIPE_FORMAT_R8G8B8A8_SRGB;
+        srgb.base.bind=PIPE_BIND_SAMPLER_VIEW;
+        assert(!ps5_resource_sampled_image_descriptor(&srgb.base,0,0,descriptor));
+        assert(((descriptor[1]>>20)&0x1ff)==0x82 && (descriptor[3]&0xfff)==0xfac);
+        assert(ps5_resource_storage_image_descriptor(&srgb.base,0,descriptor));
+    }
+    {
         struct ps5_resource depth=image;
         depth.base.format=PIPE_FORMAT_Z32_FLOAT;
         depth.base.bind=PIPE_BIND_SAMPLER_VIEW;
@@ -1540,6 +1550,11 @@ int main(void) {
         if(fault==13) bad.base.last_level=1;
         memset(descriptor,0xa5,sizeof(descriptor));
         assert(ps5_resource_storage_image_descriptor(&bad.base,0,descriptor)<0);
+        if(fault==12) {
+            assert(!ps5_resource_sampled_image_descriptor(&bad.base,0,0,descriptor));
+            assert(((descriptor[1]>>20)&0x1ff)==0x82);
+            continue;
+        }
         assert(ps5_resource_sampled_image_descriptor(&bad.base,0,0,descriptor)<0);
         for(unsigned i=0;i<8;++i) assert(descriptor[i]==0xa5a5a5a5u);
     }

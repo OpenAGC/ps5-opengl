@@ -4436,9 +4436,10 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
    const struct ps5_resource *resource = (const struct ps5_resource *)base;
    uint32_t format;
    const bool sampled = required_bind == PIPE_BIND_SAMPLER_VIEW;
+   const bool srgb = base && sampled && base->format == PIPE_FORMAT_R8G8B8A8_SRGB;
    const bool depth = base && sampled && base->format == PIPE_FORMAT_Z32_FLOAT &&
                       ps5_linear_sampled_layout(base);
-   const unsigned texel_size = depth ? 4 : base ? ps5_storage_image_texel_size(base->format) : 0;
+   const unsigned texel_size = depth || srgb ? 4 : base ? ps5_storage_image_texel_size(base->format) : 0;
    const bool multisampled = base && sampled && base->nr_samples == 4 && base->nr_storage_samples == 4;
    const bool one_d = base &&
       (base->target == PIPE_TEXTURE_1D || base->target == PIPE_TEXTURE_1D_ARRAY);
@@ -4495,7 +4496,7 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
       const unsigned binds = PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET;
       const size_t logical = (size_t)base->width0 * base->height0 * texel_size;
       const size_t physical = ps5_tiled_color_surface_size(base->format, base->width0, base->height0);
-      if ((base->format != PIPE_FORMAT_R8G8B8A8_UNORM &&
+      if ((base->format != PIPE_FORMAT_R8G8B8A8_UNORM && !srgb &&
            base->format != PIPE_FORMAT_R8_UNORM && base->format != PIPE_FORMAT_R8G8_UNORM &&
            base->format != PIPE_FORMAT_R16G16B16A16_FLOAT) || base->target != PIPE_TEXTURE_2D ||
           base->last_level || base->array_size != 1 || (base->bind & binds) != binds ||
@@ -4548,7 +4549,7 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
     * views validate sublayers below. */
    const uintptr_t address = (uintptr_t)resource->data;
    const unsigned pitch = resource->level_stride[0] / texel_size;
-   const unsigned channels = depth ? 1 : ps5_storage_image_channels(base->format);
+   const unsigned channels = depth ? 1 : srgb ? 4 : ps5_storage_image_channels(base->format);
    const uint32_t swizzle = channels == 1 ? 0x204u : channels == 2 ? 0x22cu :
                             channels == 3 ? 0x3acu : 0xfacu;
    const uint32_t srd[8] = {
@@ -12642,7 +12643,7 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
          return;
       if (context->cs->filtered_textures & (1u << i)) {
          if (!(context->compute_sampler_mask & (1u << i)) ||
-             (!ps5_storage_image_texel_size(view->format) && view->format != PIPE_FORMAT_Z32_FLOAT) ||
+             !ps5_texture_format_size(view->format) ||
              (util_format_is_pure_integer(view->format) &&
               (context->compute_samplers[i][2] &
                ((UINT32_C(3) << 20) | (UINT32_C(3) << 22)))))
