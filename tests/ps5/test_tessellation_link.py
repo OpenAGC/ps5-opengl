@@ -375,6 +375,7 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
     }
     /* Each linked stage reads its own UBO and uses the returned SSBO atomic
      * value. This tests actual resource lowering, not resource masks alone. */
+    for (unsigned with_uniform=0; with_uniform<2; ++with_uniform)
     for (unsigned tested=0; tested<4; ++tested) {
         nir_shader *resource_gs=tested==3 ? build(MESA_SHADER_GEOMETRY,false,ci) : NULL;
         nir_shader **resource_input=tested==3 ? &resource_gs : &inputs[tested];
@@ -385,7 +386,11 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
         nir_variable *offset=nir_variable_create(*resource_input,nir_var_uniform,
                                                glsl_uint_type(),"offset");
         nir_build_deref_var(&b,offset); /* Dead after Mesa lowers the load. */
-        nir_def *value=nir_load_uniform(&b,1,32,nir_imm_int(&b,0),.range=1);
+        nir_variable *sampler=nir_variable_create(*resource_input,nir_var_uniform,
+            glsl_sampler_type(GLSL_SAMPLER_DIM_2D,false,false,GLSL_TYPE_FLOAT),"goku");
+        nir_build_deref_var(&b,sampler); /* Left behind by legacy sampler lowering. */
+        nir_def *value=with_uniform ? nir_load_uniform(&b,1,32,nir_imm_int(&b,0),.range=1)
+                                   : nir_imm_int(&b,1);
         nir_def *old=nir_ssbo_atomic(&b,32,nir_imm_int(&b,0),nir_imm_int(&b,0),value,
             .atomic_op=nir_atomic_op_iadd);
         nir_store_ssbo(&b,old,nir_imm_int(&b,0),nir_imm_int(&b,4),
@@ -403,11 +408,11 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
             .write_mask=15,.align_mul=16);
         b.shader->info.num_textures=1;
         BITSET_SET(b.shader->info.textures_used,texture_binding);
-        (*resource_input)->num_uniforms=1;
+        (*resource_input)->num_uniforms=with_uniform;
         (*resource_input)->info.num_ssbos=1;
         ps5_lower_default_uniforms(*resource_input);
         assert(count(*resource_input,nir_intrinsic_load_uniform)==0);
-        assert(count(*resource_input,nir_intrinsic_load_ubo)==1);
+        assert(count(*resource_input,nir_intrinsic_load_ubo)==with_uniform);
         nir_foreach_variable_with_modes(var,*resource_input,nir_var_uniform)
             assert(!"dead uniform declaration retained");
         nir_validate_shader(*resource_input,"linked buffer input");

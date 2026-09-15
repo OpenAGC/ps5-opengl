@@ -12583,10 +12583,9 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
 static void
 ps5_lower_default_uniforms(nir_shader *nir)
 {
-   if (!nir->num_uniforms)
-      return;
-   nir_lower_uniforms_to_ubo(nir, false, false);
-   /* Lowering leaves dead uniform dereferences in non-VS stages too. */
+   if (nir->num_uniforms)
+      nir_lower_uniforms_to_ubo(nir, false, false);
+   /* Sampler lowering also leaves dead dereferences when there is no UBO. */
    nir_opt_dce(nir);
    nir_remove_dead_variables(nir, nir_var_uniform, NULL);
 }
