@@ -7775,8 +7775,14 @@ static uint32_t
 ps5_fragment_primitive_type(const struct ps5_context *context,
                             uint32_t draw_primitive_type)
 {
-   if (!context->gs)
-      return context->tcs && context->tes ? 4 : draw_primitive_type;
+   if (!context->gs) {
+      if (!context->tcs || !context->tes)
+         return draw_primitive_type;
+      if (context->tes->nir->info.tess.point_mode)
+         return 1;
+      return context->tes->nir->info.tess._primitive_mode ==
+                TESS_PRIMITIVE_ISOLINES ? 2 : 4;
+   }
 
    switch (context->gs->nir->info.gs.output_primitive) {
    case MESA_PRIM_POINTS:
@@ -8428,7 +8434,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       packed_cull = ((1u <<
          util_bitcount(vertex_metadata->cull_distance_mask)) - 1u) <<
          packed_index;
-      if (info->mode == MESA_PRIM_POINTS)
+      if (fragment_primitive_type == 1)
          packed_cull |= packed_clip;
       vs_out_control = (base_control & UINT32_C(0xffff0000)) |
                        packed_clip | (packed_cull << 8);
