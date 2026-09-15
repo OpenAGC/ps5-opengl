@@ -12,7 +12,7 @@ ROOT = Path(__file__).resolve().parents[2]
 PSBC = ROOT / "third_party/opengnm-psbc"
 source = (PSBC / "libpsbc/psbc_compile.c").read_text()
 start = source.index("struct gallium_buffer_state {")
-lowering = source[start:source.index("/* === Mesa stage mapping", start)]
+lowering = source[start:source.index("static bool lower_gallium_texture_index", start)]
 code = r'''
 #include <assert.h>
 #include <stdio.h>
