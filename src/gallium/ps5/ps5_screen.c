@@ -12136,6 +12136,17 @@ ps5_create_compute_state(struct pipe_context *base,
       size_t package_size = 0;
       const PsbcResult compile_result = psbc_compile_nir(nir, &options,
                                                         &shader->output);
+      if (shader->images == 1 && shader->textures == 1 && !shader->ssbos) {
+         printf("[ps5-gallium] fetch-image-diagnostic NIR\n");
+         nir_print_shader(nir, stdout);
+         if (compile_result == PSBC_RESULT_OK) {
+            const unsigned char *code = shader->output.machine_code;
+            printf("[ps5-gallium] fetch-image-diagnostic code=");
+            for (size_t byte = 0; byte < shader->output.machine_code_size; ++byte)
+               printf("%02x", code[byte]);
+            printf("\n");
+         }
+      }
       const int package_result = compile_result == PSBC_RESULT_OK ?
          ps5_agc_package_build(&shader->output, 0, &package, &package_size) : -1;
       if (compile_result != PSBC_RESULT_OK || package_result) {
@@ -12569,6 +12580,17 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
                 context->compute_samplers[i], 16);
       }
       buffers[buffer_count++] = view->texture;
+   }
+   if (context->cs->images == 1 && context->cs->textures == 1 && !context->cs->ssbos) {
+      const uint32_t *words = (const uint32_t *)table->data;
+      printf("[ps5-gallium] fetch-image-diagnostic grid=%u,%u,%u image=",
+             groups[0], groups[1], groups[2]);
+      for (unsigned word = 0; word < 8; ++word)
+         printf("%08x,", words[PS5_COMPUTE_BUFFER_SLOTS * 4 + word]);
+      printf(" texture=");
+      for (unsigned word = 0; word < 8; ++word)
+         printf("%08x,", words[PS5_COMPUTE_TEXTURE_OFFSET / 4 + word]);
+      printf("\n");
    }
    context->last_compute_status = ps5_agc_compute_execute(base->screen, &context->cs->output,
       context->compute_descriptors, buffers, buffer_count, groups);
