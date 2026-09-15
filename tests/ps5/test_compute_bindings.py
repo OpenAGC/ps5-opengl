@@ -14,7 +14,7 @@ source = (ROOT / "src/gallium/ps5/ps5_screen.c").read_text()
 assert "#define PS5_COMPUTE_STORAGE_SLOTS PIPE_MAX_SHADER_BUFFERS" in source
 assert "#define PS5_COMPUTE_IMAGE_SLOTS PS5_AGC_COMPUTE_MAX_IMAGES" in source
 begin = source.index("static void\nps5_set_shader_buffers(")
-functions = source[begin:source.index("\n#endif", begin)]
+functions = source[begin:source.index("\n#endif\n\nstatic void\nps5_lower_default_uniforms(", begin)]
 setter_at = source.index("static void\nps5_set_constant_buffer(")
 functions += source[setter_at:source.index("static void\nps5_set_vertex_buffers(", setter_at)]
 sampler_setter_at = source.index("static void\nps5_set_sampler_views(")

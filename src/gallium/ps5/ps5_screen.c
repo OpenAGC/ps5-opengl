@@ -12451,6 +12451,41 @@ ps5_set_compute_sampler_states(struct pipe_context *base, unsigned start, unsign
 }
 
 static void
+ps5_log_fetch_image_pixels(struct ps5_context *context, const char *phase)
+{
+#ifdef PS5_NATIVE_TITLE_RUNTIME
+   if (context->cs->images != 1 || context->cs->textures != 1 || context->cs->ssbos)
+      return;
+   struct pipe_resource *resources[] = {context->compute_images[0].resource,
+      context->compute_views[0] ? context->compute_views[0]->texture : NULL};
+   for (unsigned index = 0; index < 2; ++index) {
+      const struct ps5_resource *resource = (const struct ps5_resource *)resources[index];
+      if (!resource || resource->base.format != PIPE_FORMAT_R8G8B8A8_UNORM ||
+          resource->base.target != PIPE_TEXTURE_2D || resource->base.last_level || !resource->data)
+         continue;
+      const unsigned points[][2] = {{0,0}, {1,0}, {2,0}, {3,0}, {16,16}, {32,32}};
+      for (unsigned point = 0; point < 6; ++point) {
+         const unsigned x = points[point][0], y = points[point][1];
+         if (x >= resource->base.width0 || y >= resource->base.height0)
+            continue;
+         const size_t offset = ps5_linear_sampled_layout(&resource->base)
+            ? (size_t)y * resource->level_stride[0] + x * 4u
+            : ps5_tiled_color_offset(resource->base.format, x, y, resource->base.width0, 0);
+         if (offset > resource->allocation_size || 4 > resource->allocation_size - offset)
+            continue;
+         uint32_t pixel;
+         memcpy(&pixel, resource->data + offset, sizeof(pixel));
+         printf("[ps5-gallium] fetch-image-pixel phase=%s resource=%u xy=%u,%u offset=%zu value=%08x\n",
+                phase, index, x, y, offset, pixel);
+      }
+   }
+#else
+   (void)context;
+   (void)phase;
+#endif
+}
+
+static void
 ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
 {
    struct ps5_context *context = (struct ps5_context *)base;
@@ -12592,8 +12627,10 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
          printf("%08x,", words[PS5_COMPUTE_TEXTURE_OFFSET / 4 + word]);
       printf("\n");
    }
+   ps5_log_fetch_image_pixels(context, "before");
    context->last_compute_status = ps5_agc_compute_execute(base->screen, &context->cs->output,
       context->compute_descriptors, buffers, buffer_count, groups);
+   ps5_log_fetch_image_pixels(context, "after");
    if (context->last_compute_status)
       printf("[ps5-gallium] compute submit failed status=%d resources=%u\n",
              context->last_compute_status, buffer_count);
