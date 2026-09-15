@@ -13837,6 +13837,7 @@ ps5_screen_create(void)
    screen->base.get_timestamp = ps5_get_timestamp;
 
    caps = (struct pipe_caps *)&screen->base.caps;
+   caps->max_label_length = 256; /* Mesa's software object-label storage. */
    caps->graphics = true;
    caps->accelerated = 1;
    caps->uma = true;
