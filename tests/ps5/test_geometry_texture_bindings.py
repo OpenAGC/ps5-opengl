@@ -34,7 +34,7 @@ code = r'''
 #include "psbc_compile.h"
 ''' + defines + "\n" + function("ps5_append_texture_descriptor") + "\n" + \
     function("ps5_append_ubo_descriptors") + "\n" + \
-    function("ps5_offset_geometry_texture") + "\n" + \
+    structure("ps5_texture_offset_state") + "\n" + function("ps5_offset_geometry_texture") + "\n" + \
     structure("ps5_ubo_offset_state") + "\n" + \
     function("ps5_offset_ubo_index") + r'''
 static void dynamic_ubo_offset(void) {
@@ -85,19 +85,20 @@ int main(void) {
                    b->offset >= a->offset + a->stride);
         }
     }
+    for (unsigned first = 16; first <= 64; first += 16)
     for (unsigned i = 0; i < 16; ++i) {
-        bool valid = true;
+        struct ps5_texture_offset_state valid = {.first=first, .valid=true};
         nir_tex_instr tex = {0};
         tex.instr.type = nir_instr_type_tex;
         tex.texture_index = tex.sampler_index = i;
         assert(ps5_offset_geometry_texture(NULL, &tex.instr, &valid));
-        assert(valid && tex.texture_index == i + 16 && tex.sampler_index == i + 16);
-        assert(!ps5_offset_geometry_texture(NULL, &tex.instr, &valid) && !valid);
+        assert(valid.valid && tex.texture_index == i + first && tex.sampler_index == i + first);
+        assert(!ps5_offset_geometry_texture(NULL, &tex.instr, &valid) && !valid.valid);
     }
-    bool valid = true;
+    struct ps5_texture_offset_state valid = {.first=16, .valid=true};
     nir_instr other = {0};
     other.type = nir_instr_type_alu;
-    assert(!ps5_offset_geometry_texture(NULL, &other, &valid) && valid);
+    assert(!ps5_offset_geometry_texture(NULL, &other, &valid) && valid.valid);
     psbc_shutdown();
 }
 '''

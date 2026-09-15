@@ -17,6 +17,8 @@ begin = source.index("static void\nps5_set_shader_buffers(")
 functions = source[begin:source.index("\n#endif", begin)]
 setter_at = source.index("static void\nps5_set_constant_buffer(")
 functions += source[setter_at:source.index("static void\nps5_set_vertex_buffers(", setter_at)]
+sampler_setter_at = source.index("static void\nps5_set_sampler_views(")
+functions += source[sampler_setter_at:source.index("static void *\nps5_create_sampler_state(", sampler_setter_at)]
 sampler_at = source.index("static bool\nps5_texture_descriptor_wrap(")
 bits_at = source.index("static uint32_t\nps5_float_bits(")
 sampler_helpers = source[bits_at:source.index("static size_t\nps5_tiled_depth_layer_xor(", bits_at)]
@@ -71,6 +73,7 @@ code = r'''
 #include "pipe/p_context.h"
 #include "pipe/p_screen.h"
 #include "util/u_inlines.h"
+#include "util/bitset.h"
 #include "mesa/program/prog_statevars.h"
 #include "mesa/main/config.h"
 #include "mesa/state_tracker/st_atom.h"
@@ -111,13 +114,20 @@ code = r'''
 #define PS5_CONSTANT_DATA_OFFSET 2560
 #define PS5_TESSELLATION_BUFFER_OFFSET (2560+4*PS5_MAX_CONSTANT_BUFFER_SIZE)
 #define PS5_TESSELLATION_BUFFER_STRIDE ((PS5_MAX_CONSTANT_BUFFERS+16)*16)
-#define PS5_DESCRIPTOR_STORAGE_BYTES (PS5_TESSELLATION_BUFFER_OFFSET+4*PS5_TESSELLATION_BUFFER_STRIDE)
+#define PS5_MAX_TEXTURE_UNITS 16u
+#define PS5_TEXTURE_DESCRIPTOR_STRIDE 48u
+#define PS5_TESSELLATION_TEXTURE_BINDING 16u
+#define PS5_TESSELLATION_TEXTURE_OFFSET (PS5_TESSELLATION_BUFFER_OFFSET+4*PS5_TESSELLATION_BUFFER_STRIDE)
+#define PS5_DESCRIPTOR_STORAGE_BYTES (PS5_TESSELLATION_TEXTURE_OFFSET+4*16*48)
 #define PS5_FRAGMENT_UBO_OFFSET 512
 #define PS5_TEXTURE_DESCRIPTOR_BYTES 1536
 #define PS5_DIRECT_ALIGNMENT 16384
 #define PS5_GEOMETRY_CONSTANT_SLOT 2
 #define PS5_TESS_CTRL_CONSTANT_SLOT 3
 #define PS5_TESS_EVAL_CONSTANT_SLOT 4
+#define PS5_GEOMETRY_TEXTURE_SLOT 2
+#define PS5_TESS_CTRL_TEXTURE_SLOT 3
+#define PS5_TESS_EVAL_TEXTURE_SLOT 4
 #define PS5_COMPUTE_STORAGE_SLOTS 16
 #define PS5_COMPUTE_CONSTANT_SLOTS 15
 #define PS5_COMPUTE_BUFFER_SLOTS 31
@@ -138,7 +148,7 @@ struct ps5_resource {
 };
 struct ps5_compute_shader { PsbcShaderOutput output; unsigned ssbos, ubos, images, textures, buffer_textures, filtered_textures, texture_lod[PS5_COMPUTE_TEXTURE_SLOTS], array_textures; };
 struct ps5_sampler_state { struct pipe_sampler_state base; };
-struct test_nir { struct { unsigned num_ssbos, num_images, num_ubos, num_textures; bool first_ubo_is_default_ubo; } info; };
+struct test_nir { struct { unsigned num_ssbos, num_images, num_ubos, num_textures; BITSET_DECLARE(textures_used, 128); bool first_ubo_is_default_ubo; } info; };
 struct test_variant { PsbcShaderOutput output; };
 struct ps5_shader { struct test_nir *nir; struct test_variant *active; PsbcStage stage; };
 static unsigned ps5_shader_texture_count(const struct ps5_shader *shader) { return shader->nir->info.num_textures; }
@@ -163,6 +173,8 @@ struct ps5_context {
     struct pipe_image_view fragment_images[8];
     bool fragment_images_invalid;
     struct pipe_sampler_view *compute_views[PS5_COMPUTE_TEXTURE_SLOTS];
+    struct pipe_sampler_view *sampler_views[5][16];
+    void *samplers[5][16];
     bool compute_views_invalid;
     uint32_t compute_samplers[PS5_COMPUTE_TEXTURE_SLOTS][4];
     unsigned compute_sampler_mask;
@@ -818,10 +830,61 @@ static void test_tessellation_buffers(void) {
     nir[1].info.num_images=0;
     nir[1].info.num_ssbos=17;
     assert(!ps5_tessellation_buffer_layout(&ctx,&options));
+    nir[1].info.num_ssbos=1;
+    for(unsigned stage=0;stage<4;++stage)
+        for(unsigned unit=0;unit<16;++unit)
+            BITSET_SET(nir[stage].info.textures_used,unit);
+    assert(ps5_tessellation_buffer_layout(&ctx,&options));
+    assert(options.descriptor_binding_count==72);
+    for(unsigned stage=0;stage<4;++stage)
+        for(unsigned unit=0;unit<16;++unit) {
+            const PsbcDescriptorBinding *binding=&options.descriptor_bindings[stage*18+2+unit];
+            assert(binding->binding==16+stage*16+unit);
+            assert(binding->type==PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER);
+            assert(binding->offset==PS5_TESSELLATION_TEXTURE_OFFSET+(stage*16+unit)*48);
+            assert(binding->offset+binding->stride<=sizeof(data));
+            for(unsigned prior=0;prior<stage*18+2+unit;++prior)
+                assert(binding->binding!=options.descriptor_bindings[prior].binding);
+        }
+    metadata.descriptor_binding_count=options.descriptor_binding_count;
+    memcpy(metadata.descriptor_bindings,options.descriptor_bindings,sizeof(options.descriptor_bindings));
+    assert(ps5_prepare_tessellation_buffers(&ctx,&metadata,user,8));
+    for(unsigned i=PS5_TESSELLATION_TEXTURE_OFFSET;i<sizeof(data);++i)
+        assert(data[i]==0xa5); /* Buffer preparation must not clobber textures. */
     fragment_mode=false;
 }
 
+static void test_stage_samplers(void) {
+    struct ps5_context ctx={0};
+    const mesa_shader_stage stages[]={MESA_SHADER_VERTEX,MESA_SHADER_FRAGMENT,
+        MESA_SHADER_GEOMETRY,MESA_SHADER_TESS_CTRL,MESA_SHADER_TESS_EVAL};
+    struct pipe_sampler_view views[5]={0};
+    unsigned states[5]={0};
+    for(unsigned stage=0;stage<5;++stage) {
+        pipe_reference_init(&views[stage].reference,1);
+        struct pipe_sampler_view *view=&views[stage];
+        void *state=&states[stage];
+        ps5_set_sampler_views(&ctx.base,stages[stage],11,1,0,&view);
+        ps5_bind_sampler_states(&ctx.base,stages[stage],11,1,&state);
+        assert(views[stage].reference.count==2);
+        for(unsigned prior=0;prior<=stage;++prior) {
+            assert(ctx.sampler_views[prior][11]==&views[prior]);
+            assert(ctx.samplers[prior][11]==&states[prior]);
+        }
+        ps5_set_sampler_views(&ctx.base,stages[stage],16,1,0,&view);
+        assert(views[stage].reference.count==2);
+    }
+    for(unsigned stage=0;stage<5;++stage) {
+        ps5_set_sampler_views(&ctx.base,stages[stage],0,0,16,NULL);
+        void *empty=NULL;
+        ps5_bind_sampler_states(&ctx.base,stages[stage],11,1,&empty);
+        assert(views[stage].reference.count==1);
+        assert(!ctx.sampler_views[stage][11] && !ctx.samplers[stage][11]);
+    }
+}
+
 int main(void) {
+    test_stage_samplers();
     test_tessellation_buffers();
     preraster_binding_contract();
     atomic_handoff_contract();

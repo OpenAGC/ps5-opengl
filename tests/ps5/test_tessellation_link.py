@@ -390,6 +390,19 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
             .atomic_op=nir_atomic_op_iadd);
         nir_store_ssbo(&b,old,nir_imm_int(&b,0),nir_imm_int(&b,4),
             .write_mask=1,.align_mul=4);
+        const unsigned texture_binding=16+16*tested+11;
+        nir_tex_instr *tex=nir_tex_instr_create(b.shader,2);
+        tex->op=nir_texop_txl; tex->sampler_dim=GLSL_SAMPLER_DIM_2D;
+        tex->texture_index=tex->sampler_index=texture_binding;
+        tex->coord_components=2; tex->dest_type=nir_type_float32;
+        tex->src[0]=nir_tex_src_for_ssa(nir_tex_src_coord,nir_imm_vec2(&b,0.5f,0.5f));
+        tex->src[1]=nir_tex_src_for_ssa(nir_tex_src_lod,nir_imm_float(&b,0));
+        nir_def_init(&tex->instr,&tex->def,4,32);
+        nir_builder_instr_insert(&b,&tex->instr);
+        nir_store_ssbo(&b,&tex->def,nir_imm_int(&b,0),nir_imm_int(&b,16),
+            .write_mask=15,.align_mul=16);
+        b.shader->info.num_textures=1;
+        BITSET_SET(b.shader->info.textures_used,texture_binding);
         (*resource_input)->num_uniforms=1;
         (*resource_input)->info.num_ssbos=1;
         ps5_lower_default_uniforms(*resource_input);
@@ -400,20 +413,28 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
         nir_validate_shader(*resource_input,"linked buffer input");
         PsbcTessellationCompileOptions resource_options=options;
         resource_options.vertex.gallium_buffer_arrays=true;
-        resource_options.vertex.descriptor_binding_count=2;
+        resource_options.vertex.descriptor_binding_count=3;
         resource_options.vertex.descriptor_bindings[0]=(PsbcDescriptorBinding){
             .binding=4*tested+1,.type=PSBC_DESCRIPTOR_UNIFORM_BUFFER,
             .array_size=1,.offset=0,.stride=16};
         resource_options.vertex.descriptor_bindings[1]=(PsbcDescriptorBinding){
             .binding=4*tested+2,.type=PSBC_DESCRIPTOR_STORAGE_BUFFER,
             .array_size=1,.offset=16,.stride=16};
+        resource_options.vertex.descriptor_bindings[2]=(PsbcDescriptorBinding){
+            .binding=texture_binding,.type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,
+            .array_size=1,.offset=32,.stride=48};
         PsbcResult result=psbc_compile_nir_tessellation_pipeline(
             inputs[0],inputs[1],inputs[2],resource_gs,&resource_options,&out);
         printf("linked buffers stage=%u result=%d\n",tested,result);
         assert(result==PSBC_RESULT_OK);
         assert(out.hs.metadata.descriptor_set0_valid && out.tes.metadata.descriptor_set0_valid);
-        assert(out.hs.metadata.descriptor_binding_count==2 && out.tes.metadata.descriptor_binding_count==2);
+        assert(out.hs.metadata.descriptor_binding_count==3 && out.tes.metadata.descriptor_binding_count==3);
         psbc_free_tessellation_output(&out); expect_empty(&out);
+        resource_options.vertex.descriptor_bindings[2].binding++;
+        assert(psbc_compile_nir_tessellation_pipeline(inputs[0],inputs[1],inputs[2],
+            resource_gs,&resource_options,&out)!=PSBC_RESULT_OK);
+        expect_empty(&out);
+        resource_options.vertex.descriptor_bindings[2].binding--;
         resource_options.vertex.descriptor_bindings[1].binding=4*tested+1;
         assert(checked_compile(inputs,&resource_options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
         expect_empty(&out);

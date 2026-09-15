@@ -156,12 +156,15 @@ ps5_draw_batch_drain(void)
 #define PS5_MERGED_TEXTURE_UNITS (2u * PS5_MAX_TEXTURE_UNITS)
 #define PS5_MAX_CONSTANT_BUFFERS 15u
 #define PS5_DESCRIPTOR_STAGE_COUNT 2u
-#define PS5_TEXTURE_STAGE_COUNT 3u
+#define PS5_TEXTURE_STAGE_COUNT 5u
 #define PS5_CONSTANT_STAGE_COUNT 5u
 #define PS5_GEOMETRY_CONSTANT_SLOT 2u
 #define PS5_TESS_CTRL_CONSTANT_SLOT 3u
 #define PS5_TESS_EVAL_CONSTANT_SLOT 4u
 #define PS5_GEOMETRY_TEXTURE_SLOT 2u
+#define PS5_TESS_CTRL_TEXTURE_SLOT 3u
+#define PS5_TESS_EVAL_TEXTURE_SLOT 4u
+#define PS5_TESSELLATION_TEXTURE_BINDING 16u
 #define PS5_MAX_RENDER_TARGETS 8u
 #define PS5_TEXTURE_DESCRIPTOR_STRIDE 48u
 #define PS5_TEXTURE_DESCRIPTOR_BYTES \
@@ -492,8 +495,10 @@ ps5_streamout_buffer_stream(unsigned stream_buffer_mask, unsigned buffer);
    (PS5_CONSTANT_DATA_OFFSET + 4u * PS5_MAX_CONSTANT_BUFFER_SIZE)
 #define PS5_TESSELLATION_BUFFER_STRIDE \
    ((PS5_MAX_CONSTANT_BUFFERS + PS5_COMPUTE_STORAGE_SLOTS) * 16u)
-#define PS5_DESCRIPTOR_STORAGE_BYTES \
+#define PS5_TESSELLATION_TEXTURE_OFFSET \
    (PS5_TESSELLATION_BUFFER_OFFSET + 4u * PS5_TESSELLATION_BUFFER_STRIDE)
+#define PS5_DESCRIPTOR_STORAGE_BYTES \
+   (PS5_TESSELLATION_TEXTURE_OFFSET + 4u * PS5_MAX_TEXTURE_UNITS * PS5_TEXTURE_DESCRIPTOR_STRIDE)
 #define PS5_MAX_TEXTURE_2D_SIZE PS5_MAX_RENDER_SIZE
 #define PS5_MAX_TEXTURE_CUBE_LEVELS 15u
 #define PS5_MAX_TEXTURE_CUBE_SIZE (1u << (PS5_MAX_TEXTURE_CUBE_LEVELS - 1u))
@@ -2476,10 +2481,27 @@ ps5_uses_merged_geometry_metadata(const struct ps5_context *context,
 }
 
 static bool
+ps5_uses_tessellation_metadata(const struct ps5_context *context,
+                               const PsbcShaderMetadata *metadata)
+{
+   return metadata && (metadata == &context->tessellation_output.hs.metadata ||
+                       metadata == &context->tessellation_output.tes.metadata);
+}
+
+static bool
 ps5_texture_used(const struct ps5_context *context,
                  const struct ps5_shader *shader,
                  const PsbcShaderMetadata *metadata, unsigned unit)
 {
+   if (ps5_uses_tessellation_metadata(context, metadata)) {
+      const struct ps5_shader *stages[] = {context->vs, context->tcs, context->tes, context->gs};
+      if (unit < PS5_TESSELLATION_TEXTURE_BINDING ||
+          unit >= PS5_TESSELLATION_TEXTURE_BINDING + 4u * PS5_MAX_TEXTURE_UNITS)
+         return false;
+      unit -= PS5_TESSELLATION_TEXTURE_BINDING;
+      const struct ps5_shader *stage = stages[unit / PS5_MAX_TEXTURE_UNITS];
+      return stage && BITSET_TEST(stage->nir->info.textures_used, unit % PS5_MAX_TEXTURE_UNITS);
+   }
    if (unit < PS5_MAX_TEXTURE_UNITS)
       return BITSET_TEST(shader->nir->info.textures_used, unit);
    return unit < PS5_MERGED_TEXTURE_UNITS &&
@@ -2505,7 +2527,9 @@ ps5_texture_count(const struct ps5_context *context,
 {
    unsigned count = 0;
 
-   for (unsigned unit = 0; unit < PS5_MERGED_TEXTURE_UNITS; ++unit)
+   const unsigned limit = ps5_uses_tessellation_metadata(context, metadata)
+      ? PS5_TESSELLATION_TEXTURE_BINDING + 4u * PS5_MAX_TEXTURE_UNITS : PS5_MERGED_TEXTURE_UNITS;
+   for (unsigned unit = 0; unit < limit; ++unit)
       count += ps5_texture_used(context, shader, metadata, unit);
    return count;
 }
@@ -2871,7 +2895,7 @@ ps5_tessellation_buffer_layout(const struct ps5_context *context,
       if (!shader)
          continue;
       if (shader->stage != PSBC_STAGE_VERTEX + stage ||
-          shader->nir->info.num_images || ps5_shader_texture_count(shader) ||
+          shader->nir->info.num_images ||
           shader->nir->info.num_ubos > PS5_MAX_CONSTANT_BUFFERS ||
           shader->nir->info.num_ssbos > PS5_COMPUTE_STORAGE_SLOTS)
          return false;
@@ -2893,6 +2917,20 @@ ps5_tessellation_buffer_layout(const struct ps5_context *context,
                .array_size = shader->nir->info.num_ssbos,
                .offset = offset + PS5_MAX_CONSTANT_BUFFERS * 16u, .stride = 16,
             };
+      for (unsigned unit = 0; unit < PS5_MAX_TEXTURE_UNITS; ++unit) {
+         if (!BITSET_TEST(shader->nir->info.textures_used, unit))
+            continue;
+         if (options->descriptor_binding_count >= PSBC_MAX_DESCRIPTOR_BINDINGS)
+            return false;
+         const unsigned index = stage * PS5_MAX_TEXTURE_UNITS + unit;
+         options->descriptor_bindings[options->descriptor_binding_count++] =
+            (PsbcDescriptorBinding){
+               .binding = PS5_TESSELLATION_TEXTURE_BINDING + index,
+               .type = PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,
+               .array_size = 1, .stride = PS5_TEXTURE_DESCRIPTOR_STRIDE,
+               .offset = PS5_TESSELLATION_TEXTURE_OFFSET + index * PS5_TEXTURE_DESCRIPTOR_STRIDE,
+            };
+      }
    }
    return true;
 }
@@ -2929,6 +2967,8 @@ ps5_prepare_tessellation_buffers(struct ps5_context *context,
           actual->type != bank->type || actual->array_size != bank->array_size ||
           actual->offset != bank->offset || actual->stride != bank->stride)
          return false;
+      if (bank->type == PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER)
+         continue; /* Encoded by the shared texture preparation path below. */
       const unsigned stage = (bank->binding - 1u) / 4u;
       const bool uniform = bank->type == PSBC_DESCRIPTOR_UNIFORM_BUFFER;
       if (!uniform && (stage == 3 ? context->geometry_bindings_invalid :
@@ -3001,10 +3041,11 @@ ps5_prepare_texture(struct ps5_context *context,
    bool merged_geometry_storage;
    const bool storage_fs = slot == 1 && ps5_shader_uses_storage(shader);
 
-   if (!shader || !shader->active || slot >= PS5_DESCRIPTOR_STAGE_COUNT)
+   if (!shader || (!shader->active && !metadata_override) || slot >= PS5_DESCRIPTOR_STAGE_COUNT)
       return false;
    metadata = metadata_override ? metadata_override :
                                    &shader->active->output.metadata;
+   const bool merged_tessellation = ps5_uses_tessellation_metadata(context, metadata);
    merged_geometry = ps5_uses_merged_geometry_metadata(context, shader,
                                                        metadata);
    merged_geometry_storage = merged_geometry &&
@@ -3019,19 +3060,25 @@ ps5_prepare_texture(struct ps5_context *context,
            (context->gs->nir->info.num_ubos != 0)
       : expected_ubo_count;
    table = (struct ps5_resource *)context->descriptor_storage[slot];
+   unsigned expected_binding_count =
+      (storage_fs ? 1u + (shader->nir->info.num_images != 0) +
+                       (expected_ubo_count != 0) :
+                    expected_ubo_bindings + merged_geometry_storage) + expected_texture_count;
+   if (merged_tessellation) {
+      PsbcCompileOptions layout = {0};
+      if (!ps5_tessellation_buffer_layout(context, &layout))
+         return false;
+      expected_binding_count = layout.descriptor_binding_count;
+   }
    if ((shader->stage == PSBC_STAGE_VERTEX && slot != 0) ||
        (shader->stage == PSBC_STAGE_FRAGMENT && slot != 1) ||
        (shader->stage != PSBC_STAGE_VERTEX &&
         shader->stage != PSBC_STAGE_FRAGMENT) ||
-       expected_texture_count > (merged_geometry ? PS5_MERGED_TEXTURE_UNITS
+       expected_texture_count > (merged_tessellation ? 4u * PS5_MAX_TEXTURE_UNITS : merged_geometry ? PS5_MERGED_TEXTURE_UNITS
                                                  : PS5_MAX_TEXTURE_UNITS) ||
        !metadata->descriptor_set0_valid ||
        metadata->descriptor_set0_user_data_dword >= user_data_count ||
-       metadata->descriptor_binding_count !=
-          (storage_fs ? 1u + (shader->nir->info.num_images != 0) +
-                           (expected_ubo_count != 0) :
-                        expected_ubo_bindings + merged_geometry_storage) +
-             expected_texture_count ||
+       metadata->descriptor_binding_count != expected_binding_count ||
        !table)
       return false;
 
@@ -3076,16 +3123,24 @@ ps5_prepare_texture(struct ps5_context *context,
       if (binding->type != PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER)
          continue;
       if (binding->set ||
-          binding->binding >= (merged_geometry ? PS5_MERGED_TEXTURE_UNITS
+          binding->binding >= (merged_tessellation ? PS5_TESSELLATION_TEXTURE_BINDING + 4u * PS5_MAX_TEXTURE_UNITS : merged_geometry ? PS5_MERGED_TEXTURE_UNITS
                                                : PS5_MAX_TEXTURE_UNITS) ||
           binding->array_size != 1 || binding->stride != 48 ||
-          binding->offset != (storage_fs ? PS5_FRAGMENT_TEXTURE_OFFSET : 0u) + binding->binding * PS5_TEXTURE_DESCRIPTOR_STRIDE ||
+          (merged_tessellation && binding->binding < PS5_TESSELLATION_TEXTURE_BINDING) ||
+          binding->offset != (merged_tessellation ? PS5_TESSELLATION_TEXTURE_OFFSET +
+             (binding->binding - PS5_TESSELLATION_TEXTURE_BINDING) * PS5_TEXTURE_DESCRIPTOR_STRIDE :
+             (storage_fs ? PS5_FRAGMENT_TEXTURE_OFFSET : 0u) + binding->binding * PS5_TEXTURE_DESCRIPTOR_STRIDE) ||
           binding->offset + binding->stride > table->size ||
           !ps5_texture_used(context, shader, metadata, binding->binding))
          return false;
       texture_count++;
       if (merged_geometry && binding->binding >= PS5_MAX_TEXTURE_UNITS)
          state_slot = PS5_GEOMETRY_TEXTURE_SLOT;
+      if (merged_tessellation) {
+         const unsigned slots[] = {0, PS5_TESS_CTRL_TEXTURE_SLOT,
+            PS5_TESS_EVAL_TEXTURE_SLOT, PS5_GEOMETRY_TEXTURE_SLOT};
+         state_slot = slots[(binding->binding - PS5_TESSELLATION_TEXTURE_BINDING) / PS5_MAX_TEXTURE_UNITS];
+      }
       view = context->sampler_views[state_slot][unit];
       if (!view || !view->texture)
          return false;
@@ -8540,6 +8595,15 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       context->last_draw_status = -15;
       return;
    }
+   if (tessellation_active &&
+       (!ps5_prepare_texture(context, context->vs, 0, input_user_data,
+                             input_user_data_count, input_metadata, NULL) ||
+        !ps5_prepare_texture(context, context->vs, 0, user_data,
+                             user_data_count, vertex_metadata, NULL))) {
+      printf("[ps5-gallium] resource-prepare reject=tessellation-textures\n");
+      context->last_draw_status = -15;
+      return;
+   }
    if (context->gs && !tessellation_active &&
        !ps5_prepare_geometry_storage(context, vertex_metadata, user_data,
                                      user_data_count)) {
@@ -10971,24 +11035,30 @@ struct ps5_ubo_offset_state {
 };
 
 /* Gallium sampler slots are stage-local, even inside a linked GL program. */
+struct ps5_texture_offset_state {
+   unsigned first;
+   bool valid;
+};
+
 static bool
 ps5_offset_geometry_texture(nir_builder *builder, nir_instr *instruction,
                              void *data)
 {
-   bool *valid = data;
+   struct ps5_texture_offset_state *state = data;
    nir_tex_instr *tex;
 
    (void)builder;
    if (instruction->type != nir_instr_type_tex)
       return false;
    tex = nir_instr_as_tex(instruction);
-   if (tex->texture_index >= PS5_MAX_TEXTURE_UNITS ||
+   if (state->first > PSBC_MAX_DESCRIPTOR_BINDINGS - PS5_MAX_TEXTURE_UNITS ||
+       tex->texture_index >= PS5_MAX_TEXTURE_UNITS ||
        tex->sampler_index >= PS5_MAX_TEXTURE_UNITS) {
-      *valid = false;
+      state->valid = false;
       return false;
    }
-   tex->texture_index += PS5_MAX_TEXTURE_UNITS;
-   tex->sampler_index += PS5_MAX_TEXTURE_UNITS;
+   tex->texture_index += state->first;
+   tex->sampler_index += state->first;
    return true;
 }
 
@@ -11438,6 +11508,24 @@ ps5_select_tessellation_pipeline(struct ps5_context *context,
          }
          inputs[stage] = carriers[stage];
       }
+      if (ps5_shader_texture_count(stages[stage])) {
+         if (!carriers[stage])
+            carriers[stage] = nir_shader_clone(NULL, inputs[stage]);
+         struct ps5_texture_offset_state remap = {
+            .first = PS5_TESSELLATION_TEXTURE_BINDING + stage * PS5_MAX_TEXTURE_UNITS,
+            .valid = true,
+         };
+         if (carriers[stage])
+            nir_shader_instructions_pass(carriers[stage], ps5_offset_geometry_texture,
+                                         nir_metadata_control_flow, &remap);
+         if (!carriers[stage] || !remap.valid) {
+            for (unsigned i = 0; i < 4; ++i)
+               ralloc_free(carriers[i]);
+            return false;
+         }
+         carriers[stage]->info.num_textures += remap.first;
+         inputs[stage] = carriers[stage];
+      }
    }
 
    result = psbc_compile_nir_tessellation_pipeline(
@@ -11531,7 +11619,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
    unsigned vertex_ubos;
    unsigned geometry_ubos;
    unsigned geometry_ssbos;
-   bool texture_offset_valid = true;
+   struct ps5_texture_offset_state texture_offset = {.first = PS5_MAX_TEXTURE_UNITS, .valid = true};
    uint32_t ring_itemsize;
    uint32_t streamout_ring_itemsize;
    PsbcResult result;
@@ -11640,8 +11728,8 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
    }
    nir_shader_instructions_pass(geometry_nir, ps5_offset_geometry_texture,
                                 nir_metadata_control_flow,
-                                &texture_offset_valid);
-   if (!texture_offset_valid) {
+                                &texture_offset);
+   if (!texture_offset.valid) {
       printf("[ps5-gallium] geometry-select reject=texture-remap\n");
       ralloc_free(geometry_nir);
       return false;
@@ -12915,6 +13003,10 @@ ps5_set_sampler_views(struct pipe_context *base, mesa_shader_stage shader,
    else if (shader == MESA_SHADER_GEOMETRY &&
             PS5_ENABLE_GEOMETRY_CANDIDATE)
       slot = PS5_GEOMETRY_TEXTURE_SLOT;
+   else if (shader == MESA_SHADER_TESS_CTRL && PS5_ENABLE_TESSELLATION_CANDIDATE)
+      slot = PS5_TESS_CTRL_TEXTURE_SLOT;
+   else if (shader == MESA_SHADER_TESS_EVAL && PS5_ENABLE_TESSELLATION_CANDIDATE)
+      slot = PS5_TESS_EVAL_TEXTURE_SLOT;
    else
       return;
    if (start > PS5_MAX_TEXTURE_UNITS ||
@@ -12951,6 +13043,10 @@ ps5_bind_sampler_states(struct pipe_context *base, mesa_shader_stage shader,
    else if (shader == MESA_SHADER_GEOMETRY &&
             PS5_ENABLE_GEOMETRY_CANDIDATE)
       slot = PS5_GEOMETRY_TEXTURE_SLOT;
+   else if (shader == MESA_SHADER_TESS_CTRL && PS5_ENABLE_TESSELLATION_CANDIDATE)
+      slot = PS5_TESS_CTRL_TEXTURE_SLOT;
+   else if (shader == MESA_SHADER_TESS_EVAL && PS5_ENABLE_TESSELLATION_CANDIDATE)
+      slot = PS5_TESS_EVAL_TEXTURE_SLOT;
    else
       return;
    if (start > PS5_MAX_TEXTURE_UNITS ||
@@ -13969,8 +14065,8 @@ ps5_screen_create(void)
       *tes_caps = *vs_caps;
       tcs_caps->max_inputs = tcs_caps->max_outputs = 16;
       tes_caps->max_inputs = tes_caps->max_outputs = 16;
-      tcs_caps->max_texture_samplers = tcs_caps->max_sampler_views = 0;
-      tes_caps->max_texture_samplers = tes_caps->max_sampler_views = 0;
+      tcs_caps->max_texture_samplers = tcs_caps->max_sampler_views = PS5_MAX_TEXTURE_UNITS;
+      tes_caps->max_texture_samplers = tes_caps->max_sampler_views = PS5_MAX_TEXTURE_UNITS;
       /* Mesa's UBO capability is all-stage: fewer than 15 here would also
        * remove UBOs from the already-qualified VS/FS core profile. */
       tcs_caps->max_const_buffers = tes_caps->max_const_buffers =
