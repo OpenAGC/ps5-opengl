@@ -1649,12 +1649,12 @@ require("caps->texture_multisample = PS5_ENABLE_MSAA4_CANDIDATE" in SCREEN and
         "0x0293u" in BACKEND and
         "0x01b8u" in BACKEND and
         "shader->nir->info.fs.uses_sample_shading" in SCREEN and
-        "radv_nir_lower_opt_fs_frag_pos" in RADV_POSTPROCESS and
-        "stage->nir->info.fs.uses_sample_shading" in RADV_POSTPROCESS and
+        "radv_nir_lower_opt_fs_frag_pos" in PSBC_C and
+        "nir->info.fs.uses_sample_shading" in PSBC_C and
         "UINT32_C(0x00000023)" in BACKEND and
         "UINT32_C(0x00000022)" in BACKEND and
         "UINT32_C(0x0020c002)" in BACKEND and
-        "UINT32_C(0xe62a62ae)" in BACKEND and
+        "UINT32_C(0x622ae6ae)" in BACKEND and
         "egl_public_core33_msaa4.elf" in MAKEFILE and
         "egl_public_core33_msaa4_mask.elf" in MAKEFILE and
         "egl_public_core33_msaa4_texture.elf" in MAKEFILE and

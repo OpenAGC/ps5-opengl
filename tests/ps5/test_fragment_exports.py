@@ -5,11 +5,20 @@
 
 """Check real framebuffer export selection and compile it with host PSBC/ACO."""
 import subprocess
+import re
 import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 source = (ROOT / "src/gallium/ps5/ps5_screen.c").read_text()
+backend = (ROOT / "src/platform/ps5_agc_runtime_backend.c").read_text()
+pattern = int(re.search(r"sample_location_offsets\[i\],\s*raster4 \? UINT32_C\((0x[0-9a-f]+)\)", backend)[1], 16)
+positions = (ROOT / "third_party/mesa-26.2.0/src/gallium/auxiliary/util/u_sample_positions.c").read_text()
+table = positions.split("u_default_sample_positions_4x[][4] = {", 1)[1].split("};", 1)[0]
+expected = [float(value) for value in re.findall(r"0\.\d+", table)]
+actual = [0.5 + (((pattern >> (4*i) & 15) ^ 8) - 8) / 16 for i in range(8)]
+assert actual == expected, (actual, expected)
+print("PASS: configured 4x sample positions match API query order")
 
 
 def function(name):

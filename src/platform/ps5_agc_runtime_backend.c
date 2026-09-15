@@ -485,9 +485,10 @@ ps5_agc_set_cx_mrt(void *command, const void *table, uint32_t count)
              records, &count, 0x030fu, packed_mask) != 0)
          return NULL;
       for (unsigned i = 0; i < 4; ++i) {
+         /* Keep hardware sample indices aligned with u_default_get_sample_position. */
          if (ps5_agc_replace_or_append_register(
                 records, &count, sample_location_offsets[i],
-                raster4 ? UINT32_C(0xe62a62ae) : 0) != 0)
+                raster4 ? UINT32_C(0x622ae6ae) : 0) != 0)
             return NULL;
       }
       if (ps5_agc_border_color_table) {
