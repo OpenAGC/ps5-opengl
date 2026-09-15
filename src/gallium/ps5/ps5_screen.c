@@ -3022,8 +3022,10 @@ ps5_prepare_tessellation_buffers(struct ps5_context *context,
    return true;
 }
 
+#ifdef PS5_NATIVE_TITLE_RUNTIME
 static size_t ps5_tiled_color_offset(enum pipe_format format, unsigned x,
                                       unsigned y, unsigned width, unsigned layer);
+#endif
 
 static bool
 ps5_prepare_texture(struct ps5_context *context,
@@ -3424,6 +3426,8 @@ ps5_prepare_texture(struct ps5_context *context,
           texture->base.format == PIPE_FORMAT_R8G8B8A8_UNORM &&
           texture->base.width0 == 64 && texture->base.height0 == 64 &&
           !texture->base.last_level) {
+         if (setenv("PSBC_DEBUG_IO", "1", 1) != 0)
+            return false;
          const size_t center = tiled_render_target
             ? ps5_tiled_color_offset(texture->base.format, 32, 32, 64, 0)
             : 32 * texture->level_stride[0] + 32 * sizeof(uint32_t);
@@ -9847,6 +9851,15 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
                         context->tessellation_output.hs.machine_code_size),
              ps5_hash32(context->tessellation_output.tes.machine_code,
                         context->tessellation_output.tes.machine_code_size));
+   if (context->tcs && context->tes && context->fs->active &&
+       getenv("PSBC_DEBUG_IO"))
+      printf("[ps5-gallium] tessellation-packages hs=%08x final=%08x fs=%08x metadata=%08x/%08x/%08x\n",
+             ps5_hash32(context->tessellation_hs_package, context->tessellation_hs_package_size),
+             ps5_hash32(context->tessellation_tes_package, context->tessellation_tes_package_size),
+             ps5_hash32(context->fs->active->package, context->fs->active->package_size),
+             ps5_hash32(&context->tessellation_output.hs.metadata, sizeof(PsbcShaderMetadata)),
+             ps5_hash32(&context->tessellation_output.tes.metadata, sizeof(PsbcShaderMetadata)),
+             ps5_hash32(&context->fs->active->output.metadata, sizeof(PsbcShaderMetadata)));
 #endif
    /* ponytail: storage draws retire synchronously; batching needs retained
     * storage resources and explicit shader-write visibility first. */
