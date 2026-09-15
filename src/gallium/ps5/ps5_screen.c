@@ -5791,14 +5791,6 @@ ps5_transfer_map(struct pipe_context *context, struct pipe_resource *base,
                memcpy((uint8_t *)transfer->staging +
                          y * staging_stride + x * format_size,
                       resource->data + tiled, format_size);
-               /* Temporary diagnostic for the isolated R16 MSAA-array case. */
-               if (format_size == 2 && base->width0 == 2 &&
-                   base->height0 == 3) {
-                  uint16_t value;
-                  memcpy(&value, resource->data + tiled, sizeof(value));
-                  printf("[ps5-gallium] r16-readback format=%u layer=%d x=%u y=%u offset=%zu value=%u\n",
-                         base->format, box->z, x, y, tiled, (unsigned)value);
-               }
             }
          }
       }
@@ -5809,6 +5801,23 @@ ps5_transfer_map(struct pipe_context *context, struct pipe_resource *base,
    }
    if ((usage & PIPE_MAP_READ) && resource->base.target == PIPE_BUFFER)
       ps5_flush_gpu_data(resource->data + offset, (size_t)box->width);
+   /* Temporary diagnostic for the isolated R16 MSAA-array case. */
+   if ((usage & PIPE_MAP_READ) && base->width0 == 2 && base->height0 == 3 &&
+       ps5_texture_format_size(base->format) == 2) {
+      for (unsigned z = 0; z < (unsigned)box->depth; ++z)
+         for (unsigned y = 0; y < (unsigned)box->height; ++y)
+            for (unsigned x = 0; x < (unsigned)box->width; ++x) {
+               const size_t at = offset + z * (size_t)transfer->base.layer_stride +
+                                 y * (size_t)transfer->base.stride + x * 2u;
+               uint16_t value;
+               if (at > resource->allocation_size ||
+                   resource->allocation_size - at < sizeof(value))
+                  continue;
+               memcpy(&value, resource->data + at, sizeof(value));
+               printf("[ps5-gallium] r16-readback format=%u layer=%u x=%u y=%u offset=%zu value=%u\n",
+                      base->format, (unsigned)box->z + z, x, y, at, (unsigned)value);
+            }
+   }
    return resource->data + offset;
 }
 
