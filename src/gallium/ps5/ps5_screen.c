@@ -5693,6 +5693,15 @@ ps5_transfer_map(struct pipe_context *context, struct pipe_resource *base,
    *out_transfer = NULL;
    if (!ps5_map_bounds(resource, level, box, &offset))
       return NULL;
+   if ((usage & PIPE_MAP_READ) && base->target == PIPE_TEXTURE_2D &&
+       base->format == PIPE_FORMAT_R8G8B8A8_UNORM && base->width0 == 16 && base->height0 == 16) {
+      uint32_t pixel = 0;
+      if (resource->data && resource->allocation_size >= sizeof(pixel))
+         memcpy(&pixel, resource->data, sizeof(pixel));
+      printf("[ps5-gallium] fetch-readback-map address=%p bind=%x usage=%x box=%d,%d,%d:%d,%d,%d raw=%08x\n",
+             (void *)resource->data, base->bind, usage, box->x, box->y, box->z,
+             box->width, box->height, box->depth, pixel);
+   }
 
    transfer = calloc(1, sizeof(*transfer));
    if (!transfer)
@@ -5863,6 +5872,12 @@ ps5_transfer_map(struct pipe_context *context, struct pipe_resource *base,
       transfer->base.stride = staging_stride;
       transfer->base.layer_stride = staging_size;
       transfer->base.offset = 0;
+      if ((usage & PIPE_MAP_READ) && base->format == PIPE_FORMAT_R8G8B8A8_UNORM &&
+          base->width0 == 16 && base->height0 == 16 && staging_size >= 4) {
+         uint32_t pixel;
+         memcpy(&pixel, transfer->staging, sizeof(pixel));
+         printf("[ps5-gallium] fetch-readback-staging pixel=%08x stride=%zu\n", pixel, staging_stride);
+      }
       return transfer->staging;
    }
    if ((usage & PIPE_MAP_READ) && resource->base.target == PIPE_BUFFER)
