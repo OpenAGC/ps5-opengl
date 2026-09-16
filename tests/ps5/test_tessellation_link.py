@@ -398,6 +398,9 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
         expect_empty(&out); ralloc_free(gs);
     }
     /* The actual runtime generator supplies an optional application TCS. */
+    mesa_shader_stage saved_next=inputs[0]->info.next_stage, saved_prev=inputs[2]->info.prev_stage;
+    inputs[0]->info.next_stage=MESA_SHADER_TESS_EVAL;
+    inputs[2]->info.prev_stage=MESA_SHADER_VERTEX;
     for (unsigned vertices=1; vertices<=32; vertices+=31) {
         float levels[6]={4,2,3,1,2,4};
         nir_shader *default_tcs=ps5_default_tcs_nir(inputs[0]->info.outputs_written,vertices,levels);
@@ -408,8 +411,11 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
         assert(psbc_compile_nir_tessellation_pipeline(inputs[0],default_tcs,inputs[2],
             NULL,&default_options,&out)==PSBC_RESULT_OK);
         assert(out.runtime.output_patch_vertices==vertices);
+        assert(inputs[0]->info.next_stage==MESA_SHADER_TESS_EVAL);
+        assert(inputs[2]->info.prev_stage==MESA_SHADER_VERTEX);
         psbc_free_tessellation_output(&out); ralloc_free(default_tcs);
     }
+    inputs[0]->info.next_stage=saved_next; inputs[2]->info.prev_stage=saved_prev;
     puts("PASS actual runtime default TCS: 1/32 vertices, explicit default levels");
     /* Folded GLSL built-ins can leave an unused constant declaration. */
     {
