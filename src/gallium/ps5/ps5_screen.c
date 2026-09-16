@@ -6101,7 +6101,9 @@ ps5_resolve_color_msaa4(struct pipe_context *context,
        info->src.resource->nr_storage_samples != 4 ||
        info->dst.resource->nr_samples > 1 || info->dst_sample ||
        info->num_window_rectangles ||
-       info->alpha_blend || info->filter != PIPE_TEX_FILTER_NEAREST ||
+       info->alpha_blend ||
+       (info->filter != PIPE_TEX_FILTER_NEAREST &&
+        info->filter != PIPE_TEX_FILTER_LINEAR) ||
        !info->src.box.width || !info->src.box.height ||
        info->src.box.width == INT_MIN ||
        info->src.box.height == INT_MIN ||
@@ -6599,8 +6601,8 @@ ps5_blit_gpu_color(struct ps5_context *context, const struct pipe_blit_info *inf
 
    const bool resolve = info->src.resource->nr_samples == 4 &&
                         info->src.resource->nr_storage_samples == 4;
+   /* Equal-sized color resolves accept either filter; no scaling occurs. */
    if (resolve && (!PS5_ENABLE_MSAA4_CANDIDATE ||
-                   info->filter != PIPE_TEX_FILTER_NEAREST ||
                    abs(info->src.box.width) != info->dst.box.width ||
                    abs(info->src.box.height) != info->dst.box.height))
       return false;

@@ -25,6 +25,7 @@ def function(name):
 
 
 states = ("vertex_buffers", "vertex_elements", "vertex_shader", "geometry_shader",
+          "tessctrl_shader", "tesseval_shader",
           "so_targets", "rasterizer", "fragment_shader", "depth_stencil_alpha", "blend",
           "stencil_ref", "viewport", "scissor", "sample_mask", "framebuffer",
           "fragment_sampler_states", "fragment_sampler_views")
@@ -145,6 +146,15 @@ code += '\n' + '\n'.join(function(name) for name in (
 # observed fallback boundary, not a second implementation of the GPU helper.
 dispatch_start = source.index('   ps5_draw_batch_drain();', source.index('static void\nps5_blit('))
 dispatch_end = source.index('   if (PS5_ENABLE_MSAA4_CANDIDATE', dispatch_start)
+resolve_start = source.index('   if (info->mask', source.index('ps5_resolve_color_msaa4('))
+resolve_end = source.index('      printf("[ps5-gallium] msaa4-resolve rejected', resolve_start)
+code += r'''
+static bool ps5_color_view_format_compatible(unsigned a,unsigned b) { return a==b; }
+static bool ps5_msaa4_color_format(unsigned f) { return f==PIPE_FORMAT_R8G8B8A8_UNORM; }
+static bool ps5_render_target_format(unsigned f) { return ps5_msaa4_color_format(f); }
+static bool cpu_resolve_accepts(const struct pipe_blit_info *info) {
+    struct ps5_resource *source=(struct ps5_resource *)info->src.resource;
+''' + source[resolve_start:resolve_end] + 'return false; } return true; }\n'
 code += r'''
 static void ps5_draw_batch_drain(void) { ++drains; }
 static void dispatch(struct ps5_context *ps5,const struct pipe_blit_info *info) {
@@ -217,8 +227,18 @@ int main(void) {
     struct pipe_blit_info resolved=b; resolved.src.resource=&msaa.base;
     assert(ps5_blit_gpu_color(&c,&resolved));
     msaa.allocation_size--; assert(!ps5_blit_gpu_color(&c,&resolved)); msaa.allocation_size++;
-    resolved.filter=PIPE_TEX_FILTER_LINEAR; assert(!ps5_blit_gpu_color(&c,&resolved));
+    assert(cpu_resolve_accepts(&resolved));
+    resolved.filter=PIPE_TEX_FILTER_LINEAR;
+    assert(cpu_resolve_accepts(&resolved));
+    assert(ps5_blit_gpu_color(&c,&resolved));
+    resolved.filter=2;
+    assert(!cpu_resolve_accepts(&resolved));
+    assert(!ps5_blit_gpu_color(&c,&resolved));
     resolved.filter=PIPE_TEX_FILTER_NEAREST; resolved.src.box.width=256;
+    assert(!cpu_resolve_accepts(&resolved));
+    assert(!ps5_blit_gpu_color(&c,&resolved));
+    resolved.filter=PIPE_TEX_FILTER_LINEAR;
+    assert(!cpu_resolve_accepts(&resolved));
     assert(!ps5_blit_gpu_color(&c,&resolved));
     resolved=b; resolved.dst.resource=&msaa.base; assert(!ps5_blit_gpu_color(&c,&resolved));
     linear=true; assert(!ps5_blit_gpu_color(&c,&b)); linear=false;
