@@ -263,6 +263,8 @@ struct ps5_context {
    struct pipe_resource *border_color_storage;
    unsigned border_color_count;
    struct pipe_stream_output_target *stream_output_targets[PIPE_MAX_SO_BUFFERS];
+   struct pipe_resource *streamout_records;
+   struct pipe_resource *streamout_staging[PIPE_MAX_SO_BUFFERS];
    unsigned stream_output_target_count;
    unsigned split_instance_id;
    enum mesa_prim stream_output_primitive;
@@ -365,6 +367,12 @@ struct ps5_streamout_control {
    uint32_t emitted_primitives[4];
    uint32_t reserved[4];
 };
+
+struct ps5_streamout_record {
+   uint32_t primitive, invocation, reserved[2];
+   uint32_t offsets[4], generated[4], emitted[4];
+};
+_Static_assert(sizeof(struct ps5_streamout_record) == 64, "streamout record ABI");
 
 _Static_assert(sizeof(struct ps5_streamout_control) ==
                PS5_STREAMOUT_CONTROL_BYTES,
@@ -7880,6 +7888,36 @@ ps5_draw_primitive_count(uint32_t primitive_type, unsigned vertex_count)
 }
 
 static bool
+ps5_streamout_storage(struct ps5_context *context, struct pipe_resource **slot,
+                      uint64_t bytes)
+{
+   if (!bytes || bytes > UINT32_MAX)
+      return false;
+   if (*slot && (*slot)->width0 >= bytes)
+      return true;
+   struct pipe_resource templ = {
+      .target = PIPE_BUFFER, .format = PIPE_FORMAT_R8_UNORM,
+      .width0 = bytes, .height0 = 1, .depth0 = 1, .array_size = 1,
+   };
+   struct pipe_resource *replacement =
+      context->base.screen->resource_create(context->base.screen, &templ);
+   if (!replacement)
+      return false;
+   pipe_resource_reference(slot, NULL);
+   *slot = replacement;
+   return true;
+}
+
+static int
+ps5_streamout_record_compare(const void *a, const void *b)
+{
+   const struct ps5_streamout_record *x = a, *y = b;
+   if (x->primitive != y->primitive)
+      return x->primitive < y->primitive ? -1 : 1;
+   return (x->invocation > y->invocation) - (x->invocation < y->invocation);
+}
+
+static bool
 ps5_prepare_streamout(struct ps5_context *context,
                       const PsbcShaderMetadata *metadata,
                       struct ps5_resource *descriptor_resource,
@@ -7901,6 +7939,7 @@ ps5_prepare_streamout(struct ps5_context *context,
    uint64_t primitives = global_control ? 0 :
       ps5_draw_primitive_count(primitive_type, draw_count);
    uint32_t mask;
+   uint64_t record_capacity = 0;
 
    if (!metadata->streamout_valid || !vertices_per_primitive ||
        instance_count != 1 ||
@@ -7920,11 +7959,27 @@ ps5_prepare_streamout(struct ps5_context *context,
       metadata->streamout_enabled_stream_buffers_mask);
    if (!mask)
       return false;
+   if (context->gs && !context->tes) {
+      /* Worst-case staging preserves early primitives on overflow even when
+       * later workgroups finish first. Never replay shaders with side effects.
+       * ponytail: host compaction until a GPU ordered-prefix path is available. */
+      record_capacity = ps5_draw_primitive_count(primitive_type, draw_count);
+      record_capacity *= MAX2(context->gs->nir->info.gs.invocations, 1);
+      if (!record_capacity || record_capacity > (UINT32_MAX - 64u) / 64u ||
+          !ps5_streamout_storage(context, &context->streamout_records,
+                                 64u + record_capacity * 64u))
+         return false;
+      struct ps5_resource *records = (struct ps5_resource *)context->streamout_records;
+      control = (struct ps5_streamout_control *)records->data;
+      memset(control, 0, 64u + record_capacity * 64u);
+   }
    memset(descriptors, 0,
           (global_control ? PS5_STREAMOUT_CONTROL_DESCRIPTOR + 1u : 4u) *
              16u);
    if (global_control)
       memset(control, 0, sizeof(*control));
+   if (global_control)
+      control->reserved[1] = record_capacity;
    memset(size_dwords, 0, 4u * sizeof(size_dwords[0]));
    memset(stride_dwords, 0, 4u * sizeof(stride_dwords[0]));
    memset(offset_dwords, 0, 4u * sizeof(offset_dwords[0]));
@@ -7956,6 +8011,18 @@ ps5_prepare_streamout(struct ps5_context *context,
       if ((begin & 3u) || (end & 3u))
          return false;
       address = (uintptr_t)resource->data + begin;
+      if (record_capacity) {
+         uint64_t staging_size = record_capacity *
+            context->gs->nir->info.gs.vertices_out * vertices_per_primitive;
+         if (staging_size > UINT32_MAX / (4u * metadata->streamout_strides_dwords[index]) ||
+             !ps5_streamout_storage(context, &context->streamout_staging[index],
+                staging_size * 4u * metadata->streamout_strides_dwords[index]))
+            return false;
+         struct ps5_resource *staging = (struct ps5_resource *)context->streamout_staging[index];
+         address = (uintptr_t)staging->data;
+         end = staging_size * 4u * metadata->streamout_strides_dwords[index];
+         begin = 0;
+      }
       if (address >> 48)
          return false;
       descriptors[index * 4u] = (uint32_t)address;
@@ -7985,8 +8052,10 @@ ps5_prepare_streamout(struct ps5_context *context,
          return false;
       control_descriptor[0] = (uint32_t)control_address;
       control_descriptor[1] = (uint32_t)(control_address >> 32);
-      control_descriptor[2] = sizeof(*control);
+      control_descriptor[2] = record_capacity ? 64u + record_capacity * 64u : sizeof(*control);
       control_descriptor[3] = UINT32_C(0x31016fac);
+      if (record_capacity)
+         ps5_flush_gpu_data(control, control_descriptor[2]);
    }
    user_data[metadata->streamout_buffer_table_user_data_dword] =
       (uint32_t)table_address;
@@ -8004,6 +8073,7 @@ ps5_prepare_streamout(struct ps5_context *context,
 static bool
 ps5_collect_geometry_streamout(
    struct ps5_context *context, struct ps5_resource *descriptor_resource,
+   const PsbcShaderMetadata *metadata,
    uint64_t written_vertices[PIPE_MAX_VERTEX_STREAMS],
    uint64_t generated_primitives[PIPE_MAX_VERTEX_STREAMS])
 {
@@ -8012,6 +8082,124 @@ ps5_collect_geometry_streamout(
                                        PS5_STREAMOUT_CONTROL_OFFSET);
    unsigned vertices_per_primitive =
       ps5_streamout_vertices_per_primitive(context->stream_output_primitive);
+
+   if (context->gs && !context->tes) {
+      struct ps5_resource *storage = (struct ps5_resource *)context->streamout_records;
+      if (!storage || storage->size < sizeof(*control))
+         return false;
+      control = (struct ps5_streamout_control *)storage->data;
+      ps5_flush_gpu_data(storage->data, storage->size);
+      const unsigned count = control->reserved[0];
+      if (!vertices_per_primitive || control->reserved[2] ||
+          count > control->reserved[1] ||
+          count > (storage->size - sizeof(*control)) / sizeof(struct ps5_streamout_record))
+         return false;
+      struct ps5_streamout_record *records = (void *)(control + 1);
+      qsort(records, count, sizeof(*records), ps5_streamout_record_compare);
+      uint64_t capacity[4] = {UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
+      uint64_t generated[4] = {0}, emitted[4] = {0};
+      const unsigned mask = ps5_streamout_buffer_mask(metadata->streamout_enabled_stream_buffers_mask);
+      const struct pipe_stream_output_info *so = &context->gs->stream_output;
+      for (unsigned i = 0; i < so->num_outputs; ++i) {
+         const struct pipe_stream_output *output = &so->output[i];
+         if (output->output_buffer >= 4 ||
+             output->dst_offset + output->num_components >
+                metadata->streamout_strides_dwords[output->output_buffer])
+            return false;
+      }
+      for (unsigned buffer = 0; buffer < 4; ++buffer) {
+         if (!(mask & BITFIELD_BIT(buffer)))
+            continue;
+         struct ps5_stream_output_target *target =
+            (void *)context->stream_output_targets[buffer];
+         struct ps5_resource *staging = (void *)context->streamout_staging[buffer];
+         unsigned stream = ps5_streamout_buffer_stream(
+            metadata->streamout_enabled_stream_buffers_mask, buffer);
+         uint64_t stride = (uint64_t)metadata->streamout_strides_dwords[buffer] *
+                           4u * vertices_per_primitive;
+         if (!target || !staging || !stride || stream >= 4 ||
+             target->offset > target->base.buffer_size)
+            return false;
+         struct ps5_resource *destination = (void *)target->base.buffer;
+         if (!destination || target->base.buffer_offset > destination->size ||
+             target->base.buffer_size > destination->size - target->base.buffer_offset)
+            return false;
+         capacity[stream] = MIN2(capacity[stream],
+            (target->base.buffer_size - target->offset) / stride);
+         ps5_flush_gpu_data(staging->data, staging->size);
+      }
+      /* Validate the complete receipt before changing any application buffer. */
+      for (unsigned i = 0; i < count; ++i) {
+         if (i && !ps5_streamout_record_compare(&records[i - 1], &records[i]))
+            return false;
+         for (unsigned stream = 0; stream < 4; ++stream) {
+            if (records[i].emitted[stream] != records[i].generated[stream])
+               return false;
+            generated[stream] += records[i].generated[stream];
+         }
+         for (unsigned buffer = 0; buffer < 4; ++buffer) {
+            if (!(mask & BITFIELD_BIT(buffer)))
+               continue;
+            unsigned stream = ps5_streamout_buffer_stream(
+               metadata->streamout_enabled_stream_buffers_mask, buffer);
+            struct ps5_resource *staging = (void *)context->streamout_staging[buffer];
+            uint64_t bytes = (uint64_t)records[i].generated[stream] *
+               vertices_per_primitive * metadata->streamout_strides_dwords[buffer] * 4u;
+            if (records[i].offsets[buffer] > staging->size ||
+                bytes > staging->size - records[i].offsets[buffer])
+               return false;
+         }
+      }
+      for (unsigned stream = 0; stream < 4; ++stream)
+         if (generated[stream] != control->generated_primitives[stream])
+            return false;
+      for (unsigned i = 0; i < count; ++i) {
+         uint64_t take[4];
+         for (unsigned stream = 0; stream < 4; ++stream)
+            take[stream] = MIN2((uint64_t)records[i].generated[stream],
+                                capacity[stream] - emitted[stream]);
+         for (unsigned buffer = 0; buffer < 4; ++buffer) {
+            if (!(mask & BITFIELD_BIT(buffer)))
+               continue;
+            unsigned stream = ps5_streamout_buffer_stream(
+               metadata->streamout_enabled_stream_buffers_mask, buffer);
+            struct ps5_stream_output_target *target = (void *)context->stream_output_targets[buffer];
+            struct ps5_resource *dst = (void *)target->base.buffer;
+            struct ps5_resource *src = (void *)context->streamout_staging[buffer];
+            uint64_t stride = (uint64_t)vertices_per_primitive *
+                              metadata->streamout_strides_dwords[buffer] * 4u;
+            uint8_t *destination = dst->data + target->base.buffer_offset +
+               target->offset + emitted[stream] * stride;
+            const uint8_t *source = src->data + records[i].offsets[buffer];
+            /* Preserve skipped components and stride padding in the app buffer. */
+            for (unsigned o = 0; o < so->num_outputs; ++o) {
+               const struct pipe_stream_output *output = &so->output[o];
+               if (output->output_buffer != buffer)
+                  continue;
+               for (uint64_t v = 0; v < take[stream] * vertices_per_primitive; ++v) {
+                  uint64_t offset = (v * metadata->streamout_strides_dwords[buffer] +
+                                     output->dst_offset) * 4u;
+                  memcpy(destination + offset, source + offset, output->num_components * 4u);
+               }
+            }
+         }
+         for (unsigned stream = 0; stream < 4; ++stream)
+            emitted[stream] += take[stream];
+      }
+      for (unsigned buffer = 0; buffer < 4; ++buffer) {
+         if (mask & BITFIELD_BIT(buffer)) {
+            struct ps5_resource *dst = (void *)context->stream_output_targets[buffer]->buffer;
+            ps5_flush_gpu_data(dst->data, dst->size);
+         }
+      }
+      for (unsigned stream = 0; stream < 4; ++stream) {
+         written_vertices[stream] = emitted[stream] * vertices_per_primitive;
+         generated_primitives[stream] = generated[stream];
+      }
+      printf("[ps5-gallium] geometry-streamout ordered groups=%u primitives=%llu emitted=%llu\n",
+             count, (unsigned long long)generated[0], (unsigned long long)emitted[0]);
+      return true;
+   }
 
    if (!vertices_per_primitive ||
        PS5_STREAMOUT_CONTROL_OFFSET + sizeof(*control) >
@@ -9236,7 +9424,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
    if (streamout_active && (context->gs || tessellation_active) &&
        context->last_draw_status == 0 &&
        !ps5_collect_geometry_streamout(
-          context, descriptor_resource, streamout_written_vertices,
+          context, descriptor_resource, vertex_metadata, streamout_written_vertices,
           generated_primitives))
       context->last_draw_status = -21;
    if (streamout_active && context->last_draw_status == 0) {
@@ -13717,6 +13905,9 @@ ps5_context_destroy(struct pipe_context *base)
          &context->vertex_buffers[index].buffer.resource, NULL);
    for (index = 0; index < context->stream_output_target_count; ++index)
       pipe_so_target_reference(&context->stream_output_targets[index], NULL);
+   pipe_resource_reference(&context->streamout_records, NULL);
+   for (index = 0; index < PIPE_MAX_SO_BUFFERS; ++index)
+      pipe_resource_reference(&context->streamout_staging[index], NULL);
    pipe_resource_reference(&context->vertex_descriptor_table, NULL);
    for (unsigned slot = 0; slot < PS5_TEXTURE_STAGE_COUNT; ++slot)
       for (index = 0; index < PS5_MAX_TEXTURE_UNITS; ++index)
