@@ -228,6 +228,10 @@ struct ps5_context {
    unsigned draw_calls;
    struct ps5_shader *vs;
    struct ps5_shader *tcs;
+   struct ps5_shader *default_tcs;
+   uint64_t default_tcs_outputs;
+   uint8_t default_tcs_vertices;
+   float tess_levels[6], default_tcs_levels[6];
    struct ps5_shader *tes;
    struct ps5_shader *gs;
    struct ps5_shader *fs;
@@ -10034,6 +10038,74 @@ out:
 }
 #endif
 
+static bool
+ps5_lower_default_tess_levels(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   const float *levels = data;
+   unsigned first, count;
+   if (intr->intrinsic == nir_intrinsic_load_tess_level_outer_default) {
+      first = 0; count = 4;
+   } else if (intr->intrinsic == nir_intrinsic_load_tess_level_inner_default) {
+      first = 4; count = 2;
+   } else {
+      return false;
+   }
+   b->cursor = nir_before_instr(&intr->instr);
+   nir_def *values[4];
+   for (unsigned i = 0; i < count; ++i)
+      values[i] = nir_imm_float(b, levels[first + i]);
+   nir_def_rewrite_uses(&intr->def, nir_vec(b, values, count));
+   nir_instr_remove(&intr->instr);
+   return true;
+}
+
+static nir_shader *
+ps5_default_tcs_nir(uint64_t outputs, uint8_t vertices, const float levels[6])
+{
+   if (!vertices || vertices > 32)
+      return NULL;
+   unsigned locations[64], count = 0;
+   u_foreach_bit64(slot, outputs)
+      locations[count++] = slot;
+   nir_shader *nir = nir_create_passthrough_tcs_impl(
+      psbc_get_nir_options(PSBC_STAGE_TESS_CTRL), locations, count, vertices);
+   if (!nir)
+      return NULL;
+   nir_lower_system_values(nir);
+   nir_shader_intrinsics_pass(nir, ps5_lower_default_tess_levels,
+                              nir_metadata_control_flow, (void *)levels);
+   nir_lower_io_passes(nir, false);
+   nir_remove_dead_variables(nir, nir_var_shader_in | nir_var_shader_out | nir_var_system_value, NULL);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   return nir;
+}
+
+static bool
+ps5_prepare_default_tcs(struct ps5_context *context)
+{
+   if (!context->vs || !context->base.create_tcs_state)
+      return false;
+   uint64_t outputs = context->vs->nir->info.outputs_written;
+   if (context->default_tcs && context->default_tcs_outputs == outputs &&
+       context->default_tcs_vertices == context->patch_vertices &&
+       !memcmp(context->default_tcs_levels, context->tess_levels, sizeof(context->tess_levels)))
+      return true;
+   /* ponytail: cache baked default levels; use a UBO if levels change every draw. */
+   struct pipe_shader_state state = {.type = PIPE_SHADER_IR_NIR};
+   state.ir.nir = ps5_default_tcs_nir(outputs, context->patch_vertices, context->tess_levels);
+   if (!state.ir.nir)
+      return false;
+   struct ps5_shader *shader = context->base.create_tcs_state(&context->base, &state);
+   if (!shader)
+      return false;
+   context->base.delete_tcs_state(&context->base, context->default_tcs);
+   context->default_tcs = shader;
+   context->default_tcs_outputs = outputs;
+   context->default_tcs_vertices = context->patch_vertices;
+   memcpy(context->default_tcs_levels, context->tess_levels, sizeof(context->tess_levels));
+   return true;
+}
+
 static void
 ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
              unsigned drawid_offset,
@@ -10047,6 +10119,17 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
    struct pipe_draw_info uploaded_info;
    struct pipe_draw_start_count_bias uploaded_draw;
    unsigned uploaded_offset;
+
+   if (info && info->mode == MESA_PRIM_PATCHES && context->tes && !context->tcs) {
+      if (!ps5_prepare_default_tcs(context)) {
+         context->last_draw_status = -19;
+         return;
+      }
+      context->tcs = context->default_tcs;
+      ps5_draw_vbo(base, info, drawid_offset, indirect, draws, num_draws);
+      context->tcs = NULL;
+      return;
+   }
 
    if (indirect) {
       if (!PS5_ENABLE_DRAW_INDIRECT_CANDIDATE || !info ||
@@ -13168,6 +13251,14 @@ ps5_set_patch_vertices(struct pipe_context *base, uint8_t patch_vertices)
 }
 
 static void
+ps5_set_tess_state(struct pipe_context *base, const float outer[4], const float inner[2])
+{
+   struct ps5_context *context = (void *)base;
+   memcpy(context->tess_levels, outer, 4 * sizeof(float));
+   memcpy(context->tess_levels + 4, inner, 2 * sizeof(float));
+}
+
+static void
 ps5_bind_blend_state(struct pipe_context *base, void *state)
 {
    struct ps5_context *context = (struct ps5_context *)base;
@@ -13861,6 +13952,8 @@ ps5_delete_shader_state(struct pipe_context *base, void *state)
       context->vs = NULL;
    if (context->tcs == shader)
       context->tcs = NULL;
+   if (context->default_tcs == shader)
+      context->default_tcs = NULL;
    if (context->tes == shader)
       context->tes = NULL;
    if (context->gs == shader)
@@ -13962,6 +14055,7 @@ ps5_context_destroy(struct pipe_context *base)
       pipe_so_target_reference(&context->stream_output_targets[index], NULL);
    pipe_resource_reference(&context->streamout_records, NULL);
    pipe_resource_reference(&context->primitive_query_storage, NULL);
+   ps5_delete_shader_state(base, context->default_tcs);
    for (index = 0; index < PIPE_MAX_SO_BUFFERS; ++index)
       pipe_resource_reference(&context->streamout_staging[index], NULL);
    pipe_resource_reference(&context->vertex_descriptor_table, NULL);
@@ -14048,6 +14142,8 @@ ps5_context_create(struct pipe_screen *screen, void *priv, unsigned flags)
    context->base.priv = priv;
    context->sample_mask = UINT32_C(0xffff);
    context->patch_vertices = 3;
+   for (unsigned i = 0; i < 6; ++i)
+      context->tess_levels[i] = 1.0f;
    context->queries_enabled = true;
    context->base.destroy = ps5_context_destroy;
 #ifdef PS5_NATIVE_TITLE_RUNTIME
@@ -14088,6 +14184,7 @@ ps5_context_create(struct pipe_screen *screen, void *priv, unsigned flags)
       context->base.bind_tes_state = ps5_bind_tes_state;
       context->base.delete_tes_state = ps5_delete_shader_state;
       context->base.set_patch_vertices = ps5_set_patch_vertices;
+      context->base.set_tess_state = ps5_set_tess_state;
    }
    context->base.create_blend_state = ps5_create_blend_state;
    context->base.bind_blend_state = ps5_bind_blend_state;

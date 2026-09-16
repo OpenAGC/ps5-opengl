@@ -41,6 +41,12 @@ helpers += function((ROOT / "src/gallium/ps5/ps5_screen.c").read_text(),
                     "static void\nps5_lower_default_uniforms(")
 helpers += function((ROOT / "src/gallium/ps5/ps5_screen.c").read_text(),
                     "static nir_shader *\nps5_stream_output_carrier_nir(")
+helpers += function((PSBC / "src/compiler/nir/nir_passthrough_tcs.c").read_text(),
+                    "nir_shader *\nnir_create_passthrough_tcs_impl(")
+helpers += function((ROOT / "src/gallium/ps5/ps5_screen.c").read_text(),
+                    "static bool\nps5_lower_default_tess_levels(")
+helpers += function((ROOT / "src/gallium/ps5/ps5_screen.c").read_text(),
+                    "static nir_shader *\nps5_default_tcs_nir(")
 
 code = r'''
 #include <assert.h>
@@ -391,6 +397,20 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
             inputs[0],inputs[1],inputs[2],gs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
         expect_empty(&out); ralloc_free(gs);
     }
+    /* The actual runtime generator supplies an optional application TCS. */
+    for (unsigned vertices=1; vertices<=32; vertices+=31) {
+        float levels[6]={4,2,3,1,2,4};
+        nir_shader *default_tcs=ps5_default_tcs_nir(inputs[0]->info.outputs_written,vertices,levels);
+        assert(default_tcs && default_tcs->info.tess.tcs_vertices_out==vertices);
+        nir_validate_shader(default_tcs,"runtime default TCS");
+        PsbcTessellationCompileOptions default_options=options;
+        default_options.input_patch_vertices=vertices;
+        assert(psbc_compile_nir_tessellation_pipeline(inputs[0],default_tcs,inputs[2],
+            NULL,&default_options,&out)==PSBC_RESULT_OK);
+        assert(out.runtime.output_patch_vertices==vertices);
+        psbc_free_tessellation_output(&out); ralloc_free(default_tcs);
+    }
+    puts("PASS actual runtime default TCS: 1/32 vertices, explicit default levels");
     /* Folded GLSL built-ins can leave an unused constant declaration. */
     {
         nir_shader *saved=inputs[2];
