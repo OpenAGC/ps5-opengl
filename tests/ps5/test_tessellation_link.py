@@ -417,6 +417,22 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
     }
     inputs[0]->info.next_stage=saved_next; inputs[2]->info.prev_stage=saved_prev;
     puts("PASS actual runtime default TCS: 1/32 vertices, explicit default levels");
+    /* Gallium TES factor sysvals must become linked patch inputs, not reach ACO. */
+    {
+        nir_shader *saved=inputs[2];
+        inputs[2]=nir_shader_clone(NULL,saved);
+        nir_builder b=nir_builder_at(nir_after_impl(nir_shader_get_entrypoint(inputs[2])));
+        nir_def *inner=nir_load_tess_level_inner(&b);
+        nir_def *outer=nir_load_tess_level_outer(&b);
+        nir_store_output(&b,nir_fadd(&b,nir_channel(&b,inner,1),nir_channel(&b,outer,3)),
+            nir_imm_int(&b,0),.src_type=nir_type_float32,
+            .io_semantics={.location=VARYING_SLOT_VAR0,.num_slots=1});
+        nir_shader_gather_info(inputs[2],nir_shader_get_entrypoint(inputs[2]));
+        assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_OK);
+        psbc_free_tessellation_output(&out);
+        ralloc_free(inputs[2]); inputs[2]=saved;
+        puts("PASS TES inner/outer tessellation-level system values");
+    }
     /* Folded GLSL built-ins can leave an unused constant declaration. */
     {
         nir_shader *saved=inputs[2];
