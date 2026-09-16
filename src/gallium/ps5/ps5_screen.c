@@ -8132,8 +8132,11 @@ ps5_collect_geometry_streamout(
       const unsigned count = control->reserved[0];
       if (!vertices_per_primitive || control->reserved[2] ||
           count > control->reserved[1] ||
-          count > (storage->size - sizeof(*control)) / sizeof(struct ps5_streamout_record))
+          count > (storage->size - sizeof(*control)) / sizeof(struct ps5_streamout_record)) {
+         printf("[ps5-gallium] streamout-record-header count=%u capacity=%u error=%u\n",
+                count, control->reserved[1], control->reserved[2]);
          return false;
+      }
       struct ps5_streamout_record *records = (void *)(control + 1);
       qsort(records, count, sizeof(*records), ps5_streamout_record_compare);
       uint64_t capacity[4] = {UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
@@ -8172,8 +8175,12 @@ ps5_collect_geometry_streamout(
       /* Validate the complete receipt before changing any application buffer. */
       for (unsigned i = 0; i < count; ++i) {
          if (context->tes && (count >= 4096u || records[i].primitive != i ||
-                             records[i].invocation != 0))
+                             records[i].invocation != 0)) {
+            printf("[ps5-gallium] tess-streamout-order-rejected count=%u index=%u key=%u invocation=%u first=%u last=%u\n",
+                   count, i, records[i].primitive, records[i].invocation,
+                   records[0].primitive, records[count - 1].primitive);
             return false;
+         }
          if (i && !ps5_streamout_record_compare(&records[i - 1], &records[i]))
             return false;
          for (unsigned stream = 0; stream < 4; ++stream) {
