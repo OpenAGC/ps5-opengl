@@ -391,6 +391,23 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
             inputs[0],inputs[1],inputs[2],gs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
         expect_empty(&out); ralloc_free(gs);
     }
+    /* Folded GLSL built-ins can leave an unused constant declaration. */
+    {
+        nir_shader *saved=inputs[2];
+        inputs[2]=nir_shader_clone(NULL,saved);
+        nir_variable *dead=nir_variable_create(inputs[2],nir_var_mem_constant,
+                                               glsl_int_type(),"gl_PatchVerticesIn");
+        assert(psbc_compile_nir_tessellation_pipeline(inputs[0],inputs[1],inputs[2],
+            NULL,&options,&out)==PSBC_RESULT_OK);
+        psbc_free_tessellation_output(&out);
+        nir_builder b=nir_builder_at(nir_before_cf_list(&nir_shader_get_entrypoint(inputs[2])->body));
+        nir_load_var(&b,dead);
+        assert(psbc_compile_nir_tessellation_pipeline(inputs[0],inputs[1],inputs[2],
+            NULL,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
+        expect_empty(&out);
+        ralloc_free(inputs[2]); inputs[2]=saved;
+        puts("PASS folded builtin declaration; live constant deref rejected");
+    }
     /* Primitive counting must work without any declared feedback varying. */
     for (unsigned with_gs=0; with_gs<2; ++with_gs) {
         nir_shader *query_gs=with_gs ? build(MESA_SHADER_GEOMETRY,false,ci) : NULL;
