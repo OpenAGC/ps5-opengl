@@ -378,6 +378,8 @@ struct ps5_streamout_record {
    uint32_t primitive, invocation, reserved[2];
    uint32_t offsets[4], generated[4], emitted[4];
 };
+/* Native receipts cross 1023 -> 0; the generic ABI field is wider. */
+#define PS5_TESS_STREAMOUT_ORDINAL_COUNT 1024u
 _Static_assert(sizeof(struct ps5_streamout_record) == 64, "streamout record ABI");
 
 _Static_assert(sizeof(struct ps5_streamout_control) ==
@@ -8001,9 +8003,8 @@ ps5_prepare_streamout(struct ps5_context *context,
       /* Maximum tessellation level is 64: quads produce at most 2*64*64
        * triangles, with fewer primitives for the other tessellation modes. */
       staging_primitives = (uint64_t)(draw_count / context->patch_vertices) * 8192u;
-      /* ponytail: bounded 12-bit workgroup ordinals; a wider ordering key is
-       * required at 4096 NGG workgroups (a full cycle is ambiguous). */
-      record_capacity = MIN2(staging_primitives, 4095u);
+      /* ponytail: a full hardware ordinal cycle needs a wider ordering key. */
+      record_capacity = MIN2(staging_primitives, PS5_TESS_STREAMOUT_ORDINAL_COUNT - 1u);
    }
    if ((context->gs != NULL) != (context->tes != NULL)) {
       if (!record_capacity || record_capacity > (UINT32_MAX - 64u) / 64u ||
@@ -8140,18 +8141,19 @@ ps5_collect_geometry_streamout(
       struct ps5_streamout_record *records = (void *)(control + 1);
       qsort(records, count, sizeof(*records), ps5_streamout_record_compare);
       if (context->tes && count) {
-         /* ponytail: fewer than 4096 groups identify one complete ordinal
+         /* ponytail: fewer than one cycle identifies one complete ordinal
           * interval; larger draws need a non-wrapping ordering mechanism. */
-         if (count >= 4096u)
+         const unsigned modulus = PS5_TESS_STREAMOUT_ORDINAL_COUNT;
+         if (count >= modulus)
             return false;
          unsigned origin = 0, boundaries = 0;
          for (unsigned i = 0; i < count; ++i) {
             unsigned next = (i + 1) % count;
-            if (records[i].primitive >= 4096u || records[i].invocation)
+            if (records[i].primitive >= modulus || records[i].invocation)
                return false;
             unsigned gap = next ? records[next].primitive - records[i].primitive :
-               4096u + records[0].primitive - records[i].primitive;
-            if (gap == 4097u - count) {
+               modulus + records[0].primitive - records[i].primitive;
+            if (gap == modulus + 1u - count) {
                origin = records[next].primitive;
                ++boundaries;
             } else if (gap != 1u) {
@@ -8164,7 +8166,7 @@ ps5_collect_geometry_streamout(
          if (boundaries != 1)
             return false;
          for (unsigned i = 0; i < count; ++i)
-            records[i].primitive = (records[i].primitive + 4096u - origin) % 4096u;
+            records[i].primitive = (records[i].primitive + modulus - origin) % modulus;
          qsort(records, count, sizeof(*records), ps5_streamout_record_compare);
       }
       uint64_t capacity[4] = {UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
@@ -8202,7 +8204,7 @@ ps5_collect_geometry_streamout(
       }
       /* Validate the complete receipt before changing any application buffer. */
       for (unsigned i = 0; i < count; ++i) {
-         if (context->tes && (count >= 4096u || records[i].primitive != i ||
+         if (context->tes && (count >= PS5_TESS_STREAMOUT_ORDINAL_COUNT || records[i].primitive != i ||
                              records[i].invocation != 0)) {
             printf("[ps5-gallium] tess-streamout-order-rejected count=%u index=%u key=%u invocation=%u first=%u last=%u\n",
                    count, i, records[i].primitive, records[i].invocation,

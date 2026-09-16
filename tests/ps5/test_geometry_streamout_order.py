@@ -52,6 +52,7 @@ static bool ps5_streamout_storage(struct ps5_context *c,struct pipe_resource **s
     (void)c; return *slot && ((struct ps5_resource *)*slot)->size>=size;
 }
 '''
+code += next(line for line in source.splitlines() if line.startswith('#define PS5_TESS_STREAMOUT_ORDINAL_COUNT')) + '\n'
 code += function('ps5_prepare_primitive_query')
 code += function('ps5_streamout_record_compare')
 code += function('ps5_collect_geometry_streamout')
@@ -123,15 +124,16 @@ int main(void) {
     table.record[0]=table.record[2]; table.record[2]=swap;
     assert(ps5_collect_geometry_streamout(&c,&records,&m,written,generated));
     assert(memcmp(saved,output,sizeof(saved))==0);
-    for(unsigned origin=0;origin<4096;++origin) {
-      for(unsigned i=0;i<3;++i) table.record[i].primitive=(origin+i)%4096;
+    const unsigned modulus=PS5_TESS_STREAMOUT_ORDINAL_COUNT;
+    for(unsigned origin=0;origin<modulus;++origin) {
+      for(unsigned i=0;i<3;++i) table.record[i].primitive=(origin+i)%modulus;
       assert(ps5_collect_geometry_streamout(&c,&records,&m,written,generated));
       assert(memcmp(saved,output,sizeof(saved))==0);
     }
-    table.record[2].primitive=4093;
+    table.record[2].primitive=modulus-3;
     assert(!ps5_collect_geometry_streamout(&c,&records,&m,written,generated));
     assert(memcmp(saved,output,sizeof(saved))==0);
-    table.record[2].primitive=4096;
+    table.record[2].primitive=modulus;
     assert(!ps5_collect_geometry_streamout(&c,&records,&m,written,generated));
     assert(memcmp(saved,output,sizeof(saved))==0);
     table.record[2].primitive=2;
@@ -139,20 +141,20 @@ int main(void) {
     assert(!ps5_collect_geometry_streamout(&c,&records,&m,written,generated));
     assert(memcmp(saved,output,sizeof(saved))==0);
     table.record[1].primitive=1;
-    struct ps5_streamout_control *full=calloc(1,sizeof(*full)+4096*sizeof(struct ps5_streamout_record));
+    struct ps5_streamout_control *full=calloc(1,sizeof(*full)+modulus*sizeof(struct ps5_streamout_record));
     assert(full);
-    full->reserved[0]=full->reserved[1]=4096;
+    full->reserved[0]=full->reserved[1]=modulus;
     struct ps5_streamout_record *full_records=(void *)(full+1);
-    for(unsigned i=0;i<4096;++i) full_records[i].primitive=i;
+    for(unsigned i=0;i<modulus;++i) full_records[i].primitive=i;
     struct ps5_resource full_storage={.data=(void *)full,
-        .size=sizeof(*full)+4096*sizeof(*full_records)};
+        .size=sizeof(*full)+modulus*sizeof(*full_records)};
     c.streamout_records=&full_storage.base;
     assert(!ps5_collect_geometry_streamout(&c,&records,&m,written,generated));
     assert(memcmp(saved,output,sizeof(saved))==0);
-    const unsigned boundary_counts[]={1,2,4095};
+    const unsigned boundary_counts[]={1,2,modulus-1};
     for(unsigned b=0;b<3;++b) {
       full->reserved[0]=boundary_counts[b];
-      for(unsigned i=0;i<boundary_counts[b];++i) full_records[i].primitive=(4095+i)%4096;
+      for(unsigned i=0;i<boundary_counts[b];++i) full_records[i].primitive=(modulus-1+i)%modulus;
       assert(ps5_collect_geometry_streamout(&c,&records,&m,written,generated));
       assert(memcmp(saved,output,sizeof(saved))==0);
     }
