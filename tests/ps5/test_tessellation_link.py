@@ -428,8 +428,51 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
             nir_imm_int(&b,0),.src_type=nir_type_float32,
             .io_semantics={.location=VARYING_SLOT_VAR0,.num_slots=1});
         nir_shader_gather_info(inputs[2],nir_shader_get_entrypoint(inputs[2]));
-        assert(checked_compile(inputs,&options,&out)==PSBC_RESULT_OK);
-        psbc_free_tessellation_output(&out);
+        nir_shader *saved_tcs=inputs[1];
+        inputs[1]=nir_shader_clone(NULL,saved_tcs);
+        radv_nir_lower_io(inputs[1]);
+        nir_foreach_function_impl(impl,inputs[1]) nir_foreach_block(block,impl)
+            nir_foreach_instr_safe(instr,block) {
+                if(instr->type!=nir_instr_type_intrinsic) continue;
+                nir_intrinsic_instr *intr=nir_instr_as_intrinsic(instr);
+                if(intr->intrinsic!=nir_intrinsic_store_output) continue;
+                unsigned slot=nir_intrinsic_io_semantics(intr).location;
+                if(slot!=VARYING_SLOT_TESS_LEVEL_INNER && slot!=VARYING_SLOT_TESS_LEVEL_OUTER) continue;
+                nir_builder writer=nir_builder_at(nir_before_instr(instr));
+                nir_def *value=nir_load_ssbo(&writer,intr->num_components,32,nir_imm_int(&writer,0),
+                    nir_imm_int(&writer,(slot==VARYING_SLOT_TESS_LEVEL_INNER ? 16 : 0)+
+                        nir_intrinsic_component(intr)*4),.align_mul=4);
+                nir_src_rewrite(&intr->src[0],value);
+            }
+        inputs[1]->info.num_ssbos=1;
+        nir_shader_gather_info(inputs[1],nir_shader_get_entrypoint(inputs[1]));
+        PsbcTessellationCompileOptions factor_options=options;
+        factor_options.vertex.gallium_buffer_arrays=true;
+        factor_options.vertex.descriptor_binding_count=1;
+        factor_options.vertex.descriptor_bindings[0]=(PsbcDescriptorBinding){
+            .binding=6,.type=PSBC_DESCRIPTOR_STORAGE_BUFFER,.array_size=1,.offset=0,.stride=16};
+        assert(checked_compile(inputs,&factor_options,&out)==PSBC_RESULT_OK);
+        PsbcTessellationOutput reference=out;
+        memset(&out,0,sizeof(out));
+        nir_foreach_function_impl(impl,inputs[1]) nir_foreach_block(block,impl)
+            nir_foreach_instr(instr,block) {
+                if(instr->type!=nir_instr_type_intrinsic) continue;
+                nir_intrinsic_instr *intr=nir_instr_as_intrinsic(instr);
+                if(intr->intrinsic!=nir_intrinsic_store_output) continue;
+                nir_io_semantics sem=nir_intrinsic_io_semantics(intr);
+                if(sem.location!=VARYING_SLOT_TESS_LEVEL_INNER &&
+                   sem.location!=VARYING_SLOT_TESS_LEVEL_OUTER) continue;
+                sem.no_varying=true;
+                nir_intrinsic_set_io_semantics(intr,sem);
+            }
+        nir_shader_gather_info(inputs[1],nir_shader_get_entrypoint(inputs[1]));
+        assert(checked_compile(inputs,&factor_options,&out)==PSBC_RESULT_OK);
+        assert(out.hs.machine_code_size==reference.hs.machine_code_size);
+        assert(out.tes.machine_code_size==reference.tes.machine_code_size);
+        assert(!memcmp(out.hs.machine_code,reference.hs.machine_code,out.hs.machine_code_size));
+        assert(!memcmp(out.tes.machine_code,reference.tes.machine_code,out.tes.machine_code_size));
+        psbc_free_tessellation_output(&out); psbc_free_tessellation_output(&reference);
+        ralloc_free(inputs[1]); inputs[1]=saved_tcs;
         ralloc_free(inputs[2]); inputs[2]=saved;
         puts("PASS TES inner/outer tessellation-level system values");
     }
