@@ -8155,6 +8155,9 @@ ps5_collect_geometry_streamout(
                origin = records[next].primitive;
                ++boundaries;
             } else if (gap != 1u) {
+               printf("[ps5-gallium] tess-streamout-gap count=%u index=%u key=%u next=%u gap=%u first=%u last=%u\n",
+                      count, i, records[i].primitive, records[next].primitive,
+                      gap, records[0].primitive, records[count - 1].primitive);
                return false;
             }
          }
