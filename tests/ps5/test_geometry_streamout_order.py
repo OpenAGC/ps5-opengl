@@ -123,7 +123,15 @@ int main(void) {
     table.record[0]=table.record[2]; table.record[2]=swap;
     assert(ps5_collect_geometry_streamout(&c,&records,&m,written,generated));
     assert(memcmp(saved,output,sizeof(saved))==0);
-    table.record[2].primitive=4095;
+    for(unsigned origin=0;origin<4096;++origin) {
+      for(unsigned i=0;i<3;++i) table.record[i].primitive=(origin+i)%4096;
+      assert(ps5_collect_geometry_streamout(&c,&records,&m,written,generated));
+      assert(memcmp(saved,output,sizeof(saved))==0);
+    }
+    table.record[2].primitive=4093;
+    assert(!ps5_collect_geometry_streamout(&c,&records,&m,written,generated));
+    assert(memcmp(saved,output,sizeof(saved))==0);
+    table.record[2].primitive=4096;
     assert(!ps5_collect_geometry_streamout(&c,&records,&m,written,generated));
     assert(memcmp(saved,output,sizeof(saved))==0);
     table.record[2].primitive=2;

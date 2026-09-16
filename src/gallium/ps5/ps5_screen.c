@@ -8139,6 +8139,31 @@ ps5_collect_geometry_streamout(
       }
       struct ps5_streamout_record *records = (void *)(control + 1);
       qsort(records, count, sizeof(*records), ps5_streamout_record_compare);
+      if (context->tes && count) {
+         /* ponytail: fewer than 4096 groups identify one complete ordinal
+          * interval; larger draws need a non-wrapping ordering mechanism. */
+         if (count >= 4096u)
+            return false;
+         unsigned origin = 0, boundaries = 0;
+         for (unsigned i = 0; i < count; ++i) {
+            unsigned next = (i + 1) % count;
+            if (records[i].primitive >= 4096u || records[i].invocation)
+               return false;
+            unsigned gap = next ? records[next].primitive - records[i].primitive :
+               4096u + records[0].primitive - records[i].primitive;
+            if (gap == 4097u - count) {
+               origin = records[next].primitive;
+               ++boundaries;
+            } else if (gap != 1u) {
+               return false;
+            }
+         }
+         if (boundaries != 1)
+            return false;
+         for (unsigned i = 0; i < count; ++i)
+            records[i].primitive = (records[i].primitive + 4096u - origin) % 4096u;
+         qsort(records, count, sizeof(*records), ps5_streamout_record_compare);
+      }
       uint64_t capacity[4] = {UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
       uint64_t generated[4] = {0}, emitted[4] = {0};
       const unsigned mask = ps5_streamout_buffer_mask(metadata->streamout_enabled_stream_buffers_mask);
