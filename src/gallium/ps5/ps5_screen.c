@@ -50,6 +50,7 @@ ps5_runtime_printf(const char *format, ...)
 #include "util/u_memset.h"
 #include "util/u_prim.h"
 #include "util/u_prim_restart.h"
+#include "indices/u_primconvert.h"
 #include "util/u_surface.h"
 #include "util/u_upload_mgr.h"
 
@@ -10032,9 +10033,22 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
       return;
    }
    if (info && info->primitive_restart) {
-      if (util_draw_vbo_without_prim_restart(
-             base, info, drawid_offset, indirect, draws) != PIPE_OK)
-         ((struct ps5_context *)base)->last_draw_status = -2;
+      /* One rewritten draw preserves PrimitiveID across restart boundaries.
+       * Mesa converts each strip separately before concatenating its indices. */
+      struct primconvert_config cfg = {
+         .primtypes_mask = base->screen->caps.supported_prim_modes,
+         .restart_primtypes_mask = 0,
+      };
+      struct primconvert_context *converter = util_primconvert_create_config(base, &cfg);
+      if (!converter) {
+         context->last_draw_status = -2;
+         return;
+      }
+      util_primconvert_save_flatshade_first(converter,
+         context->rasterizer && context->rasterizer->flatshade_first);
+      context->last_draw_status = 0;
+      util_primconvert_draw_vbo(converter, info, drawid_offset, indirect, draws, num_draws);
+      util_primconvert_destroy(converter);
       return;
    }
    if (info && draws && !indirect && info->index_size &&

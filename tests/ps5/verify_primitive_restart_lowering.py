@@ -95,8 +95,12 @@ require("was_primitive_restart:1" in pipe_state, "pipe draw provenance bit missi
 require("caps->primitive_restart = true;" in screen, "emulated capability missing")
 require("caps->supported_prim_modes_with_restart = caps->supported_prim_modes;" in screen,
         "restart modes must route to the driver fallback")
-require("util_draw_vbo_without_prim_restart(" in screen,
-        "driver restart splitter missing")
+require("util_primconvert_draw_vbo(converter, info, drawid_offset, indirect, draws, num_draws);" in screen,
+        "restart must preserve primitive IDs with one converted draw")
+require(".restart_primtypes_mask = 0," in screen,
+        "converter must remove hardware restart markers")
+require("util_draw_vbo_without_prim_restart(" not in screen,
+        "split restart draws reset the primitive ID sequence")
 require("ps5_draw_vbo_without_adjacency(" in screen,
         "driver no-GS adjacency reassembly missing")
 require("!((struct ps5_context *)base)->gs" in screen,
