@@ -7968,6 +7968,7 @@ ps5_prepare_streamout(struct ps5_context *context,
       ps5_draw_primitive_count(primitive_type, draw_count);
    uint32_t mask;
    uint64_t record_capacity = 0;
+   uint64_t staging_primitives = 0;
 
    if (!metadata->streamout_valid || !vertices_per_primitive ||
        instance_count != 1 ||
@@ -7993,6 +7994,18 @@ ps5_prepare_streamout(struct ps5_context *context,
        * ponytail: host compaction until a GPU ordered-prefix path is available. */
       record_capacity = ps5_draw_primitive_count(primitive_type, draw_count);
       record_capacity *= MAX2(context->gs->nir->info.gs.invocations, 1);
+      staging_primitives = record_capacity * context->gs->nir->info.gs.vertices_out;
+   } else if (context->tes && !context->gs) {
+      if (!context->patch_vertices)
+         return false;
+      /* Maximum tessellation level is 64: quads produce at most 2*64*64
+       * triangles, with fewer primitives for the other tessellation modes. */
+      staging_primitives = (uint64_t)(draw_count / context->patch_vertices) * 8192u;
+      /* ponytail: bounded 12-bit workgroup ordinals; a wider ordering key is
+       * required at 4096 NGG workgroups (a full cycle is ambiguous). */
+      record_capacity = MIN2(staging_primitives, 4095u);
+   }
+   if ((context->gs != NULL) != (context->tes != NULL)) {
       if (!record_capacity || record_capacity > (UINT32_MAX - 64u) / 64u ||
           !ps5_streamout_storage(context, &context->streamout_records,
                                  64u + record_capacity * 64u))
@@ -8040,8 +8053,7 @@ ps5_prepare_streamout(struct ps5_context *context,
          return false;
       address = (uintptr_t)resource->data + begin;
       if (record_capacity) {
-         uint64_t staging_size = record_capacity *
-            context->gs->nir->info.gs.vertices_out * vertices_per_primitive;
+         uint64_t staging_size = staging_primitives * vertices_per_primitive;
          if (staging_size > UINT32_MAX / (4u * metadata->streamout_strides_dwords[index]) ||
              !ps5_streamout_storage(context, &context->streamout_staging[index],
                 staging_size * 4u * metadata->streamout_strides_dwords[index]))
@@ -8111,7 +8123,7 @@ ps5_collect_geometry_streamout(
    unsigned vertices_per_primitive =
       ps5_streamout_vertices_per_primitive(context->stream_output_primitive);
 
-   if (context->gs && !context->tes) {
+   if ((context->gs != NULL) != (context->tes != NULL)) {
       struct ps5_resource *storage = (struct ps5_resource *)context->streamout_records;
       if (!storage || storage->size < sizeof(*control))
          return false;
@@ -8127,7 +8139,8 @@ ps5_collect_geometry_streamout(
       uint64_t capacity[4] = {UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
       uint64_t generated[4] = {0}, emitted[4] = {0};
       const unsigned mask = ps5_streamout_buffer_mask(metadata->streamout_enabled_stream_buffers_mask);
-      const struct pipe_stream_output_info *so = &context->gs->stream_output;
+      const struct pipe_stream_output_info *so = context->gs ?
+         &context->gs->stream_output : &context->tes->stream_output;
       for (unsigned i = 0; i < so->num_outputs; ++i) {
          const struct pipe_stream_output *output = &so->output[i];
          if (output->output_buffer >= 4 ||
@@ -8158,6 +8171,9 @@ ps5_collect_geometry_streamout(
       }
       /* Validate the complete receipt before changing any application buffer. */
       for (unsigned i = 0; i < count; ++i) {
+         if (context->tes && (count >= 4096u || records[i].primitive != i ||
+                             records[i].invocation != 0))
+            return false;
          if (i && !ps5_streamout_record_compare(&records[i - 1], &records[i]))
             return false;
          for (unsigned stream = 0; stream < 4; ++stream) {

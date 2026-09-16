@@ -33,7 +33,7 @@ struct ps5_stream_output_target { struct pipe_stream_output_target base; unsigne
 struct pipe_stream_output { unsigned output_buffer,dst_offset,num_components; };
 struct pipe_stream_output_info { unsigned num_outputs; struct pipe_stream_output output[4]; };
 struct ps5_shader { struct pipe_stream_output_info stream_output; };
-struct ps5_context { struct ps5_shader *gs; void *tes; struct pipe_resource *streamout_records,*streamout_staging[4];
+struct ps5_context { struct ps5_shader *gs,*tes; struct pipe_resource *streamout_records,*streamout_staging[4];
     struct pipe_resource *primitive_query_storage;
     struct pipe_stream_output_target *stream_output_targets[4]; unsigned stream_output_primitive; };
 typedef struct { unsigned streamout_enabled_stream_buffers_mask,streamout_strides_dwords[4];
@@ -117,6 +117,28 @@ int main(void) {
     assert(ps5_collect_geometry_streamout(&c,&records,&m,written,generated));
     for(unsigned i=0;i<32;++i) assert(output[1][i]==0xdeadbeef);
     uint32_t saved[3][32]; memcpy(saved,output,sizeof(saved));
+    c.gs=NULL; c.tes=&shader;
+    for(unsigned i=0;i<3;++i) table.record[i].primitive=i;
+    struct ps5_streamout_record swap=table.record[0];
+    table.record[0]=table.record[2]; table.record[2]=swap;
+    assert(ps5_collect_geometry_streamout(&c,&records,&m,written,generated));
+    assert(memcmp(saved,output,sizeof(saved))==0);
+    table.record[2].primitive=4095;
+    assert(!ps5_collect_geometry_streamout(&c,&records,&m,written,generated));
+    assert(memcmp(saved,output,sizeof(saved))==0);
+    table.record[2].primitive=2;
+    struct ps5_streamout_control *full=calloc(1,sizeof(*full)+4096*sizeof(struct ps5_streamout_record));
+    assert(full);
+    full->reserved[0]=full->reserved[1]=4096;
+    struct ps5_streamout_record *full_records=(void *)(full+1);
+    for(unsigned i=0;i<4096;++i) full_records[i].primitive=i;
+    struct ps5_resource full_storage={.data=(void *)full,
+        .size=sizeof(*full)+4096*sizeof(*full_records)};
+    c.streamout_records=&full_storage.base;
+    assert(!ps5_collect_geometry_streamout(&c,&records,&m,written,generated));
+    assert(memcmp(saved,output,sizeof(saved))==0);
+    c.streamout_records=&records.base; free(full);
+    c.gs=&shader; c.tes=NULL;
     unsigned size=targets[0].base.buffer_size;
     targets[0].base.buffer_size=UINT32_MAX;
     assert(!ps5_collect_geometry_streamout(&c,&records,&m,written,generated));

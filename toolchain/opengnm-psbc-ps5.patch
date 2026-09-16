@@ -4187,7 +4187,7 @@ index d091584..d5d229b 100644
           case nir_texop_txs:
              result = lower_query_size(b, desc, lod, tex->sampler_dim, tex->is_array,
 diff --git a/src/amd/common/nir/ac_nir_prerast_utils.c b/src/amd/common/nir/ac_nir_prerast_utils.c
-index b20016b..fef1cdb 100644
+index b20016b..c279772 100644
 --- a/src/amd/common/nir/ac_nir_prerast_utils.c
 +++ b/src/amd/common/nir/ac_nir_prerast_utils.c
 @@ -924,6 +924,7 @@ ac_nir_ngg_build_streamout_buffer_info(nir_builder *b,
@@ -4275,21 +4275,22 @@ index b20016b..fef1cdb 100644
           nir_if *if_shader_query = nir_push_if(b, nir_load_prim_xfb_query_enabled_amd(b));
           {
              for (unsigned stream = 0; stream < 4; stream++) {
-@@ -1207,6 +1245,49 @@ ac_nir_ngg_build_streamout_buffer_info(nir_builder *b,
+@@ -1207,6 +1245,53 @@ ac_nir_ngg_build_streamout_buffer_info(nir_builder *b,
           }
           nir_pop_if(b, if_shader_query);
        }
 +
 +      if (use_ps5_global_streamout) {
-+         if (b->shader->info.stage == MESA_SHADER_GEOMETRY) {
++         if (b->shader->info.stage == MESA_SHADER_GEOMETRY ||
++             b->shader->info.stage == MESA_SHADER_TESS_EVAL) {
 +            /* Record workgroup ranges for ordered host compaction. The API
 +             * primitive/invocation pair does not wrap at ordered_id's 12 bits.
 +             * ABI: 64-byte header, then 64-byte records containing key, offsets,
 +             * generated counts and emitted counts (four dwords each). */
 +            nir_def *capacity = nir_load_global(b, 1, 32,
 +               nir_iadd_imm(b, xfb_state_address, 52), .align_mul = 4);
-+            /* Zero capacity retains the existing tessellation path: its API
-+             * primitive ID identifies a patch, not a unique GS input. */
++            /* Zero capacity retains the TES+GS path. TES-only records use the
++             * hardware workgroup ordinal; the host rejects wrapped sequences. */
 +            nir_push_if(b, nir_ine_imm(b, capacity, 0));
 +            nir_def *record_index = nir_global_atomic_amd(b, 32, xfb_state_address,
 +               nir_imm_int(b, 1), nir_imm_int(b, 48), .atomic_op = nir_atomic_op_iadd);
@@ -4298,7 +4299,10 @@ index b20016b..fef1cdb 100644
 +               nir_def *address = nir_iadd(b, xfb_state_address,
 +                  nir_u2u64(b, nir_iadd_imm(b, nir_imul_imm(b, record_index, 64), 64)));
 +               nir_store_global(b,
-+                  nir_vec4(b, nir_load_primitive_id(b), nir_load_invocation_id(b),
++                  nir_vec4(b, b->shader->info.stage == MESA_SHADER_TESS_EVAL ?
++                              nir_load_ordered_id_amd(b) : nir_load_primitive_id(b),
++                           b->shader->info.stage == MESA_SHADER_TESS_EVAL ?
++                              nir_imm_int(b, 0) : nir_load_invocation_id(b),
 +                           nir_imm_int(b, 0), nir_imm_int(b, 0)), address,
 +                           .align_mul = 4, .write_mask = 15);
 +               nir_store_global(b, buffer_offsets, nir_iadd_imm(b, address, 16),
