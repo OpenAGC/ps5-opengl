@@ -11845,6 +11845,18 @@ ps5_release_geometry_pipeline(struct ps5_context *context)
    context->geometry_gs = NULL;
 }
 
+static uint32_t
+ps5_tessellation_gl_tf_param(uint32_t tf_param)
+{
+   /* PSBC uses RADV's upper-left domain; OpenGL uses lower-left, as in
+    * radeonsi's tessellator topology setup. Points and lines are unchanged. */
+   unsigned topology = G_028B6C_TOPOLOGY(tf_param);
+   if (topology == V_028B6C_OUTPUT_TRIANGLE_CW ||
+       topology == V_028B6C_OUTPUT_TRIANGLE_CCW)
+      tf_param ^= S_028B6C_TOPOLOGY(1);
+   return tf_param;
+}
+
 static void
 ps5_release_tessellation_pipeline(struct ps5_context *context)
 {
@@ -12001,6 +12013,7 @@ ps5_select_tessellation_pipeline(struct ps5_context *context,
    context->tessellation_gs = context->gs;
    context->tessellation_streamout = streamout;
    context->tessellation_layout = saved_layout;
+   output.runtime.tf_param = ps5_tessellation_gl_tf_param(output.runtime.tf_param);
    context->tessellation_output = output;
    context->tessellation_hs_package = hs_package;
    context->tessellation_hs_package_size = hs_size;

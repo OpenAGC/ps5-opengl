@@ -47,6 +47,8 @@ helpers += function((ROOT / "src/gallium/ps5/ps5_screen.c").read_text(),
                     "static bool\nps5_lower_default_tess_levels(")
 helpers += function((ROOT / "src/gallium/ps5/ps5_screen.c").read_text(),
                     "static nir_shader *\nps5_default_tcs_nir(")
+helpers += function((ROOT / "src/gallium/ps5/ps5_screen.c").read_text(),
+                    "static uint32_t\nps5_tessellation_gl_tf_param(")
 
 code = r'''
 #include <assert.h>
@@ -293,6 +295,13 @@ static void wide_io_tests(const struct radv_compiler_info *ci, bool patch) {
 
 static void api_tests(const struct radv_compiler_info* ci,bool cross,
                       PsbcTessellationOutput* reference) {
+    for(unsigned topology=0;topology<8;++topology) {
+        uint32_t flags=0xa5a5011b & C_028B6C_TOPOLOGY;
+        uint32_t actual=ps5_tessellation_gl_tf_param(flags|S_028B6C_TOPOLOGY(topology));
+        unsigned expected=topology==V_028B6C_OUTPUT_TRIANGLE_CW ? V_028B6C_OUTPUT_TRIANGLE_CCW :
+            topology==V_028B6C_OUTPUT_TRIANGLE_CCW ? V_028B6C_OUTPUT_TRIANGLE_CW : topology;
+        assert(actual==(flags|S_028B6C_TOPOLOGY(expected)));
+    }
     nir_shader* inputs[]={build(MESA_SHADER_VERTEX,cross,ci),
                          build(MESA_SHADER_TESS_CTRL,cross,ci),
                          build(MESA_SHADER_TESS_EVAL,cross,ci)};
