@@ -34,8 +34,11 @@ struct pipe_stream_output { unsigned output_buffer,dst_offset,num_components; };
 struct pipe_stream_output_info { unsigned num_outputs; struct pipe_stream_output output[4]; };
 struct ps5_shader { struct pipe_stream_output_info stream_output; };
 struct ps5_context { struct ps5_shader *gs; void *tes; struct pipe_resource *streamout_records,*streamout_staging[4];
+    struct pipe_resource *primitive_query_storage;
     struct pipe_stream_output_target *stream_output_targets[4]; unsigned stream_output_primitive; };
-typedef struct { unsigned streamout_enabled_stream_buffers_mask,streamout_strides_dwords[4]; } PsbcShaderMetadata;
+typedef struct { unsigned streamout_enabled_stream_buffers_mask,streamout_strides_dwords[4];
+    bool primitive_query_valid; unsigned primitive_query_buffer_user_data_dword,primitive_query_state_user_data_dword;
+    unsigned primitive_query_enable_mask,primitive_query_counter_offset,address32_hi; } PsbcShaderMetadata;
 struct ps5_streamout_control { uint32_t buffer_offsets[4],generated_primitives[4],emitted_primitives[4],reserved[4]; };
 struct ps5_streamout_record { uint32_t primitive,invocation,reserved[2],offsets[4],generated[4],emitted[4]; };
 static void ps5_flush_gpu_data(const void *p,size_t n) { assert(p && n); }
@@ -45,11 +48,32 @@ static unsigned ps5_streamout_buffer_stream(unsigned m,unsigned b) {
     for(unsigned s=0;s<4;++s) if(m & (1u<<(4*s+b))) return s;
     return 4;
 }
+static bool ps5_streamout_storage(struct ps5_context *c,struct pipe_resource **slot,uint64_t size) {
+    (void)c; return *slot && ((struct ps5_resource *)*slot)->size>=size;
+}
 '''
+code += function('ps5_prepare_primitive_query')
 code += function('ps5_streamout_record_compare')
 code += function('ps5_collect_geometry_streamout')
 code += r'''
 int main(void) {
+  {
+    uint32_t memory[16],userdata[8]={7,16}; memset(memory,255,sizeof(memory));
+    struct ps5_resource storage={.data=(void *)memory,.size=sizeof(memory)};
+    struct ps5_context c={.primitive_query_storage=&storage.base};
+    PsbcShaderMetadata m={.primitive_query_valid=true,.primitive_query_buffer_user_data_dword=2,
+       .primitive_query_state_user_data_dword=1,.primitive_query_enable_mask=128,
+       .primitive_query_counter_offset=8,.address32_hi=(uintptr_t)memory>>32};
+    assert(ps5_prepare_primitive_query(&c,&m,userdata,8));
+    assert(userdata[0]==7 && userdata[1]==144 && userdata[2]==(uint32_t)(uintptr_t)memory);
+    for(unsigned i=0;i<16;++i) assert(memory[i]==0);
+    m.primitive_query_counter_offset=52;
+    assert(!ps5_prepare_primitive_query(&c,&m,userdata,8));
+    m.primitive_query_counter_offset=8; m.primitive_query_buffer_user_data_dword=8;
+    assert(!ps5_prepare_primitive_query(&c,&m,userdata,8));
+    m.primitive_query_buffer_user_data_dword=2; m.address32_hi^=1;
+    assert(!ps5_prepare_primitive_query(&c,&m,userdata,8));
+  }
   for(unsigned cap=2;cap<=6;cap+=4) {
     struct { struct ps5_streamout_control control; struct ps5_streamout_record record[3]; } table={0};
     uint32_t input[3][32]={{0}},output[3][32];

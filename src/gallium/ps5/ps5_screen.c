@@ -265,6 +265,7 @@ struct ps5_context {
    unsigned border_color_count;
    struct pipe_stream_output_target *stream_output_targets[PIPE_MAX_SO_BUFFERS];
    struct pipe_resource *streamout_records;
+   struct pipe_resource *primitive_query_storage;
    struct pipe_resource *streamout_staging[PIPE_MAX_SO_BUFFERS];
    unsigned stream_output_target_count;
    unsigned split_instance_id;
@@ -7919,6 +7920,28 @@ ps5_streamout_record_compare(const void *a, const void *b)
 }
 
 static bool
+ps5_prepare_primitive_query(struct ps5_context *context,
+                            const PsbcShaderMetadata *metadata,
+                            uint32_t *user_data, unsigned user_data_count)
+{
+   if (!metadata->primitive_query_valid ||
+       metadata->primitive_query_buffer_user_data_dword >= user_data_count ||
+       metadata->primitive_query_state_user_data_dword >= user_data_count ||
+       metadata->primitive_query_counter_offset > 48 ||
+       (metadata->primitive_query_counter_offset & 3u) ||
+       !ps5_streamout_storage(context, &context->primitive_query_storage, 64))
+      return false;
+   struct ps5_resource *storage = (void *)context->primitive_query_storage;
+   if ((uintptr_t)storage->data >> 32 != metadata->address32_hi)
+      return false;
+   memset(storage->data, 0, 64);
+   ps5_flush_gpu_data(storage->data, 64);
+   user_data[metadata->primitive_query_buffer_user_data_dword] = (uint32_t)(uintptr_t)storage->data;
+   user_data[metadata->primitive_query_state_user_data_dword] |= metadata->primitive_query_enable_mask;
+   return true;
+}
+
+static bool
 ps5_prepare_streamout(struct ps5_context *context,
                       const PsbcShaderMetadata *metadata,
                       struct ps5_resource *descriptor_resource,
@@ -8283,6 +8306,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
    uint32_t base_vertex;
    unsigned vertex_count;
    bool streamout_active = false;
+   bool primitive_query_active = false;
    uint32_t streamout_mask = 0;
    uint32_t streamout_size[4] = {0};
    uint32_t streamout_stride[4] = {0};
@@ -8903,6 +8927,13 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       context->last_draw_status = -21;
       return;
    }
+   primitive_query_active = !streamout_active && (context->gs || tessellation_active) &&
+      context->queries_enabled && context->active_primitives_generated_query;
+   if (primitive_query_active &&
+       !ps5_prepare_primitive_query(context, vertex_metadata, user_data, user_data_count)) {
+      context->last_draw_status = -21;
+      return;
+   }
    if (!ps5_agc_gate2_run || !ps5_agc_gate2_set_packages ||
        (!PS5_ENABLE_MRT_CANDIDATE &&
         !PS5_ENABLE_DYNAMIC_COLOR_TARGET_CANDIDATE &&
@@ -9476,8 +9507,16 @@ ps5_draw_vbo_locked(struct pipe_context *base,
                PIPE_MAX_VERTEX_STREAMS]->value = 1;
       }
    }
+   if (primitive_query_active && context->last_draw_status == 0) {
+      struct ps5_resource *storage = (void *)context->primitive_query_storage;
+      ps5_flush_gpu_data(storage->data, 64);
+      const uint32_t *counts = (void *)(storage->data + vertex_metadata->primitive_query_counter_offset);
+      for (unsigned stream = 0; stream < 4; ++stream)
+         generated_primitives[stream] = counts[stream];
+      printf("[ps5-gallium] primitive-query generated=%llu\n", (unsigned long long)generated_primitives[0]);
+   }
    if (context->queries_enabled && context->last_draw_status == 0 &&
-       (!context->gs || streamout_active) &&
+       (!context->gs || streamout_active || primitive_query_active) &&
        context->active_primitives_generated_query)
       context->active_primitives_generated_query->value +=
          generated_primitives[0];
@@ -11787,6 +11826,7 @@ ps5_select_tessellation_pipeline(struct ps5_context *context,
    options.vertex.address32_hi = address32_hi;
    options.vertex.primitive_type = geometry_primitive_type ? geometry_primitive_type : 4;
    options.vertex.ps5_global_streamout = streamout;
+   options.vertex.ps5_global_primitive_query = true;
    options.vertex.vertex_attribute_count = layout->count;
    memcpy(options.vertex.vertex_attributes, layout->attributes,
           layout->count * sizeof(layout->attributes[0]));
@@ -12063,6 +12103,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
    }
    options.stage = PSBC_STAGE_GEOMETRY;
    options.ngg = true;
+   options.ps5_global_primitive_query = true;
    package_nir = geometry_nir;
    if (context->gs->stream_output.num_outputs) {
       carrier_nir = ps5_stream_output_carrier_nir(geometry_nir);
@@ -13920,6 +13961,7 @@ ps5_context_destroy(struct pipe_context *base)
    for (index = 0; index < context->stream_output_target_count; ++index)
       pipe_so_target_reference(&context->stream_output_targets[index], NULL);
    pipe_resource_reference(&context->streamout_records, NULL);
+   pipe_resource_reference(&context->primitive_query_storage, NULL);
    for (index = 0; index < PIPE_MAX_SO_BUFFERS; ++index)
       pipe_resource_reference(&context->streamout_staging[index], NULL);
    pipe_resource_reference(&context->vertex_descriptor_table, NULL);

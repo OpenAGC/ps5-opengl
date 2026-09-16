@@ -391,6 +391,24 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
             inputs[0],inputs[1],inputs[2],gs,&options,&out)==PSBC_RESULT_INVALID_ARGUMENT);
         expect_empty(&out); ralloc_free(gs);
     }
+    /* Primitive counting must work without any declared feedback varying. */
+    for (unsigned with_gs=0; with_gs<2; ++with_gs) {
+        nir_shader *query_gs=with_gs ? build(MESA_SHADER_GEOMETRY,false,ci) : NULL;
+        PsbcTessellationCompileOptions query_options=options;
+        query_options.vertex.ps5_global_primitive_query=true;
+        assert(psbc_compile_nir_tessellation_pipeline(inputs[0],inputs[1],inputs[2],
+            query_gs,&query_options,&out)==PSBC_RESULT_OK);
+        const PsbcShaderMetadata *m=&out.tes.metadata;
+        assert(m->primitive_query_valid && !m->streamout_valid);
+        assert(m->primitive_query_buffer_user_data_dword<m->user_sgpr_count);
+        assert(m->primitive_query_state_user_data_dword<m->user_sgpr_count);
+        assert(m->primitive_query_buffer_user_data_dword!=m->primitive_query_state_user_data_dword);
+        assert(m->primitive_query_enable_mask==128 && m->primitive_query_counter_offset==8);
+        assert(!out.hs.metadata.primitive_query_valid);
+        printf("PASS query-only pipeline gs=%u buffer=%u state=%u\n",with_gs,
+               m->primitive_query_buffer_user_data_dword,m->primitive_query_state_user_data_dword);
+        psbc_free_tessellation_output(&out); ralloc_free(query_gs);
+    }
     /* Only the final linked stage owns feedback, with explicit global counters. */
     for (unsigned with_gs=0; with_gs<2; ++with_gs) {
         nir_shader *xfb_gs=with_gs ? build(MESA_SHADER_GEOMETRY,false,ci) : NULL;
