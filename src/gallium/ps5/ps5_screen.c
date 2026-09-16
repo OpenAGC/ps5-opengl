@@ -449,6 +449,37 @@ ps5_vertex_layout_from_state(const struct ps5_shader *shader,
                              const struct ps5_vertex_elements *elements,
                              struct ps5_vertex_layout *layout);
 static bool
+ps5_lower_sample_interpolation(nir_builder *builder,
+                                nir_intrinsic_instr *intrinsic, void *data)
+{
+   if (intrinsic->intrinsic != nir_intrinsic_load_barycentric_at_sample)
+      return false;
+
+   const unsigned samples = MAX2(*(const unsigned *)data, 1u);
+   const unsigned mode = nir_intrinsic_interp_mode(intrinsic);
+   builder->cursor = nir_before_instr(&intrinsic->instr);
+   nir_def *value;
+   if (samples == 1) {
+      value = nir_load_barycentric_pixel(builder, 32, .interp_mode = mode);
+   } else {
+      /* Match get_sample_position and the fixed hardware sample pattern;
+       * RADV's sample-position ring table is not part of our runtime ABI. */
+      nir_def *offset = nir_imm_vec2(builder, 0, 0);
+      for (unsigned sample = 0; sample < samples; ++sample) {
+         float position[2];
+         u_default_get_sample_position(NULL, samples, sample, position);
+         offset = nir_bcsel(builder,
+            nir_ieq_imm(builder, intrinsic->src[0].ssa, sample),
+            nir_imm_vec2(builder, position[0] - 0.5f, position[1] - 0.5f), offset);
+      }
+      value = nir_load_barycentric_at_offset(builder, 32, offset,
+                                             .interp_mode = mode);
+   }
+   nir_def_replace(&intrinsic->def, value);
+   return true;
+}
+
+static bool
 ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
                           const struct ps5_vertex_layout *layout,
                           uint32_t primitive_type,
@@ -11357,12 +11388,15 @@ ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
    if (shader->stage == PSBC_STAGE_FRAGMENT)
       options.rasterization_samples = poly_line_smooth ? 4 : exports->rasterization_samples;
    package_nir = shader->nir;
-   if (alpha_to_one || poly_line_smooth || broadcast_color || remove_sample_mask) {
+   if (shader->stage == PSBC_STAGE_FRAGMENT || alpha_to_one || poly_line_smooth) {
       if (shader->stage != PSBC_STAGE_FRAGMENT ||
           !(variant_nir = nir_shader_clone(NULL, shader->nir))) {
          free(variant);
          return false;
       }
+      nir_shader_intrinsics_pass(variant_nir, ps5_lower_sample_interpolation,
+                                 nir_metadata_control_flow,
+                                 &options.rasterization_samples);
       /* OpenGL ignores shader sample-mask writes without multisampling.
        * Remove user writes before optional line/polygon smoothing adds its own. */
       if (remove_sample_mask) {

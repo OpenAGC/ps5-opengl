@@ -39,7 +39,7 @@ code = r'''
 #include "psbc_compile.h"
 #define PS5_ENABLE_CORE_RENDER_FORMATS_CANDIDATE 1
 struct ps5_fragment_exports { uint32_t formats, int8_mask, int10_mask, color_mask; unsigned rasterization_samples; bool ignore_sample_mask; };
-''' + "static bool\n" + function("ps5_core_render_target_format") + "\nstatic uint32_t\n" + function("ps5_color_target_info") + "\nstatic struct ps5_fragment_exports\n" + function("ps5_fragment_exports_for_framebuffer") + "\nstatic bool\n" + function("ps5_lower_fragment_color") + "\nstatic bool\n" + function("ps5_remove_sample_mask") + r'''
+''' + positions.replace('#include "u_sample_positions.h"', '#include "util/u_sample_positions.h"') + "\nstatic bool\n" + function("ps5_lower_sample_interpolation") + "\nstatic bool\n" + function("ps5_core_render_target_format") + "\nstatic uint32_t\n" + function("ps5_color_target_info") + "\nstatic struct ps5_fragment_exports\n" + function("ps5_fragment_exports_for_framebuffer") + "\nstatic bool\n" + function("ps5_lower_fragment_color") + "\nstatic bool\n" + function("ps5_remove_sample_mask") + r'''
 static unsigned export_format(const PsbcShaderOutput *out) {
     for (unsigned i = 0; i < out->metadata.context_register_count; ++i)
         if (out->metadata.context_registers[i].offset == 0x1c5)
@@ -104,6 +104,49 @@ static void compile_legacy_clear(bool lowered, unsigned mask, unsigned formats, 
     ralloc_free(b.shader);
 }
 int main(void) {
+    for (unsigned samples=1; samples<=4; samples*=4) {
+      for (unsigned mode=INTERP_MODE_SMOOTH; mode<=INTERP_MODE_NOPERSPECTIVE; ++mode) {
+        if (mode==INTERP_MODE_FLAT) continue;
+        for (unsigned index=0; index<=samples; ++index) {
+          nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
+              psbc_get_nir_options(PSBC_STAGE_FRAGMENT),"sample-index interpolation");
+          nir_def *id=index==samples ? nir_load_sample_id(&b) : nir_imm_int(&b,index);
+          nir_def *coord=nir_load_barycentric_at_sample(&b,32,id,.interp_mode=mode);
+          nir_store_output(&b,nir_vec4(&b,nir_channel(&b,coord,0),nir_channel(&b,coord,1),
+              nir_imm_float(&b,0),nir_imm_float(&b,1)),nir_imm_int(&b,0),
+              .write_mask=15,.io_semantics={.location=FRAG_RESULT_DATA0,.num_slots=1});
+          assert(nir_shader_intrinsics_pass(b.shader,ps5_lower_sample_interpolation,
+                                            nir_metadata_control_flow,&samples));
+          nir_opt_constant_folding(b.shader);
+          unsigned barycentrics=0;
+          nir_foreach_function_impl(impl,b.shader) nir_foreach_block(block,impl)
+            nir_foreach_instr(instr,block) if(instr->type==nir_instr_type_intrinsic) {
+              nir_intrinsic_instr *in=nir_instr_as_intrinsic(instr);
+              assert(in->intrinsic!=nir_intrinsic_load_barycentric_at_sample);
+              assert(in->intrinsic!=nir_intrinsic_load_sample_positions_amd);
+              if(in->intrinsic==nir_intrinsic_load_barycentric_pixel ||
+                 in->intrinsic==nir_intrinsic_load_barycentric_at_offset) {
+                ++barycentrics; assert(nir_intrinsic_interp_mode(in)==mode);
+                assert((in->intrinsic==nir_intrinsic_load_barycentric_pixel)==(samples==1));
+                if(samples>1 && index<samples) {
+                  float expected[2]; u_default_get_sample_position(NULL,samples,index,expected);
+                  assert(nir_src_is_const(in->src[0]));
+                  for(unsigned axis=0;axis<2;++axis)
+                    assert(nir_src_comp_as_float(in->src[0],axis)==expected[axis]-0.5f);
+                }
+              }
+            }
+          assert(barycentrics==1);
+          nir_shader_gather_info(b.shader,nir_shader_get_entrypoint(b.shader));
+          PsbcCompileOptions options={.target=PSBC_TARGET_PS5,.stage=PSBC_STAGE_FRAGMENT,
+              .optimise=true,.rasterization_samples=samples};
+          PsbcShaderOutput out={0};
+          assert(psbc_compile_nir(b.shader,&options,&out)==PSBC_RESULT_OK);
+          psbc_free_output(&out); ralloc_free(b.shader);
+        }
+      }
+    }
+    puts("PASS: static/dynamic sample-index interpolation, center/4x positions and interpolation modes");
     for (unsigned remove=0;remove<2;++remove) {
         nir_builder b=nir_builder_init_simple_shader(MESA_SHADER_FRAGMENT,
             psbc_get_nir_options(PSBC_STAGE_FRAGMENT),"sample-mask export");
@@ -217,6 +260,7 @@ with tempfile.TemporaryDirectory() as temporary:
                     "-I", str(psbc / "include/mesa"),
                     "-I", str(psbc / "include"), "-I", str(psbc / "src"),
                     "-I", str(psbc / "src/gallium/include"), "-I", str(psbc / "libpsbc"),
+                    "-I", str(ROOT / "third_party/mesa-26.2.0/src/gallium/auxiliary"),
                     "-x", "c", "-c", "-o", obj, "-"], input=code, text=True, check=True)
     subprocess.run(["g++", "-o", executable, obj, str(psbc / "libpsbc.a"),
                     "-pthread", "-lm"], check=True)
