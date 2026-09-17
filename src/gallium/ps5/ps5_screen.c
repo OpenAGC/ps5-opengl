@@ -3383,7 +3383,8 @@ ps5_prepare_texture(struct ps5_context *context,
           (texture->base.target == PIPE_TEXTURE_RECT &&
            texture->base.last_level) ||
           texture->base.last_level > 15 ||
-          ((tiled_render_target || (tiled_depth_target && !staged_stencil))
+          ((tiled_render_target ||
+            (tiled_depth_target && (!staged_stencil || multisampled)))
               ? (tiled_render_target
               ? ((multisampled
                     ? !ps5_msaa4_color_format(texture->base.format)
