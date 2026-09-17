@@ -12844,10 +12844,18 @@ ps5_set_shader_images(struct pipe_context *base, mesa_shader_stage stage,
             return;
          }
       } else if (ps5_storage_image_view_descriptor(v, descriptor)) {
-         printf("[ps5-gallium] image-bind-descriptor-rejected stage=%u slot=%u target=%u format=%u level=%u layers=%u:%u single=%u\n",
+         const struct ps5_resource *r = (const struct ps5_resource *)v->resource;
+         printf("[ps5-gallium] image-bind-descriptor-rejected stage=%u slot=%u target=%u format=%u/%u level=%u layers=%u:%u single=%u dims=%ux%ux%u array=%u last=%u samples=%u/%u bind=%x size=%zu/%zu layer=%zu stride=%u offset=%zu staging=%zu/%zu address=%p linear=%u\n",
                 stage, start + i, v->resource->target, v->format,
-                v->u.tex.level, v->u.tex.first_layer, v->u.tex.last_layer,
-                v->u.tex.single_layer_view);
+                v->resource->format, v->u.tex.level, v->u.tex.first_layer,
+                v->u.tex.last_layer, v->u.tex.single_layer_view,
+                v->resource->width0, v->resource->height0, v->resource->depth0,
+                v->resource->array_size, v->resource->last_level,
+                v->resource->nr_samples, v->resource->nr_storage_samples,
+                v->resource->bind, r->size, r->allocation_size, r->layer_stride,
+                r->level_stride[v->u.tex.level], r->level_offset[v->u.tex.level],
+                r->render_staging_offset, r->render_staging_size, r->data,
+                ps5_linear_sampled_layout(v->resource));
          return;
       }
    }
