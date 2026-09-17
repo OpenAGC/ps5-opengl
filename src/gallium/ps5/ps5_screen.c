@@ -389,6 +389,7 @@ _Static_assert(sizeof(struct ps5_streamout_control) ==
 struct ps5_resource {
    struct pipe_resource base;
    struct pipe_resource *render_pool_owner;
+   struct pipe_resource *stencil_sample;
    uint8_t *data;
    uint8_t *stencil_data;
    size_t size;
@@ -1434,54 +1435,6 @@ ps5_packed_depth_sample_layout(const struct pipe_resource *resource,
 }
 
 static bool
-ps5_packed_stencil_sample_layout(const struct pipe_resource *resource,
-                                 size_t *layer_size, unsigned *base_stride)
-{
-   size_t total = 0;
-
-   if (!resource ||
-       resource->format != PIPE_FORMAT_Z32_FLOAT_S8X24_UINT ||
-       !layer_size || !base_stride)
-      return false;
-   for (unsigned level = resource->last_level + 1; level-- > 0;) {
-      const unsigned width =
-         ps5_linear_mip_storage_extent(resource->width0, level);
-      const unsigned height =
-         ps5_linear_mip_storage_extent(resource->height0, level);
-      const size_t stride = ((size_t)width + 255u) & ~(size_t)255u;
-
-      if (stride > SIZE_MAX / height || total > SIZE_MAX - stride * height)
-         return false;
-      if (!level)
-         *base_stride = (unsigned)stride;
-      total += stride * height;
-   }
-   *layer_size = total;
-   return true;
-}
-
-static bool
-ps5_packed_stencil_allocation_size(const struct pipe_resource *resource,
-                                   size_t *size)
-{
-   const unsigned layers = ps5_texture_level_layers(resource, 0);
-   const size_t tiled = PS5_ENABLE_DYNAMIC_DEPTH_TARGET_CANDIDATE
-      ? ps5_tiled_stencil_surface_size_samples(
-           resource->width0, resource->height0, resource->nr_samples)
-      : PS5_STENCIL_TARGET_BYTES;
-   size_t sample_layer_size;
-   unsigned sample_stride;
-
-   if (!size || !tiled || tiled > SIZE_MAX / layers ||
-       !ps5_packed_stencil_sample_layout(resource, &sample_layer_size,
-                                         &sample_stride) ||
-       sample_layer_size > SIZE_MAX / layers)
-      return false;
-   *size = MAX2(tiled, sample_layer_size) * layers;
-   return true;
-}
-
-static bool
 ps5_render_staging_required(const struct pipe_resource *resource)
 {
    return PS5_ENABLE_RENDER_TO_TEXTURE_CANDIDATE && resource &&
@@ -2461,39 +2414,33 @@ ps5_stage_packed_depth_samples(struct ps5_resource *resource,
    return true;
 }
 
-static bool
-ps5_stage_packed_stencil_samples(struct ps5_resource *resource,
-                                 unsigned *base_stride,
-                                 size_t *sample_layer_size)
+static struct ps5_resource *
+ps5_stage_packed_stencil_samples(struct ps5_resource *resource)
 {
    const unsigned layers = ps5_texture_level_layers(&resource->base, 0);
-   size_t sample_size;
-   size_t sample_level_offset = 0;
-
-   if (!resource->stencil_data ||
-       !ps5_packed_stencil_sample_layout(&resource->base, sample_layer_size,
-                                         base_stride) ||
-       *sample_layer_size > SIZE_MAX / layers)
-      return false;
-   sample_size = *sample_layer_size * layers;
-   if (sample_size > resource->stencil_allocation_size)
-      return false;
-
-   for (unsigned level = resource->base.last_level + 1; level-- > 0;) {
+   if (!resource->stencil_sample) {
+      struct pipe_resource templ = resource->base;
+      templ.format = PIPE_FORMAT_S8_UINT;
+      templ.bind = PIPE_BIND_SAMPLER_VIEW;
+      templ.flags = 0;
+      templ.nr_samples = 0;
+      templ.nr_storage_samples = 0;
+      resource->stencil_sample = resource->base.screen->resource_create(
+         resource->base.screen, &templ);
+      if (!resource->stencil_sample)
+         return NULL;
+   }
+   struct ps5_resource *sample =
+      (struct ps5_resource *)resource->stencil_sample;
+   for (unsigned level = 0; level <= resource->base.last_level; ++level) {
       const unsigned width = MAX2(resource->base.width0 >> level, 1u);
       const unsigned height = MAX2(resource->base.height0 >> level, 1u);
-      const unsigned storage_width =
-         ps5_linear_mip_storage_extent(resource->base.width0, level);
-      const unsigned storage_height =
-         ps5_linear_mip_storage_extent(resource->base.height0, level);
-      const size_t sample_stride =
-         ((size_t)storage_width + 255u) & ~(size_t)255u;
 
       for (unsigned layer = 0; layer < layers; ++layer) {
          const size_t source_base = (size_t)layer * resource->layer_stride +
                                     resource->level_offset[level];
-         const size_t sample_base = (size_t)layer * *sample_layer_size +
-                                    sample_level_offset;
+         const size_t sample_base = (size_t)layer * sample->layer_stride +
+                                    sample->level_offset[level];
 
          for (unsigned y = 0; y < height; ++y) {
             for (unsigned x = 0; x < width; ++x) {
@@ -2501,18 +2448,17 @@ ps5_stage_packed_stencil_samples(struct ps5_resource *resource,
                   (size_t)y * resource->level_stride[level] +
                   (size_t)x * 8u + sizeof(float);
                const size_t destination = sample_base +
-                  (size_t)y * sample_stride + x;
+                  (size_t)y * sample->level_stride[level] + x;
 
-               if (source >= resource->size || destination >= sample_size)
-                  return false;
-               resource->stencil_data[destination] = resource->data[source];
+               if (source >= resource->size || destination >= sample->size)
+                  return NULL;
+               sample->data[destination] = resource->data[source];
             }
          }
       }
-      sample_level_offset += sample_stride * storage_height;
    }
-   ps5_flush_gpu_data(resource->stencil_data, sample_size);
-   return true;
+   ps5_flush_gpu_data(sample->data, sample->size);
+   return sample;
 }
 
 #if PS5_PUBLIC_TEXTURE_RG_TILE_TEST
@@ -3262,6 +3208,7 @@ ps5_prepare_texture(struct ps5_context *context,
       const struct pipe_sampler_state *sampler;
       const struct pipe_sampler_view *view;
       struct ps5_resource *texture;
+      struct ps5_resource *stencil_sample = NULL;
       uintptr_t texture_address;
       uint32_t *descriptor;
       uint32_t format_word;
@@ -3472,9 +3419,11 @@ ps5_prepare_texture(struct ps5_context *context,
          return false;
 
       if (staged_stencil) {
-         if (!ps5_stage_packed_stencil_samples(texture, &descriptor_stride,
-                                               &sampled_layer_stride))
+         stencil_sample = ps5_stage_packed_stencil_samples(texture);
+         if (!stencil_sample)
             return false;
+         descriptor_stride = stencil_sample->level_stride[0];
+         sampled_layer_stride = stencil_sample->layer_stride;
       } else if (staged_packed_depth) {
          descriptor_format_size = sizeof(float);
          if (!ps5_stage_packed_depth_samples(texture, &descriptor_stride))
@@ -3491,8 +3440,8 @@ ps5_prepare_texture(struct ps5_context *context,
       anisotropy = ps5_texture_descriptor_anisotropy(
          sampler->max_anisotropy);
 
-      texture_address = (uintptr_t)(stencil_texture ? texture->stencil_data
-                                                    : texture->data) +
+      texture_address = (uintptr_t)(staged_stencil ? stencil_sample->data
+                                      : texture->data) +
          (staged_packed_depth ? texture->depth_staging_offset : 0) +
          (size_t)view->u.tex.first_layer * sampled_layer_stride;
       if ((uint32_t)(texture_address >> 32) != metadata->address32_hi ||
@@ -4334,11 +4283,17 @@ ps5_resource_create_unlocked(struct pipe_screen *screen,
    direct_limit = sceKernelGetDirectMemorySize();
 #ifdef PS5_PUBLIC_STENCIL_TEST
    if (templ->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT) {
-      if (!ps5_packed_stencil_allocation_size(
-             templ, &resource->stencil_allocation_size)) {
+      const unsigned layers = ps5_texture_level_layers(templ, 0);
+      const size_t layer_size = PS5_ENABLE_DYNAMIC_DEPTH_TARGET_CANDIDATE
+         ? ps5_tiled_stencil_surface_size_samples(
+              templ->width0, templ->height0, templ->nr_samples)
+         : PS5_STENCIL_TARGET_BYTES;
+
+      if (layer_size > SIZE_MAX / layers) {
          free(resource);
          return NULL;
       }
+      resource->stencil_allocation_size = layer_size * layers;
       printf("[ps5-gallium] public-stencil-allocation-order stencil-first\n");
       allocation_status = sceKernelAllocateDirectMemory(
          0, direct_limit, resource->stencil_allocation_size,
@@ -4411,9 +4366,15 @@ ps5_resource_create_unlocked(struct pipe_screen *screen,
 primary_ready:
    if (templ->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT) {
 #ifndef PS5_PUBLIC_STENCIL_TEST
-      if (!ps5_packed_stencil_allocation_size(
-             templ, &resource->stencil_allocation_size))
+      const unsigned layers = ps5_texture_level_layers(templ, 0);
+      const size_t layer_size = PS5_ENABLE_DYNAMIC_DEPTH_TARGET_CANDIDATE
+         ? ps5_tiled_stencil_surface_size_samples(
+              templ->width0, templ->height0, templ->nr_samples)
+         : PS5_STENCIL_TARGET_BYTES;
+
+      if (layer_size > SIZE_MAX / layers)
          goto fail_primary;
+      resource->stencil_allocation_size = layer_size * layers;
       allocation_status = sceKernelAllocateDirectMemory(
          0, direct_limit, resource->stencil_allocation_size,
          PS5_STENCIL_ALIGNMENT, PS5_DIRECT_MEMORY_TYPE,
@@ -4589,37 +4550,45 @@ ps5_packed_depth_sampled_descriptor(struct pipe_resource *base,
       return -1;
    struct ps5_resource *resource = (struct ps5_resource *)base;
    const bool stencil = view_format == PIPE_FORMAT_X32_S8X24_UINT;
+   if (stencil) {
+      if (base->format != PIPE_FORMAT_Z32_FLOAT_S8X24_UINT ||
+          first_level > last_level || last_level > base->last_level)
+         return -1;
+      struct ps5_resource *sample =
+         ps5_stage_packed_stencil_samples(resource);
+      return sample ? ps5_resource_sampled_image_descriptor(
+                         &sample->base, first_level, last_level, descriptor)
+                    : -1;
+   }
    const bool tiled_depth = PS5_ENABLE_DEPTH_TEXTURE_CANDIDATE &&
       ps5_depth_render_target(base->target) &&
       (base->bind & PIPE_BIND_DEPTH_STENCIL) && !resource->depth_staging_size;
    const bool staged_depth = !stencil && !tiled_depth &&
                              resource->depth_staging_size;
-   unsigned texel_size = stencil ? 1u : staged_depth ? 4u : 8u;
-   unsigned stride = stencil || staged_depth ? base->width0 * texel_size :
-                                               resource->level_stride[0];
+   unsigned texel_size = staged_depth ? 4u : 8u;
+   unsigned stride = staged_depth ? base->width0 * texel_size :
+                                    resource->level_stride[0];
    size_t layer_size = resource->layer_stride;
    uint32_t format;
 
    if (base->format != PIPE_FORMAT_Z32_FLOAT_S8X24_UINT ||
-       (view_format != base->format && !stencil) ||
+       view_format != base->format ||
        !ps5_sampled_texture_target(base->target) ||
        first_level > last_level || last_level > base->last_level ||
        base->nr_samples > 1 ||
        base->nr_storage_samples > 1 || !base->width0 || !base->height0 ||
        !ps5_texture_descriptor_format(view_format, &format) ||
-       (stencil ? !ps5_stage_packed_stencil_samples(resource, &stride,
-                                                      &layer_size) :
-          (staged_depth && !ps5_stage_packed_depth_samples(resource, &stride))))
+       (staged_depth && !ps5_stage_packed_depth_samples(resource, &stride)))
       return -1;
 
    if (staged_depth &&
        !ps5_packed_depth_sample_layout(base, &layer_size, &stride))
       return -1;
-   uintptr_t address = (uintptr_t)(stencil ? resource->stencil_data :
-      resource->data + (staged_depth ? resource->depth_staging_offset : 0));
+   uintptr_t address = (uintptr_t)resource->data +
+      (staged_depth ? resource->depth_staging_offset : 0);
    if ((address & 255u) || address >> 48)
       return -1;
-   if (stencil || (!tiled_depth && !staged_depth))
+   if (!tiled_depth && !staged_depth)
       format = gfx10_format_table[view_format].img_format << 20;
    memset(descriptor, 0, 8u * sizeof(*descriptor));
    descriptor[0] = address >> 8;
@@ -4627,7 +4596,7 @@ ps5_packed_depth_sampled_descriptor(struct pipe_resource *base,
                    (uint32_t)(address >> 40);
    descriptor[2] = ((base->width0 - 1u) >> 2) |
                    ((base->height0 - 1u) << 14) | UINT32_C(0x80000000);
-   const bool tiled = tiled_depth && !stencil;
+   const bool tiled = tiled_depth;
    descriptor[3] = (tiled ?
       (ps5_cube_texture_target(base->target) ? UINT32_C(0xb1800000) :
        base->target == PIPE_TEXTURE_2D_ARRAY ? UINT32_C(0xd1800000) :
@@ -5002,6 +4971,7 @@ ps5_resource_destroy(struct pipe_screen *screen, struct pipe_resource *base)
    struct ps5_screen *ps5 = (struct ps5_screen *)screen;
    struct ps5_resource *resource = (struct ps5_resource *)base;
    struct pipe_resource *render_pool_owner = resource->render_pool_owner;
+   struct pipe_resource *stencil_sample = resource->stencil_sample;
 #ifdef PS5_PUBLIC_STENCIL_TEST
    const bool record_prior_depth =
       resource->base.format == PIPE_FORMAT_Z32_FLOAT;
@@ -5032,6 +5002,8 @@ ps5_resource_destroy(struct pipe_screen *screen, struct pipe_resource *base)
              0u, 0u);
 #endif
    free(resource);
+   if (stencil_sample)
+      pipe_resource_reference(&stencil_sample, NULL);
    if (render_pool_owner)
       pipe_resource_reference(&render_pool_owner, NULL);
 }
