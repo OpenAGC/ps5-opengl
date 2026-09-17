@@ -2418,6 +2418,8 @@ static size_t ps5_tiled_stencil_msaa4_offset(unsigned x, unsigned y,
                                               unsigned sample,
                                               unsigned width,
                                               unsigned layer);
+static size_t ps5_tiled_stencil_offset(unsigned x, unsigned y,
+                                        unsigned width, unsigned layer);
 static size_t ps5_tiled_color_msaa4_offset(enum pipe_format format,
                                             unsigned x, unsigned y,
                                             unsigned sample,
@@ -2447,23 +2449,31 @@ ps5_stage_packed_stencil_samples(struct ps5_resource *resource)
    }
    struct ps5_resource *sample =
       (struct ps5_resource *)resource->stencil_sample;
-   if (multisampled) {
+   if ((resource->base.bind & PIPE_BIND_DEPTH_STENCIL) &&
+       !resource->depth_staging_size) {
+      const unsigned samples = multisampled ? 4 : 1;
       const size_t source_layer = ps5_tiled_stencil_surface_size_samples(
-         resource->base.width0, resource->base.height0, 4);
+         resource->base.width0, resource->base.height0, samples);
 
       for (unsigned layer = 0; layer < layers; ++layer) {
          for (unsigned y = 0; y < resource->base.height0; ++y) {
             for (unsigned x = 0; x < resource->base.width0; ++x) {
-               for (unsigned sample_index = 0; sample_index < 4;
+               for (unsigned sample_index = 0; sample_index < samples;
                     ++sample_index) {
                   const size_t source = (size_t)layer * source_layer +
-                     ps5_tiled_stencil_msaa4_offset(
-                        x, y, sample_index, resource->base.width0, layer);
-                  const size_t destination =
-                     (size_t)layer * sample->layer_stride +
-                     ps5_tiled_color_msaa4_offset(
-                        PIPE_FORMAT_R8_UINT, x, y, sample_index,
-                        resource->base.width0, layer);
+                     (multisampled
+                        ? ps5_tiled_stencil_msaa4_offset(
+                             x, y, sample_index, resource->base.width0, layer)
+                        : ps5_tiled_stencil_offset(
+                             x, y, resource->base.width0, layer));
+                  const size_t sample_base =
+                     (size_t)layer * sample->layer_stride;
+                  const size_t destination = sample_base +
+                     (multisampled
+                        ? ps5_tiled_color_msaa4_offset(
+                             PIPE_FORMAT_R8_UINT, x, y, sample_index,
+                             resource->base.width0, layer)
+                        : (size_t)y * sample->level_stride[0] + x);
 
                   if (source >= resource->stencil_allocation_size ||
                       destination >= sample->allocation_size)
@@ -3384,7 +3394,7 @@ ps5_prepare_texture(struct ps5_context *context,
            texture->base.last_level) ||
           texture->base.last_level > 15 ||
           ((tiled_render_target ||
-            (tiled_depth_target && (!staged_stencil || multisampled)))
+            (tiled_depth_target && (!staged_stencil || stencil_texture)))
               ? (tiled_render_target
               ? ((multisampled
                     ? !ps5_msaa4_color_format(texture->base.format)
