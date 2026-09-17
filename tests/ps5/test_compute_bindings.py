@@ -199,8 +199,10 @@ static bool fail_info;
 static bool render_condition_pass=true;
 static struct ps5_resource *upload_resource;
 static int ps5_packed_depth_sampled_descriptor(struct pipe_resource *base,
-    enum pipe_format format, uint32_t descriptor[8]) {
-    (void)base; (void)format; (void)descriptor; return -1;
+    enum pipe_format format, unsigned first, unsigned last,
+    uint32_t descriptor[8]) {
+    (void)base; (void)format; (void)first; (void)last; (void)descriptor;
+    return -1;
 }
 ''' + extent_helper + array_layout + linear_helpers + size_helper + format_encoding + tiled_helper + image_descriptor + r'''
 static int ps5_resource_info(struct pipe_resource *base, void **address, size_t *size, size_t *allocation) {
@@ -2016,6 +2018,9 @@ int main(void) {
         context.compute_samplers[7][2]==0x08500000);
     cs.texture_lod[7]=1;
     ps5_launch_grid(&context.base,&good); /* Even valid sampler state cannot exceed the view. */
+    assert(context.last_compute_status<0 && submitted==before_filter);
+    cs.texture_lod[7]=UINT_MAX;
+    ps5_launch_grid(&context.base,&good); /* Unknown gradients require a complete mip chain. */
     assert(context.last_compute_status<0 && submitted==before_filter);
     cs.texture_lod[7]=0;
     for(unsigned i=0;i<2;++i) {
