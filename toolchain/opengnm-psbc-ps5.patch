@@ -6497,3 +6497,20 @@ index 0000000..e6f9a71
 +    gl_Position = in_position;
 +    captured_position = in_position;
 +}
+diff --git a/src/amd/compiler/aco_live_var_analysis.cpp b/src/amd/compiler/aco_live_var_analysis.cpp
+index dcc9338..da2c549 100644
+--- a/src/amd/compiler/aco_live_var_analysis.cpp
++++ b/src/amd/compiler/aco_live_var_analysis.cpp
+@@ -689,6 +689,12 @@ update_vgpr_sgpr_demand(Program* program, RegisterDemand new_demand)
+ 
+       /* Adjust for LDS, workgroup multiples and callee ABI, and calculate max_reg_demand */
+       program->num_waves = max_suitable_waves(program, program->num_waves);
++      if (!program->num_waves) {
++         /* Fixed registers can lower occupancy below the workgroup minimum after
++          * the initial pressure check. Let the normal spiller reduce demand. */
++         program->max_reg_demand = temp_demand;
++         return;
++      }
+       if (program->is_callee) {
+          /* Decrease waves to reduce the chances of needing preserved VGPRs. */
+          std::pair<int, unsigned> best(INT_MIN, program->num_waves);
