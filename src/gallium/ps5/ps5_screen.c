@@ -6595,6 +6595,9 @@ ps5_resolve_depth_stencil_msaa4(struct pipe_context *context,
       (struct ps5_resource *)info->dst.resource;
    const bool packed = source &&
       source->base.format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT;
+   const bool copy_multisample = destination &&
+      destination->base.nr_samples == 4 &&
+      destination->base.nr_storage_samples == 4;
    unsigned min_x, min_y, max_x, max_y;
    size_t source_depth_size;
    size_t destination_depth_size;
@@ -6632,7 +6635,9 @@ ps5_resolve_depth_stencil_msaa4(struct pipe_context *context,
        ((info->mask & PIPE_MASK_S) && !packed) ||
        source->base.nr_samples != 4 ||
        source->base.nr_storage_samples != 4 ||
-       destination->base.nr_samples > 1 || info->dst_sample ||
+       ((destination->base.nr_samples > 1 ||
+         destination->base.nr_storage_samples > 1) && !copy_multisample) ||
+       info->dst_sample ||
        info->sample0_only || info->swizzle_enable ||
        info->num_window_rectangles || info->alpha_blend ||
        info->filter != PIPE_TEX_FILTER_NEAREST ||
@@ -6682,31 +6687,36 @@ ps5_resolve_depth_stencil_msaa4(struct pipe_context *context,
          if (dst_x < min_x || dst_x >= max_x ||
              dst_y < min_y || dst_y >= max_y)
             continue;
-         if (info->mask & PIPE_MASK_Z) {
-            size_t src_offset = ps5_depth_blit_offset(
-               source, source_x, source_y, 0, info->src.box.z, false);
-            size_t dst_offset = ps5_depth_blit_offset(
-               destination, dst_x, dst_y, 0, info->dst.box.z, false);
+         for (unsigned sample = 0; sample < (copy_multisample ? 4u : 1u);
+              ++sample) {
+            if (info->mask & PIPE_MASK_Z) {
+               size_t src_offset = ps5_depth_blit_offset(
+                  source, source_x, source_y, sample, info->src.box.z, false);
+               size_t dst_offset = ps5_depth_blit_offset(
+                  destination, dst_x, dst_y,
+                  copy_multisample ? sample : 0, info->dst.box.z, false);
 
-            if (src_offset > source_depth_size ||
-                source_depth_size - src_offset < sizeof(float) ||
-                dst_offset > destination_depth_size ||
-                destination_depth_size - dst_offset < sizeof(float))
-               return;
-            memcpy(destination->data + dst_offset,
-                   source->data + src_offset, sizeof(float));
-         }
-         if (info->mask & PIPE_MASK_S) {
-            size_t src_offset = ps5_depth_blit_offset(
-               source, source_x, source_y, 0, info->src.box.z, true);
-            size_t dst_offset = ps5_depth_blit_offset(
-               destination, dst_x, dst_y, 0, info->dst.box.z, true);
+               if (src_offset > source_depth_size ||
+                   source_depth_size - src_offset < sizeof(float) ||
+                   dst_offset > destination_depth_size ||
+                   destination_depth_size - dst_offset < sizeof(float))
+                  return;
+               memcpy(destination->data + dst_offset,
+                      source->data + src_offset, sizeof(float));
+            }
+            if (info->mask & PIPE_MASK_S) {
+               size_t src_offset = ps5_depth_blit_offset(
+                  source, source_x, source_y, sample, info->src.box.z, true);
+               size_t dst_offset = ps5_depth_blit_offset(
+                  destination, dst_x, dst_y,
+                  copy_multisample ? sample : 0, info->dst.box.z, true);
 
-            if (src_offset >= source_stencil_size ||
-                dst_offset >= destination_stencil_size)
-               return;
-            destination->stencil_data[dst_offset] =
-               source->stencil_data[src_offset];
+               if (src_offset >= source_stencil_size ||
+                   dst_offset >= destination_stencil_size)
+                  return;
+               destination->stencil_data[dst_offset] =
+                  source->stencil_data[src_offset];
+            }
          }
       }
    }
@@ -6715,7 +6725,8 @@ ps5_resolve_depth_stencil_msaa4(struct pipe_context *context,
    if (info->mask & PIPE_MASK_S)
       ps5_flush_gpu_data(destination->stencil_data,
                          destination_stencil_size);
-   printf("[ps5-gallium] msaa4-resolve depth-stencil=%dx%d mask=%x\n",
+   printf("[ps5-gallium] msaa4-%s depth-stencil=%dx%d mask=%x\n",
+          copy_multisample ? "copy" : "resolve",
           info->dst.box.width, info->dst.box.height, info->mask);
 }
 
