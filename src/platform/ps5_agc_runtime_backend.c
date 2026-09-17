@@ -758,26 +758,15 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
                }
                bool owned = false;
                for (unsigned j = 0; j < buffer_count; ++j) {
-                  uint32_t expected[8];
                   const bool texel = (sampled || image) &&
                      !ps5_resource_texel_buffer_descriptor_owned(buffers[j], srd);
                   /* MSAA uses the SRD mip fields for log2(samples), not view
                    * levels. Reconstruct level zero, then compare all words. */
                   int rc = texel ? 0 :
-                     sampled ? ps5_resource_sampled_image_descriptor(buffers[j],
-                        (srd[3] >> 28) >= 14 ? 0 : (srd[3] >> 12) & 15u,
-                        (srd[3] >> 28) >= 14 ? 0 : (srd[3] >> 16) & 15u, expected) :
+                     sampled ? ps5_resource_sampled_image_descriptor_owned(
+                        buffers[j], srd) :
                      ps5_resource_storage_image_descriptor_owned(buffers[j], srd);
-                  if (!rc && sampled && !texel) {
-                     /* View swizzles cannot change the owned address or extent.
-                      * Only zero, one and the four channel selectors are valid. */
-                     for (unsigned channel = 0; channel < 4; ++channel) {
-                        unsigned selector = (srd[3] >> (channel * 3)) & 7u;
-                        if (selector == 2 || selector == 3) rc = -1;
-                     }
-                     expected[3] = (expected[3] & ~0xfffu) | (srd[3] & 0xfffu);
-                  }
-                  if (!rc && (texel || image || !memcmp(srd, expected, sizeof(expected))))
+                  if (!rc && (texel || image || sampled))
                      owned = true;
                }
                if (!owned)

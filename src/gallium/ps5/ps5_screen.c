@@ -4489,6 +4489,54 @@ ps5_resource_info(struct pipe_resource *base, void **address,
 }
 
 static int
+ps5_packed_depth_sampled_descriptor(struct pipe_resource *base,
+                                    enum pipe_format view_format,
+                                    uint32_t descriptor[8])
+{
+   if (!base || !descriptor)
+      return -1;
+   struct ps5_resource *resource = (struct ps5_resource *)base;
+   const bool stencil = view_format == PIPE_FORMAT_X32_S8X24_UINT;
+   const bool tiled_depth = PS5_ENABLE_DEPTH_TEXTURE_CANDIDATE &&
+      ps5_depth_render_target(base->target) &&
+      (base->bind & PIPE_BIND_DEPTH_STENCIL) && !resource->depth_staging_size;
+   unsigned stride = base->width0 * (stencil ? 1u : 4u);
+   uint32_t format;
+
+   if (base->format != PIPE_FORMAT_Z32_FLOAT_S8X24_UINT ||
+       (view_format != base->format && !stencil) ||
+       base->target != PIPE_TEXTURE_2D || base->last_level ||
+       base->array_size != 1 || base->nr_samples > 1 ||
+       base->nr_storage_samples > 1 || !base->width0 || !base->height0 ||
+       !ps5_texture_descriptor_format(view_format, &format) ||
+       (stencil ? !resource->stencil_data :
+          (!tiled_depth && !ps5_stage_packed_depth_samples(resource, &stride))))
+      return -1;
+
+   uintptr_t address = (uintptr_t)(stencil ? resource->stencil_data : resource->data) +
+      (!stencil && !tiled_depth ? resource->depth_staging_offset : 0);
+   if ((address & 255u) || address >> 48)
+      return -1;
+   if (!stencil && !tiled_depth)
+      format = gfx10_format_table[view_format].img_format << 20;
+   memset(descriptor, 0, 8u * sizeof(*descriptor));
+   descriptor[0] = address >> 8;
+   descriptor[1] = format | (((base->width0 - 1u) & 3u) << 30) |
+                   (uint32_t)(address >> 40);
+   descriptor[2] = ((base->width0 - 1u) >> 2) |
+                   ((base->height0 - 1u) << 14) | UINT32_C(0x80000000);
+   descriptor[3] = (stencil || tiled_depth) ? UINT32_C(0x91800000) :
+                                              UINT32_C(0x90000000);
+   if (!stencil && !tiled_depth && stride / 4u > base->width0)
+      descriptor[4] = stride / 4u - 1u;
+   descriptor[5] = UINT32_C(0x00400000);
+   if (stencil)
+      ps5_flush_gpu_data(resource->stencil_data,
+                         resource->stencil_allocation_size);
+   return 0;
+}
+
+static int
 ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8],
                                      unsigned required_bind, unsigned first_level, unsigned last_level)
 {
@@ -4741,6 +4789,44 @@ ps5_resource_sampled_image_descriptor(struct pipe_resource *base, unsigned first
                                       unsigned last_level, uint32_t descriptor[8])
 {
    return ps5_resource_image_descriptor(base, descriptor, PIPE_BIND_SAMPLER_VIEW, first_level, last_level);
+}
+
+int
+ps5_resource_sampled_image_descriptor_owned(struct pipe_resource *base,
+                                            const uint32_t descriptor[8])
+{
+   uint32_t expected[8];
+
+   if (!descriptor)
+      return -1;
+   for (unsigned channel = 0; channel < 4; ++channel) {
+      const unsigned selector = (descriptor[3] >> (channel * 3)) & 7u;
+      if (selector == 2 || selector == 3)
+         return -1;
+   }
+   const unsigned first = (descriptor[3] >> 28) >= 14 ? 0 :
+                          (descriptor[3] >> 12) & 15u;
+   const unsigned last = (descriptor[3] >> 28) >= 14 ? 0 :
+                         (descriptor[3] >> 16) & 15u;
+
+   if (!ps5_resource_sampled_image_descriptor(base, first, last, expected)) {
+      expected[3] = (expected[3] & ~0xfffu) | (descriptor[3] & 0xfffu);
+      if (!memcmp(descriptor, expected, sizeof(expected)))
+         return 0;
+   }
+   if (base && base->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT) {
+      const enum pipe_format views[] = {
+         PIPE_FORMAT_Z32_FLOAT_S8X24_UINT, PIPE_FORMAT_X32_S8X24_UINT,
+      };
+      for (unsigned i = 0; i < ARRAY_SIZE(views); ++i) {
+         if (!ps5_packed_depth_sampled_descriptor(base, views[i], expected)) {
+            expected[3] = (expected[3] & ~0xfffu) | (descriptor[3] & 0xfffu);
+            if (!memcmp(descriptor, expected, sizeof(expected)))
+               return 0;
+         }
+      }
+   }
+   return -1;
 }
 
 struct pipe_resource *
@@ -12887,11 +12973,20 @@ ps5_set_compute_sampler_views(struct pipe_context *base, unsigned start, unsigne
           ps5_texture_descriptor_swizzle(v->swizzle_g, v->format, &selector) &&
           ps5_texture_descriptor_swizzle(v->swizzle_b, v->format, &selector) &&
           ps5_texture_descriptor_swizzle(v->swizzle_a, v->format, &selector));
+      const bool packed_depth = v && v->texture &&
+         v->texture->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT &&
+         (v->format == v->texture->format ||
+          v->format == PIPE_FORMAT_X32_S8X24_UINT);
+      const int descriptor_result = !v ? 0 : packed_depth ?
+         ps5_packed_depth_sampled_descriptor(v->texture, v->format, descriptor) :
+         ps5_resource_sampled_image_descriptor(v->texture, v->u.tex.first_level,
+                                               v->u.tex.last_level, descriptor);
       if (v && (!v->texture || v->texture->screen != base->screen ||
-          v->target != v->texture->target || v->format != v->texture->format ||
+          v->target != v->texture->target ||
+          (!packed_depth && v->format != v->texture->format) ||
           v->u.tex.first_layer ||
           v->u.tex.last_layer != v->texture->array_size - 1 || !swizzle_ok ||
-          ps5_resource_sampled_image_descriptor(v->texture, v->u.tex.first_level, v->u.tex.last_level, descriptor))) {
+          descriptor_result)) {
          printf("[ps5-gallium] compute view rejected slot=%u target=%u/%u format=%u/%u levels=%u:%u/%u layers=%u:%u/%u depth=%u samples=%u:%u bind=%x swizzle=%u descriptor=%d\n",
                 start + i, v->target, v->texture ? v->texture->target : 0,
                 v->format, v->texture ? v->texture->format : 0,
@@ -12900,7 +12995,7 @@ ps5_set_compute_sampler_views(struct pipe_context *base, unsigned start, unsigne
                 v->texture ? v->texture->depth0 : 0,
                 v->texture ? v->texture->nr_samples : 0, v->texture ? v->texture->nr_storage_samples : 0,
                 v->texture ? v->texture->bind : 0, swizzle_ok,
-                ps5_resource_sampled_image_descriptor(v->texture, v->u.tex.first_level, v->u.tex.last_level, descriptor));
+                descriptor_result);
          return;
       }
    }
@@ -13074,8 +13169,15 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
          buffers[buffer_count++] = view->texture;
          continue;
       }
-      if (ps5_resource_sampled_image_descriptor(view->texture,
-            view->u.tex.first_level, view->u.tex.last_level, descriptor))
+      const bool packed_depth = view->texture->format ==
+         PIPE_FORMAT_Z32_FLOAT_S8X24_UINT &&
+         (view->format == view->texture->format ||
+          view->format == PIPE_FORMAT_X32_S8X24_UINT);
+      if (packed_depth ?
+            ps5_packed_depth_sampled_descriptor(view->texture, view->format,
+                                                descriptor) :
+            ps5_resource_sampled_image_descriptor(view->texture,
+               view->u.tex.first_level, view->u.tex.last_level, descriptor))
          return;
       const unsigned swizzles[] = {view->swizzle_r, view->swizzle_g,
                                    view->swizzle_b, view->swizzle_a};

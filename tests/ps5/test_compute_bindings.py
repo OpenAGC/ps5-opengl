@@ -198,6 +198,10 @@ static bool multi, with_constants, fail_upload;
 static bool fail_info;
 static bool render_condition_pass=true;
 static struct ps5_resource *upload_resource;
+static int ps5_packed_depth_sampled_descriptor(struct pipe_resource *base,
+    enum pipe_format format, uint32_t descriptor[8]) {
+    (void)base; (void)format; (void)descriptor; return -1;
+}
 ''' + extent_helper + array_layout + linear_helpers + size_helper + format_encoding + tiled_helper + image_descriptor + r'''
 static int ps5_resource_info(struct pipe_resource *base, void **address, size_t *size, size_t *allocation) {
     (void)allocation;
