@@ -6514,3 +6514,19 @@ index dcc9338..da2c549 100644
        if (program->is_callee) {
           /* Decrease waves to reduce the chances of needing preserved VGPRs. */
           std::pair<int, unsigned> best(INT_MIN, program->num_waves);
+diff --git a/src/amd/vulkan/radv_shader_info.c b/src/amd/vulkan/radv_shader_info.c
+index bf0698c..e892eeb 100644
+--- a/src/amd/vulkan/radv_shader_info.c
++++ b/src/amd/vulkan/radv_shader_info.c
+@@ -1276,8 +1276,10 @@ gfx10_get_ngg_info(const struct radv_compiler_info *compiler_info, struct radv_s
+    const unsigned gs_vertices_out = gs_info ? gs_info->gs.vertices_out : 0;
+    ac_ngg_subgroup_info info;
+ 
++   /* Keep linked PS5 tessellation/GS programs within one wave per SIMD even
++    * when fixed FP64 varying inputs leave no room for two-wave occupancy. */
+    ac_ngg_compute_subgroup_info(gfx_level, es_info->stage, !!gs_info, input_prim, gs_vertices_out, gs_num_invocations,
+-                                128, 256, stage_info->wave_size, es_info->esgs_itemsize,
++                                128, 128, stage_info->wave_size, es_info->esgs_itemsize,
+                                 stage_info->ngg_lds_vertex_size, stage_info->ngg_lds_scratch_size, false, 0, &info);
+ 
+    out->hw_max_esverts = info.hw_max_esverts;
