@@ -68,6 +68,15 @@ static nir_shader *shader(PsbcStage stage, bool manual, bool dynamic, unsigned f
     return b.shader;
 }
 static void structural(void) {
+    PsbcCompileOptions texture_opts={0};
+    texture_opts.descriptor_binding_count=16;
+    for(unsigned i=0;i<16;++i)
+        texture_opts.descriptor_bindings[i]=(PsbcDescriptorBinding){
+            .binding=i,.type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,
+            .array_size=1,.offset=i*48,.stride=48};
+    assert(contiguous_sampler_count(&texture_opts,&texture_opts.descriptor_bindings[0])==16);
+    texture_opts.descriptor_bindings[8].offset+=48;
+    assert(contiguous_sampler_count(&texture_opts,&texture_opts.descriptor_bindings[0])==8);
     unsigned keys=0;
     for (PsbcStage stage=PSBC_STAGE_VERTEX; stage<=PSBC_STAGE_COMPUTE; ++stage) {
         PsbcCompileOptions opts=options(stage);
