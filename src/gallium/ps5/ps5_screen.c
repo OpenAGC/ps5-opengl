@@ -4563,15 +4563,21 @@ ps5_packed_depth_sampled_descriptor(struct pipe_resource *base,
    const bool tiled_depth = PS5_ENABLE_DEPTH_TEXTURE_CANDIDATE &&
       ps5_depth_render_target(base->target) &&
       (base->bind & PIPE_BIND_DEPTH_STENCIL) && !resource->depth_staging_size;
-   const bool staged_depth = !stencil && !tiled_depth &&
+   if (base->format == PIPE_FORMAT_Z32_FLOAT && !tiled_depth)
+      return ps5_resource_sampled_image_descriptor(
+         base, first_level, last_level, descriptor);
+   const bool staged_depth = base->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT &&
+                             !tiled_depth &&
                              resource->depth_staging_size;
-   unsigned texel_size = staged_depth ? 4u : 8u;
+   unsigned texel_size = base->format == PIPE_FORMAT_Z32_FLOAT || staged_depth
+                            ? 4u : 8u;
    unsigned stride = staged_depth ? base->width0 * texel_size :
                                     resource->level_stride[0];
    size_t layer_size = resource->layer_stride;
    uint32_t format;
 
-   if (base->format != PIPE_FORMAT_Z32_FLOAT_S8X24_UINT ||
+   if ((base->format != PIPE_FORMAT_Z32_FLOAT &&
+        base->format != PIPE_FORMAT_Z32_FLOAT_S8X24_UINT) ||
        view_format != base->format ||
        !ps5_sampled_texture_target(base->target) ||
        first_level > last_level || last_level > base->last_level ||
@@ -4897,12 +4903,17 @@ ps5_resource_sampled_image_descriptor_owned(struct pipe_resource *base,
       if (!memcmp(descriptor, expected, sizeof(expected)))
          return 0;
    }
-   if (base && base->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT) {
+   if (base && (base->format == PIPE_FORMAT_Z32_FLOAT ||
+                base->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT)) {
       const enum pipe_format views[] = {
          PIPE_FORMAT_Z32_FLOAT_S8X24_UINT, PIPE_FORMAT_X32_S8X24_UINT,
       };
-      for (unsigned i = 0; i < ARRAY_SIZE(views); ++i) {
-         if (!ps5_packed_depth_sampled_descriptor(base, views[i], first, last,
+      const unsigned count = base->format == PIPE_FORMAT_Z32_FLOAT ? 1 :
+                             ARRAY_SIZE(views);
+      for (unsigned i = 0; i < count; ++i) {
+         const enum pipe_format view = base->format == PIPE_FORMAT_Z32_FLOAT
+            ? PIPE_FORMAT_Z32_FLOAT : views[i];
+         if (!ps5_packed_depth_sampled_descriptor(base, view, first, last,
                                                   expected)) {
             expected[3] = (expected[3] & ~0xfffu) | (descriptor[3] & 0xfffu);
             if (!memcmp(descriptor, expected, sizeof(expected)))
@@ -13077,18 +13088,19 @@ ps5_set_compute_sampler_views(struct pipe_context *base, unsigned start, unsigne
           ps5_texture_descriptor_swizzle(v->swizzle_g, v->format, &selector) &&
           ps5_texture_descriptor_swizzle(v->swizzle_b, v->format, &selector) &&
           ps5_texture_descriptor_swizzle(v->swizzle_a, v->format, &selector));
-      const bool packed_depth = v && v->texture &&
-         v->texture->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT &&
-         (v->format == v->texture->format ||
-          v->format == PIPE_FORMAT_X32_S8X24_UINT);
-      const int descriptor_result = !v ? 0 : packed_depth ?
+      const bool depth_special = v && v->texture &&
+         (v->texture->format == PIPE_FORMAT_Z32_FLOAT ||
+          (v->texture->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT &&
+           (v->format == v->texture->format ||
+            v->format == PIPE_FORMAT_X32_S8X24_UINT)));
+      const int descriptor_result = !v ? 0 : depth_special ?
          ps5_packed_depth_sampled_descriptor(v->texture, v->format,
             v->u.tex.first_level, v->u.tex.last_level, descriptor) :
          ps5_resource_sampled_image_descriptor(v->texture, v->u.tex.first_level,
                                                v->u.tex.last_level, descriptor);
       if (v && (!v->texture || v->texture->screen != base->screen ||
           v->target != v->texture->target ||
-          (!packed_depth && v->format != v->texture->format) ||
+          (!depth_special && v->format != v->texture->format) ||
           v->u.tex.first_layer ||
           v->u.tex.last_layer != v->texture->array_size - 1 || !swizzle_ok ||
           descriptor_result)) {
@@ -13274,11 +13286,11 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
          buffers[buffer_count++] = view->texture;
          continue;
       }
-      const bool packed_depth = view->texture->format ==
-         PIPE_FORMAT_Z32_FLOAT_S8X24_UINT &&
-         (view->format == view->texture->format ||
-          view->format == PIPE_FORMAT_X32_S8X24_UINT);
-      if (packed_depth ?
+      const bool depth_special = view->texture->format == PIPE_FORMAT_Z32_FLOAT ||
+         (view->texture->format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT &&
+          (view->format == view->texture->format ||
+           view->format == PIPE_FORMAT_X32_S8X24_UINT));
+      if (depth_special ?
             ps5_packed_depth_sampled_descriptor(view->texture, view->format,
                view->u.tex.first_level, view->u.tex.last_level, descriptor) :
             ps5_resource_sampled_image_descriptor(view->texture,
