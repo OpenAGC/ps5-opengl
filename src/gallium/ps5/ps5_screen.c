@@ -4653,8 +4653,9 @@ ps5_storage_image_view_descriptor(const struct pipe_image_view *view,
    const unsigned layers = volume ? MAX2(base->depth0 >> view->u.tex.level, 1u) : base->array_size;
    if (first > last || last >= layers ||
        (view->u.tex.single_layer_view && first != last) ||
-       (volume && ((view->u.tex.single_layer_view && view->u.tex.is_2d_view_of_3d) ||
-                   first || last != layers - 1)) ||
+       (volume && (view->u.tex.single_layer_view
+          ? !view->u.tex.is_2d_view_of_3d
+          : first || last != layers - 1)) ||
        ps5_resource_storage_image_descriptor(base, view->u.tex.level, descriptor))
       return -1;
    /* Validate the allocation using its storage format, then reinterpret only
@@ -4663,10 +4664,10 @@ ps5_storage_image_view_descriptor(const struct pipe_image_view *view,
    descriptor[1] = (descriptor[1] & ~UINT32_C(0x1ff00000)) | format;
    descriptor[3] = (descriptor[3] & ~UINT32_C(0xfff)) |
       (channels == 1 ? 0x204u : channels == 2 ? 0x22cu : channels == 3 ? 0x3acu : 0xfacu);
-   if (volume)
+   if (volume && !view->u.tex.single_layer_view)
       return 0;
    const struct ps5_resource *resource = (const struct ps5_resource *)base;
-   const bool array = base->target == PIPE_TEXTURE_1D_ARRAY ||
+   const bool array = volume || base->target == PIPE_TEXTURE_1D_ARRAY ||
                       base->target == PIPE_TEXTURE_2D_ARRAY || ps5_cube_texture_target(base->target);
    if (!array)
       return first || last ? -1 : 0;

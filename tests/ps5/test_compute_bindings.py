@@ -1594,6 +1594,17 @@ int main(void) {
             assert(descriptor[3]==(0xa0000204u|(level<<12)|(level<<16)));
             assert(descriptor[4]==3 && descriptor[5]==0x400030);
             assert(!ps5_resource_storage_image_descriptor_owned(&volume.base,descriptor));
+            if (v.u.tex.last_layer) {
+                v.u.tex.first_layer=v.u.tex.last_layer=1;
+                v.u.tex.single_layer_view=true;
+                v.u.tex.is_2d_view_of_3d=true;
+                assert(!ps5_storage_image_view_descriptor(&v,descriptor));
+                assert(descriptor[0]==(uint32_t)((uintptr_t)(pixels+3840)>>8));
+                assert((descriptor[3]>>28)==9 && descriptor[4]==0);
+                v.u.tex.first_layer=0;
+                v.u.tex.last_layer=MAX2(4u>>level,1u)-1;
+                v.u.tex.single_layer_view=false;
+            }
             for(unsigned stage=0;stage<2;++stage) {
                 mesa_shader_stage which=stage ? MESA_SHADER_FRAGMENT : MESA_SHADER_COMPUTE;
                 ps5_set_shader_images(&context.base,which,7,1,0,&v);
