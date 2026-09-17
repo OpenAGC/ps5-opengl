@@ -1366,7 +1366,10 @@ ps5_linear_sampled_layout(const struct pipe_resource *resource)
 static bool
 ps5_color_render_target(enum pipe_texture_target target)
 {
-   return target == PIPE_TEXTURE_2D ||
+   return (PS5_ENABLE_TEXTURE_1D_CANDIDATE &&
+           (target == PIPE_TEXTURE_1D ||
+            target == PIPE_TEXTURE_1D_ARRAY)) ||
+          target == PIPE_TEXTURE_2D ||
           (PS5_ENABLE_TEXTURE_RECTANGLE_CANDIDATE &&
            target == PIPE_TEXTURE_RECT) ||
           (PS5_ENABLE_LAYERED_RENDER_TARGET_CANDIDATE &&
@@ -3279,6 +3282,7 @@ ps5_prepare_texture(struct ps5_context *context,
       unsigned descriptor_stride;
       unsigned descriptor_last_level;
       unsigned view_layers;
+      enum pipe_texture_target descriptor_target;
       bool tiled_render_target;
       bool tiled_depth_target;
       bool depth_texture;
@@ -3499,6 +3503,12 @@ ps5_prepare_texture(struct ps5_context *context,
       anisotropy = ps5_texture_descriptor_anisotropy(
          sampler->max_anisotropy);
 
+      descriptor_target = texture->base.target;
+      if (ps5_cube_texture_target(view->target))
+         descriptor_target = view->target;
+      else if (ps5_cube_texture_target(descriptor_target))
+         descriptor_target = PIPE_TEXTURE_2D_ARRAY;
+
       texture_address = (uintptr_t)(staged_stencil ? stencil_sample->data
                                       : texture->data) +
          (staged_packed_depth ? texture->depth_staging_offset : 0);
@@ -3514,40 +3524,40 @@ ps5_prepare_texture(struct ps5_context *context,
                       ((texture->base.height0 - 1u) << 14) |
                       (UINT32_C(1) << 31); /* GFX10 RESOURCE_LEVEL. */
       descriptor[3] = ((tiled_depth_target && !staged_stencil) && multisampled
-                           ? (view->target == PIPE_TEXTURE_2D_ARRAY
+                           ? (descriptor_target == PIPE_TEXTURE_2D_ARRAY
                                  ? UINT32_C(0xf1820000)
                                  : UINT32_C(0xe1820000))
                        : tiled_depth_target && !staged_stencil
-                           ? (view->target == PIPE_TEXTURE_1D
+                           ? (descriptor_target == PIPE_TEXTURE_1D
                                  ? UINT32_C(0x81800000)
-                              : view->target ==
+                              : descriptor_target ==
                                    PIPE_TEXTURE_1D_ARRAY
                                  ? UINT32_C(0xc1800000)
-                              : ps5_cube_texture_target(view->target)
+                              : ps5_cube_texture_target(descriptor_target)
                                  ? UINT32_C(0xb1800000)
-                              : view->target ==
+                              : descriptor_target ==
                                    PIPE_TEXTURE_2D_ARRAY
                                  ? UINT32_C(0xd1800000)
-                              : view->target == PIPE_TEXTURE_3D
+                              : descriptor_target == PIPE_TEXTURE_3D
                                  ? UINT32_C(0xa1800000)
                                  : UINT32_C(0x91800000))
                        : multisampled
-                           ? (view->target == PIPE_TEXTURE_2D_ARRAY
+                           ? (descriptor_target == PIPE_TEXTURE_2D_ARRAY
                                  ? UINT32_C(0xf1b20000)
                                  : UINT32_C(0xe1b20000))
                        : tiled_render_target
-                           ? (view->target == PIPE_TEXTURE_2D_ARRAY
+                           ? (descriptor_target == PIPE_TEXTURE_2D_ARRAY
                                  ? UINT32_C(0xd1b00000)
                                  : UINT32_C(0x91b00000))
-                        : view->target == PIPE_TEXTURE_1D
+                        : descriptor_target == PIPE_TEXTURE_1D
                            ? UINT32_C(0x80000000)
-                       : view->target == PIPE_TEXTURE_1D_ARRAY
+                       : descriptor_target == PIPE_TEXTURE_1D_ARRAY
                           ? UINT32_C(0xc0000000)
-                       : ps5_cube_texture_target(view->target)
+                       : ps5_cube_texture_target(descriptor_target)
                            ? UINT32_C(0xb0000000)
-                       : view->target == PIPE_TEXTURE_2D_ARRAY
+                       : descriptor_target == PIPE_TEXTURE_2D_ARRAY
                           ? UINT32_C(0xd0000000)
-                       : view->target == PIPE_TEXTURE_3D
+                       : descriptor_target == PIPE_TEXTURE_3D
                           ? UINT32_C(0xa0000000)
                           : UINT32_C(0x90000000)) |
                       swizzle[0] |
@@ -3557,14 +3567,14 @@ ps5_prepare_texture(struct ps5_context *context,
                       (view->u.tex.last_level << 16);
       /* GFX10 sampler views keep the allocation base address and select their
        * layer range with BASE_ARRAY and the absolute last accessible layer. */
-      descriptor[4] = ps5_cube_texture_target(view->target)
+      descriptor[4] = ps5_cube_texture_target(descriptor_target)
                          ? view->u.tex.last_layer
-                      : view->target == PIPE_TEXTURE_3D
+                      : descriptor_target == PIPE_TEXTURE_3D
                          ? texture->base.depth0 - 1
-                      : view->target == PIPE_TEXTURE_1D_ARRAY ||
-                        view->target == PIPE_TEXTURE_2D_ARRAY
+                      : descriptor_target == PIPE_TEXTURE_1D_ARRAY ||
+                        descriptor_target == PIPE_TEXTURE_2D_ARRAY
                          ? view->u.tex.last_layer : 0;
-      if (view->target != PIPE_TEXTURE_3D)
+      if (descriptor_target != PIPE_TEXTURE_3D)
          descriptor[4] |= view->u.tex.first_layer << 16;
       if (view->target == PIPE_TEXTURE_2D &&
           !texture->base.last_level &&
@@ -10608,12 +10618,16 @@ ps5_set_framebuffer_state(struct pipe_context *base,
 
          colors_valid = colors_valid &&
             surface->level <= surface->texture->last_level &&
-            (((surface->texture->target == PIPE_TEXTURE_2D ||
+            ((((PS5_ENABLE_TEXTURE_1D_CANDIDATE &&
+                surface->texture->target == PIPE_TEXTURE_1D) ||
+               surface->texture->target == PIPE_TEXTURE_2D ||
                (PS5_ENABLE_TEXTURE_RECTANGLE_CANDIDATE &&
                 surface->texture->target == PIPE_TEXTURE_RECT)) &&
               surface->first_layer == 0 && single_layer) ||
              (PS5_ENABLE_LAYERED_RENDER_TARGET_CANDIDATE &&
-              (surface->texture->target == PIPE_TEXTURE_2D_ARRAY ||
+              ((PS5_ENABLE_TEXTURE_1D_CANDIDATE &&
+                surface->texture->target == PIPE_TEXTURE_1D_ARRAY) ||
+               surface->texture->target == PIPE_TEXTURE_2D_ARRAY ||
                ps5_cube_texture_target(surface->texture->target) ||
                surface->texture->target == PIPE_TEXTURE_3D) &&
               surface->first_layer <= surface->last_layer &&
