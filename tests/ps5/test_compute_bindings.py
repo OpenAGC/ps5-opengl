@@ -595,22 +595,25 @@ static void fragment_contract(void) {
     for(unsigned i=0;i<8;++i) views[i]=(struct pipe_image_view){.resource=&image.base,
         .format=PIPE_FORMAT_R32_UINT,.access=PIPE_IMAGE_ACCESS_READ_WRITE,
         .u.tex.single_layer_view=true};
-    assert(!ps5_prepare_fragment_storage(&c,userdata,16));
+    assert(ps5_prepare_fragment_storage(&c,userdata,16));
+    for(unsigned i=64;i<128;++i) assert(!descriptors[i]);
     ps5_set_shader_images(&c.base,MESA_SHADER_FRAGMENT,0,8,0,views);
     assert(image.base.reference.count==9 && !c.compute_images[0].resource);
     assert(ps5_prepare_fragment_storage(&c,userdata,16));
     for(unsigned i=0;i<8;++i) assert(descriptors[64+i*8]==(uint32_t)((uintptr_t)pixels>>8));
     views[7].u.tex.level=1;
     ps5_set_shader_images(&c.base,MESA_SHADER_FRAGMENT,0,8,0,views);
-    assert(c.fragment_images_invalid && image.base.reference.count==9);
-    assert(!ps5_prepare_fragment_storage(&c,userdata,16));
+    assert(!c.fragment_images_invalid && image.base.reference.count==9);
+    memset(descriptors+64+7*8,0xff,32);
+    assert(ps5_prepare_fragment_storage(&c,userdata,16));
+    for(unsigned i=0;i<8;++i) assert(!descriptors[64+7*8+i]);
     views[7].u.tex.level=0;
     ps5_set_shader_images(&c.base,MESA_SHADER_FRAGMENT,0,8,0,views);
     m->descriptor_bindings[1].offset=128;
     assert(!ps5_prepare_fragment_storage(&c,userdata,16));
     m->descriptor_bindings[1].offset=256;
     ps5_set_shader_images(&c.base,MESA_SHADER_FRAGMENT,0,0,8,NULL);
-    assert(image.base.reference.count==1 && !ps5_prepare_fragment_storage(&c,userdata,16));
+    assert(image.base.reference.count==1 && ps5_prepare_fragment_storage(&c,userdata,16));
     fragment_mode=false;
 }
 static void geometry_storage_contract(void) {
@@ -1805,14 +1808,23 @@ int main(void) {
     ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,1,0,&view);
     caller=&image.base; pipe_resource_reference(&caller,NULL);
     assert(image.base.reference.count==1 && !context.compute_images_invalid);
-    for(unsigned fault=0;fault<6;++fault) {
+    {
+        struct pipe_image_view incomplete=view;
+        incomplete.u.tex.level=1;
+        struct pipe_image_view pair[2]={view,incomplete};
+        ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,6,2,0,pair);
+        assert(!context.compute_images_invalid && context.compute_images[6].resource &&
+               context.compute_images[7].u.tex.level==1 && image.base.reference.count==2);
+        ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,6,0,1,NULL);
+        ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,7,1,0,&view);
+    }
+    for(unsigned fault=0;fault<5;++fault) {
         struct pipe_image_view bad=view;
         if(fault==0) bad.format=PIPE_FORMAT_R16_FLOAT; /* Different texel size. */
         if(fault==1) bad.access=0;
         if(fault==2) bad.access|=PIPE_IMAGE_ACCESS_TEX2D_FROM_BUFFER;
-        if(fault==3) bad.u.tex.level=1;
-        if(fault==4) bad.u.tex.last_layer=1;
-        if(fault==5) image.base.screen=&other_screen;
+        if(fault==3) bad.u.tex.last_layer=1;
+        if(fault==4) image.base.screen=&other_screen;
         struct pipe_image_view pair[2]={view,bad};
         ps5_set_shader_images(&context.base,MESA_SHADER_COMPUTE,6,2,0,pair);
         assert(context.compute_images_invalid && !context.compute_images[6].resource && image.base.reference.count==1);

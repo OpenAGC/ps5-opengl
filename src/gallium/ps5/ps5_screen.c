@@ -2614,6 +2614,14 @@ ps5_shader_uses_storage(const struct ps5_shader *shader)
 }
 
 static bool
+ps5_image_view_incomplete(const struct pipe_image_view *view)
+{
+   return !view || !view->resource ||
+      (view->resource->target != PIPE_BUFFER &&
+       view->u.tex.level > view->resource->last_level);
+}
+
+static bool
 ps5_prepare_fragment_storage(struct ps5_context *context, uint32_t *user_data,
                              unsigned user_data_count)
 {
@@ -2665,6 +2673,10 @@ ps5_prepare_fragment_storage(struct ps5_context *context, uint32_t *user_data,
       const struct ps5_resource *resource = (const struct ps5_resource *)view->resource;
       uint32_t *descriptor = (uint32_t *)(table->data +
          PS5_COMPUTE_STORAGE_SLOTS * 16 + i * 32);
+      if (ps5_image_view_incomplete(view)) {
+         memset(descriptor, 0, 32);
+         continue;
+      }
       if (!resource || (resource->base.target == PIPE_BUFFER ?
           !ps5_image_buffer_descriptor(view, metadata->address32_hi, descriptor) :
           ps5_storage_image_view_descriptor(view, descriptor)))
@@ -12827,6 +12839,8 @@ ps5_set_shader_images(struct pipe_context *base, mesa_shader_stage stage,
           ((v->access | v->shader_access) & ~(PIPE_IMAGE_ACCESS_READ_WRITE |
               PIPE_IMAGE_ACCESS_COHERENT | PIPE_IMAGE_ACCESS_VOLATILE)))
          return;
+      if (ps5_image_view_incomplete(v))
+         continue;
       if (v->resource->target == PIPE_BUFFER) {
          if (!ps5_image_buffer_descriptor(v,
                (uintptr_t)((struct ps5_resource *)v->resource)->data >> 32,
@@ -13026,6 +13040,8 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
          continue;
       uint32_t *descriptor = (uint32_t *)(table->data +
          PS5_COMPUTE_BUFFER_SLOTS * 16 + i * 32);
+      if (ps5_image_view_incomplete(view))
+         continue;
       if (resource->target == PIPE_BUFFER ?
           !ps5_image_buffer_descriptor(view, context->cs->output.metadata.address32_hi,
                                        descriptor) :
