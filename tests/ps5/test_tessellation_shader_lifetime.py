@@ -29,7 +29,7 @@ struct ps5_shader {
 };
 struct ps5_context {
   struct pipe_context base;
-  struct ps5_shader *vs, *tcs, *tes, *gs, *fs;
+  struct ps5_shader *vs, *tcs, *tes, *gs, *fs, *default_tcs;
   struct ps5_shader *geometry_vs, *geometry_gs;
   struct ps5_shader *tessellation_vs, *tessellation_tcs;
   struct ps5_shader *tessellation_tes, *tessellation_gs;
@@ -54,10 +54,12 @@ int main(void) {
       &ctx.tessellation_tes, &ctx.tessellation_gs
     };
     if (stage < 4) *cached[stage] = shader;
+    if (stage == 1) ctx.default_tcs = shader;
     ctx.gs = shader;
     releases = 0;
     ps5_delete_shader_state(&ctx.base, shader);
     assert(!ctx.gs);
+    assert(!ctx.default_tcs);
     assert(releases == (stage < 4));
     for (unsigned i = 0; i < 4; ++i) assert(!*cached[i]);
     ps5_delete_shader_state(&ctx.base, NULL);
