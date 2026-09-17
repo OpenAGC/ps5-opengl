@@ -3279,7 +3279,6 @@ ps5_prepare_texture(struct ps5_context *context,
       unsigned descriptor_stride;
       unsigned descriptor_last_level;
       unsigned view_layers;
-      size_t sampled_layer_stride;
       bool tiled_render_target;
       bool tiled_depth_target;
       bool depth_texture;
@@ -3358,7 +3357,6 @@ ps5_prepare_texture(struct ps5_context *context,
       descriptor_stride = stencil_texture ? texture->base.width0
                                            : texture->level_stride[0];
       descriptor_last_level = texture->base.last_level;
-      sampled_layer_stride = stencil_texture ? 0 : texture->layer_stride;
       staged_packed_depth =
          texture->base.format == PIPE_FORMAT_Z32_FLOAT_S8X24_UINT &&
          !stencil_texture && !tiled_depth_target &&
@@ -3478,7 +3476,6 @@ ps5_prepare_texture(struct ps5_context *context,
          if (!stencil_sample)
             return false;
          descriptor_stride = stencil_sample->level_stride[0];
-         sampled_layer_stride = stencil_sample->layer_stride;
          if (multisampled) {
             if (!ps5_texture_descriptor_format(PIPE_FORMAT_R8_UINT,
                                                &format_word))
@@ -3504,8 +3501,7 @@ ps5_prepare_texture(struct ps5_context *context,
 
       texture_address = (uintptr_t)(staged_stencil ? stencil_sample->data
                                       : texture->data) +
-         (staged_packed_depth ? texture->depth_staging_offset : 0) +
-         (size_t)view->u.tex.first_layer * sampled_layer_stride;
+         (staged_packed_depth ? texture->depth_staging_offset : 0);
       if ((uint32_t)(texture_address >> 32) != metadata->address32_hi ||
           (texture_address & 0xffu))
          return false;
@@ -3559,14 +3555,17 @@ ps5_prepare_texture(struct ps5_context *context,
                       (swizzle[3] << 9) |
                       (view->u.tex.first_level << 12) |
                       (view->u.tex.last_level << 16);
-      /* GFX10 DEPTH is the last accessible face/layer, including cube views. */
+      /* GFX10 sampler views keep the allocation base address and select their
+       * layer range with BASE_ARRAY and the absolute last accessible layer. */
       descriptor[4] = ps5_cube_texture_target(view->target)
-                         ? view_layers - 1u
+                         ? view->u.tex.last_layer
                       : view->target == PIPE_TEXTURE_3D
                          ? texture->base.depth0 - 1
                       : view->target == PIPE_TEXTURE_1D_ARRAY ||
                         view->target == PIPE_TEXTURE_2D_ARRAY
-                         ? view_layers - 1u : 0;
+                         ? view->u.tex.last_layer : 0;
+      if (view->target != PIPE_TEXTURE_3D)
+         descriptor[4] |= view->u.tex.first_layer << 16;
       if (view->target == PIPE_TEXTURE_2D &&
           !texture->base.last_level &&
           !tiled_render_target && !tiled_depth_target && !staged_stencil &&
