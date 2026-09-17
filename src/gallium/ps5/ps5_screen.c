@@ -2414,17 +2414,32 @@ ps5_stage_packed_depth_samples(struct ps5_resource *resource,
    return true;
 }
 
+static size_t ps5_tiled_stencil_msaa4_offset(unsigned x, unsigned y,
+                                              unsigned sample,
+                                              unsigned width,
+                                              unsigned layer);
+static size_t ps5_tiled_color_msaa4_offset(enum pipe_format format,
+                                            unsigned x, unsigned y,
+                                            unsigned sample,
+                                            unsigned width,
+                                            unsigned layer);
+
 static struct ps5_resource *
 ps5_stage_packed_stencil_samples(struct ps5_resource *resource)
 {
    const unsigned layers = ps5_texture_level_layers(&resource->base, 0);
+   const bool multisampled = resource->base.nr_samples == 4 &&
+                             resource->base.nr_storage_samples == 4;
    if (!resource->stencil_sample) {
       struct pipe_resource templ = resource->base;
       templ.format = PIPE_FORMAT_R8_UINT;
-      templ.bind = PIPE_BIND_SAMPLER_VIEW;
+      templ.bind = PIPE_BIND_SAMPLER_VIEW |
+                   (multisampled ? PIPE_BIND_RENDER_TARGET : 0);
       templ.flags = 0;
-      templ.nr_samples = 0;
-      templ.nr_storage_samples = 0;
+      if (!multisampled) {
+         templ.nr_samples = 0;
+         templ.nr_storage_samples = 0;
+      }
       resource->stencil_sample = resource->base.screen->resource_create(
          resource->base.screen, &templ);
       if (!resource->stencil_sample)
@@ -2432,6 +2447,35 @@ ps5_stage_packed_stencil_samples(struct ps5_resource *resource)
    }
    struct ps5_resource *sample =
       (struct ps5_resource *)resource->stencil_sample;
+   if (multisampled) {
+      const size_t source_layer = ps5_tiled_stencil_surface_size_samples(
+         resource->base.width0, resource->base.height0, 4);
+
+      for (unsigned layer = 0; layer < layers; ++layer) {
+         for (unsigned y = 0; y < resource->base.height0; ++y) {
+            for (unsigned x = 0; x < resource->base.width0; ++x) {
+               for (unsigned sample_index = 0; sample_index < 4;
+                    ++sample_index) {
+                  const size_t source = (size_t)layer * source_layer +
+                     ps5_tiled_stencil_msaa4_offset(
+                        x, y, sample_index, resource->base.width0, layer);
+                  const size_t destination =
+                     (size_t)layer * sample->layer_stride +
+                     ps5_tiled_color_msaa4_offset(
+                        PIPE_FORMAT_R8_UINT, x, y, sample_index,
+                        resource->base.width0, layer);
+
+                  if (source >= resource->stencil_allocation_size ||
+                      destination >= sample->allocation_size)
+                     return NULL;
+                  sample->data[destination] = resource->stencil_data[source];
+               }
+            }
+         }
+      }
+      ps5_flush_gpu_data(sample->data, sample->allocation_size);
+      return sample;
+   }
    for (unsigned level = 0; level <= resource->base.last_level; ++level) {
       const unsigned width = MAX2(resource->base.width0 >> level, 1u);
       const unsigned height = MAX2(resource->base.height0 >> level, 1u);
@@ -3389,7 +3433,7 @@ ps5_prepare_texture(struct ps5_context *context,
           (view->target == PIPE_TEXTURE_CUBE_ARRAY && view_layers % 6) ||
           (view->target == PIPE_TEXTURE_3D &&
             (view->u.tex.first_layer || view->u.tex.last_layer)) ||
-          (stencil_texture && (!texture->stencil_data || multisampled)) ||
+          (stencil_texture && !texture->stencil_data) ||
           (sampler->min_mip_filter != PIPE_TEX_MIPFILTER_NONE &&
            !PS5_ENABLE_TEXTURE_MIPMAP_CANDIDATE) ||
           (sampler->compare_mode &&
@@ -3424,6 +3468,13 @@ ps5_prepare_texture(struct ps5_context *context,
             return false;
          descriptor_stride = stencil_sample->level_stride[0];
          sampled_layer_stride = stencil_sample->layer_stride;
+         if (multisampled) {
+            if (!ps5_texture_descriptor_format(PIPE_FORMAT_R8_UINT,
+                                               &format_word))
+               return false;
+            tiled_render_target = true;
+            tiled_depth_target = false;
+         }
       } else if (staged_packed_depth) {
          descriptor_format_size = sizeof(float);
          if (!ps5_stage_packed_depth_samples(texture, &descriptor_stride))
