@@ -1617,6 +1617,7 @@ int main(void) {
         struct pipe_image_view v={.resource=&volume.base,.format=volume.base.format,
             .access=PIPE_IMAGE_ACCESS_READ_WRITE};
         v.u.tex.last_layer=1;
+        v.u.tex.is_2d_view_of_3d=true; /* Undefined for Mesa layered views. */
         assert(!ps5_storage_image_view_descriptor(&v,descriptor));
     }
     for(unsigned level=0;level<4;++level) {

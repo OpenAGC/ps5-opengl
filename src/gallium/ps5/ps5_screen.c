@@ -4516,12 +4516,8 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
        (resource->depth_staging_size && !depth) || !resource->data ||
        resource->size > resource->allocation_size ||
        ((uintptr_t)resource->data & 255u) || (uintptr_t)resource->data >> 48 ||
-       !ps5_texture_descriptor_format(base->format, &format)) {
-      printf("[ps5-gallium] image-descriptor-rejected phase=header target=%u format=%u bind=%x\n",
-             base ? base->target : 0, base ? base->format : 0,
-             base ? base->bind : 0);
+       !ps5_texture_descriptor_format(base->format, &format))
       return -1;
-   }
    const bool tiled = !ps5_linear_sampled_layout(base);
    if (multisampled) {
       const size_t logical_layer = (size_t)base->width0 * base->height0 * texel_size;
@@ -4574,12 +4570,9 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
              resource->render_staging_offset < resource->size ||
              (resource->render_staging_offset & (PS5_COLOR_TARGET_ALIGNMENT - 1u)) ||
              resource->render_staging_offset > resource->allocation_size ||
-             resource->render_staging_size > resource->allocation_size - resource->render_staging_offset) {
-            printf("[ps5-gallium] image-descriptor-rejected phase=render-staging\n");
+             resource->render_staging_size > resource->allocation_size - resource->render_staging_offset)
             return -1;
-         }
       } else if (resource->render_staging_size || resource->render_staging_offset) {
-         printf("[ps5-gallium] image-descriptor-rejected phase=unexpected-staging\n");
          return -1;
       }
       size_t offset = 0;
@@ -4589,21 +4582,14 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
          const unsigned stride = (width * texel_size + 255u) & ~255u;
          const size_t span = (size_t)stride * height;
          if (resource->level_offset[level] != offset || resource->level_stride[level] != stride ||
-             offset > resource->size || span > resource->size - offset) {
-            printf("[ps5-gallium] image-descriptor-rejected phase=level level=%u expected=%zu/%u actual=%zu/%u span=%zu size=%zu\n",
-                   level, offset, stride, resource->level_offset[level],
-                   resource->level_stride[level], span, resource->size);
+             offset > resource->size || span > resource->size - offset)
             return -1;
-         }
          offset += span;
       }
       const unsigned layers = volume ? base->depth0 : base->array_size;
       if ((array || volume) &&
-          (resource->layer_stride != offset || offset > resource->size / layers)) {
-         printf("[ps5-gallium] image-descriptor-rejected phase=layers layers=%u expected=%zu actual=%zu size=%zu\n",
-                layers, offset, resource->layer_stride, resource->size);
+          (resource->layer_stride != offset || offset > resource->size / layers))
          return -1;
-      }
    }
    /* Same reverse-ordered linear mip storage and layer encoding as graphics.
     * Sampled and storage arrays share the advertised layer limit; storage
@@ -4655,7 +4641,8 @@ ps5_storage_image_view_descriptor(const struct pipe_image_view *view,
    const unsigned layers = volume ? MAX2(base->depth0 >> view->u.tex.level, 1u) : base->array_size;
    if (first > last || last >= layers ||
        (view->u.tex.single_layer_view && first != last) ||
-       (volume && (view->u.tex.is_2d_view_of_3d || first || last != layers - 1)) ||
+       (volume && ((view->u.tex.single_layer_view && view->u.tex.is_2d_view_of_3d) ||
+                   first || last != layers - 1)) ||
        ps5_resource_storage_image_descriptor(base, view->u.tex.level, descriptor))
       return -1;
    /* Validate the allocation using its storage format, then reinterpret only
@@ -12828,11 +12815,8 @@ ps5_set_shader_images(struct pipe_context *base, mesa_shader_stage stage,
    struct pipe_image_view *bound_images = stage == MESA_SHADER_COMPUTE ? context->compute_images : context->fragment_images;
    *invalid = true;
    if (start > PS5_COMPUTE_IMAGE_SLOTS || count > PS5_COMPUTE_IMAGE_SLOTS - start ||
-       unbind > PS5_COMPUTE_IMAGE_SLOTS - start - count) {
-      printf("[ps5-gallium] image-bind-range-rejected stage=%u start=%u count=%u unbind=%u\n",
-             stage, start, count, unbind);
+       unbind > PS5_COMPUTE_IMAGE_SLOTS - start - count)
       return;
-   }
    for (unsigned i = 0; images && i < count; ++i) {
       const struct pipe_image_view *v = &images[i];
       uint32_t descriptor[8];
@@ -12841,41 +12825,15 @@ ps5_set_shader_images(struct pipe_context *base, mesa_shader_stage stage,
       if (v->resource->screen != base->screen ||
           !(v->access & PIPE_IMAGE_ACCESS_READ_WRITE) ||
           ((v->access | v->shader_access) & ~(PIPE_IMAGE_ACCESS_READ_WRITE |
-              PIPE_IMAGE_ACCESS_COHERENT | PIPE_IMAGE_ACCESS_VOLATILE))) {
-         printf("[ps5-gallium] image-bind-flags-rejected stage=%u slot=%u target=%u format=%u access=%x shader=%x\n",
-                stage, start + i, v->resource->target, v->format,
-                v->access, v->shader_access);
+              PIPE_IMAGE_ACCESS_COHERENT | PIPE_IMAGE_ACCESS_VOLATILE)))
          return;
-      }
       if (v->resource->target == PIPE_BUFFER) {
          if (!ps5_image_buffer_descriptor(v,
                (uintptr_t)((struct ps5_resource *)v->resource)->data >> 32,
-               descriptor)) {
-            printf("[ps5-gallium] image-bind-descriptor-rejected stage=%u slot=%u target=%u format=%u level=%u layers=%u:%u single=%u\n",
-                   stage, start + i, v->resource->target, v->format,
-                   v->u.tex.level, v->u.tex.first_layer, v->u.tex.last_layer,
-                   v->u.tex.single_layer_view);
+               descriptor))
             return;
-         }
-      } else if (ps5_storage_image_view_descriptor(v, descriptor)) {
-         const struct ps5_resource *r = (const struct ps5_resource *)v->resource;
-         uint32_t format_word = 0;
-         printf("[ps5-gallium] image-bind-descriptor-rejected stage=%u slot=%u target=%u format=%u/%u format-ok=%u level=%u layers=%u:%u single=%u dims=%ux%ux%u array=%u last=%u samples=%u/%u bind=%x size=%zu/%zu layer=%zu stride=%u offset=%zu staging=%zu/%zu depth-staging=%zu/%zu address=%p linear=%u\n",
-                stage, start + i, v->resource->target, v->format,
-                v->resource->format,
-                ps5_texture_descriptor_format(v->format, &format_word),
-                v->u.tex.level, v->u.tex.first_layer,
-                v->u.tex.last_layer, v->u.tex.single_layer_view,
-                v->resource->width0, v->resource->height0, v->resource->depth0,
-                v->resource->array_size, v->resource->last_level,
-                v->resource->nr_samples, v->resource->nr_storage_samples,
-                v->resource->bind, r->size, r->allocation_size, r->layer_stride,
-                r->level_stride[v->u.tex.level], r->level_offset[v->u.tex.level],
-                r->render_staging_offset, r->render_staging_size,
-                r->depth_staging_offset, r->depth_staging_size, r->data,
-                ps5_linear_sampled_layout(v->resource));
+      } else if (ps5_storage_image_view_descriptor(v, descriptor))
          return;
-      }
    }
    if (stage == MESA_SHADER_FRAGMENT)
       ps5_draw_batch_drain();
