@@ -1604,6 +1604,21 @@ int main(void) {
         assert(ps5_resource_storage_image_descriptor(&volume.base,1,descriptor)<0);
         assert(volume.base.reference.count==1);
     }
+    {
+        static _Alignas(256) uint8_t pixels[2*1024*1024];
+        struct ps5_resource volume=mip;
+        volume.base.target=PIPE_TEXTURE_3D; volume.base.format=PIPE_FORMAT_R32_SINT;
+        volume.base.width0=100; volume.base.height0=1; volume.base.depth0=2;
+        volume.base.array_size=1; volume.base.last_level=0; volume.base.bind=0xa;
+        volume.base.nr_samples=volume.base.nr_storage_samples=0;
+        volume.data=pixels; volume.size=1024; volume.allocation_size=sizeof(pixels);
+        volume.level_offset[0]=0; volume.level_stride[0]=512; volume.layer_stride=512;
+        volume.render_staging_offset=65536; volume.render_staging_size=131072;
+        struct pipe_image_view v={.resource=&volume.base,.format=volume.base.format,
+            .access=PIPE_IMAGE_ACCESS_READ_WRITE};
+        v.u.tex.last_layer=1;
+        assert(!ps5_storage_image_view_descriptor(&v,descriptor));
+    }
     for(unsigned level=0;level<4;++level) {
         assert(!ps5_resource_storage_image_descriptor(&mip.base,level,descriptor));
         assert(descriptor[3]==(0x90000204u|(level<<12)|(level<<16)));
