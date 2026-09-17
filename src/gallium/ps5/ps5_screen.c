@@ -2420,7 +2420,7 @@ ps5_stage_packed_stencil_samples(struct ps5_resource *resource)
    const unsigned layers = ps5_texture_level_layers(&resource->base, 0);
    if (!resource->stencil_sample) {
       struct pipe_resource templ = resource->base;
-      templ.format = PIPE_FORMAT_S8_UINT;
+      templ.format = PIPE_FORMAT_R8_UINT;
       templ.bind = PIPE_BIND_SAMPLER_VIEW;
       templ.flags = 0;
       templ.nr_samples = 0;
@@ -12631,7 +12631,8 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
             const bool volume = tex->sampler_dim == GLSL_SAMPLER_DIM_3D;
             const bool gather = tex->op == nir_texop_tg4;
             const bool gradient = tex->op == nir_texop_txd;
-            const bool shadow_compare = tex->is_shadow && gather;
+            const bool shadow_compare = tex->is_shadow &&
+                                        (gather || tex->op == nir_texop_txl);
             const unsigned dimensions = tex->sampler_dim == GLSL_SAMPLER_DIM_1D ? 1 :
                tex->sampler_dim == GLSL_SAMPLER_DIM_2D ? 2 :
                (volume || tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE) ? 3 : 0;
@@ -12641,7 +12642,7 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                 (gather && tex->sampler_dim != GLSL_SAMPLER_DIM_2D &&
                            tex->sampler_dim != GLSL_SAMPLER_DIM_CUBE) ||
                 (tex->is_shadow && tex->op != nir_texop_txs &&
-                 (!gather || tex->dest_type != nir_type_float32)) ||
+                 (!shadow_compare || tex->dest_type != nir_type_float32)) ||
                 tex->texture_index >= PS5_COMPUTE_TEXTURE_SLOTS ||
                 tex->def.bit_size != 32 ||
                 tex->num_srcs != (tex->op == nir_texop_txs || gather ? 1 :
