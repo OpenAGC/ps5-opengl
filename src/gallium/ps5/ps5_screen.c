@@ -12814,8 +12814,11 @@ ps5_set_shader_images(struct pipe_context *base, mesa_shader_stage stage,
    struct pipe_image_view *bound_images = stage == MESA_SHADER_COMPUTE ? context->compute_images : context->fragment_images;
    *invalid = true;
    if (start > PS5_COMPUTE_IMAGE_SLOTS || count > PS5_COMPUTE_IMAGE_SLOTS - start ||
-       unbind > PS5_COMPUTE_IMAGE_SLOTS - start - count)
+       unbind > PS5_COMPUTE_IMAGE_SLOTS - start - count) {
+      printf("[ps5-gallium] image-bind-range-rejected stage=%u start=%u count=%u unbind=%u\n",
+             stage, start, count, unbind);
       return;
+   }
    for (unsigned i = 0; images && i < count; ++i) {
       const struct pipe_image_view *v = &images[i];
       uint32_t descriptor[8];
@@ -12824,15 +12827,29 @@ ps5_set_shader_images(struct pipe_context *base, mesa_shader_stage stage,
       if (v->resource->screen != base->screen ||
           !(v->access & PIPE_IMAGE_ACCESS_READ_WRITE) ||
           ((v->access | v->shader_access) & ~(PIPE_IMAGE_ACCESS_READ_WRITE |
-              PIPE_IMAGE_ACCESS_COHERENT | PIPE_IMAGE_ACCESS_VOLATILE)))
+              PIPE_IMAGE_ACCESS_COHERENT | PIPE_IMAGE_ACCESS_VOLATILE))) {
+         printf("[ps5-gallium] image-bind-flags-rejected stage=%u slot=%u target=%u format=%u access=%x shader=%x\n",
+                stage, start + i, v->resource->target, v->format,
+                v->access, v->shader_access);
          return;
+      }
       if (v->resource->target == PIPE_BUFFER) {
          if (!ps5_image_buffer_descriptor(v,
                (uintptr_t)((struct ps5_resource *)v->resource)->data >> 32,
-               descriptor))
+               descriptor)) {
+            printf("[ps5-gallium] image-bind-descriptor-rejected stage=%u slot=%u target=%u format=%u level=%u layers=%u:%u single=%u\n",
+                   stage, start + i, v->resource->target, v->format,
+                   v->u.tex.level, v->u.tex.first_layer, v->u.tex.last_layer,
+                   v->u.tex.single_layer_view);
             return;
-      } else if (ps5_storage_image_view_descriptor(v, descriptor))
+         }
+      } else if (ps5_storage_image_view_descriptor(v, descriptor)) {
+         printf("[ps5-gallium] image-bind-descriptor-rejected stage=%u slot=%u target=%u format=%u level=%u layers=%u:%u single=%u\n",
+                stage, start + i, v->resource->target, v->format,
+                v->u.tex.level, v->u.tex.first_layer, v->u.tex.last_layer,
+                v->u.tex.single_layer_view);
          return;
+      }
    }
    if (stage == MESA_SHADER_FRAGMENT)
       ps5_draw_batch_drain();
