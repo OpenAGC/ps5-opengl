@@ -4516,8 +4516,12 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
        (resource->depth_staging_size && !depth) || !resource->data ||
        resource->size > resource->allocation_size ||
        ((uintptr_t)resource->data & 255u) || (uintptr_t)resource->data >> 48 ||
-       !ps5_texture_descriptor_format(base->format, &format))
+       !ps5_texture_descriptor_format(base->format, &format)) {
+      printf("[ps5-gallium] image-descriptor-rejected phase=header target=%u format=%u bind=%x\n",
+             base ? base->target : 0, base ? base->format : 0,
+             base ? base->bind : 0);
       return -1;
+   }
    const bool tiled = !ps5_linear_sampled_layout(base);
    if (multisampled) {
       const size_t logical_layer = (size_t)base->width0 * base->height0 * texel_size;
@@ -4570,9 +4574,12 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
              resource->render_staging_offset < resource->size ||
              (resource->render_staging_offset & (PS5_COLOR_TARGET_ALIGNMENT - 1u)) ||
              resource->render_staging_offset > resource->allocation_size ||
-             resource->render_staging_size > resource->allocation_size - resource->render_staging_offset)
+             resource->render_staging_size > resource->allocation_size - resource->render_staging_offset) {
+            printf("[ps5-gallium] image-descriptor-rejected phase=render-staging\n");
             return -1;
+         }
       } else if (resource->render_staging_size || resource->render_staging_offset) {
+         printf("[ps5-gallium] image-descriptor-rejected phase=unexpected-staging\n");
          return -1;
       }
       size_t offset = 0;
@@ -4582,14 +4589,21 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
          const unsigned stride = (width * texel_size + 255u) & ~255u;
          const size_t span = (size_t)stride * height;
          if (resource->level_offset[level] != offset || resource->level_stride[level] != stride ||
-             offset > resource->size || span > resource->size - offset)
+             offset > resource->size || span > resource->size - offset) {
+            printf("[ps5-gallium] image-descriptor-rejected phase=level level=%u expected=%zu/%u actual=%zu/%u span=%zu size=%zu\n",
+                   level, offset, stride, resource->level_offset[level],
+                   resource->level_stride[level], span, resource->size);
             return -1;
+         }
          offset += span;
       }
       const unsigned layers = volume ? base->depth0 : base->array_size;
       if ((array || volume) &&
-          (resource->layer_stride != offset || offset > resource->size / layers))
+          (resource->layer_stride != offset || offset > resource->size / layers)) {
+         printf("[ps5-gallium] image-descriptor-rejected phase=layers layers=%u expected=%zu actual=%zu size=%zu\n",
+                layers, offset, resource->layer_stride, resource->size);
          return -1;
+      }
    }
    /* Same reverse-ordered linear mip storage and layer encoding as graphics.
     * Sampled and storage arrays share the advertised layer limit; storage
