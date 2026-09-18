@@ -10792,7 +10792,6 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
               BITFIELD_BIT(MESA_PRIM_QUAD_STRIP) |
               BITFIELD_BIT(MESA_PRIM_POLYGON)),
          .restart_primtypes_mask = 0,
-         .rotate_odd_triangles = true,
       };
       struct primconvert_context *converter =
          util_primconvert_create_config(base, &cfg);
