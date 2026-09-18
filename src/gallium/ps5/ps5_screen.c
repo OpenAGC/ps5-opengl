@@ -10785,6 +10785,30 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
       return;
    }
 
+   if (info && (info->mode == MESA_PRIM_QUADS ||
+                info->mode == MESA_PRIM_QUAD_STRIP ||
+                info->mode == MESA_PRIM_POLYGON)) {
+      struct primconvert_config cfg = {
+         .primtypes_mask = base->screen->caps.supported_prim_modes &
+            ~(BITFIELD_BIT(MESA_PRIM_QUADS) |
+              BITFIELD_BIT(MESA_PRIM_QUAD_STRIP) |
+              BITFIELD_BIT(MESA_PRIM_POLYGON)),
+         .restart_primtypes_mask = 0,
+      };
+      struct primconvert_context *converter =
+         util_primconvert_create_config(base, &cfg);
+      if (!converter) {
+         context->last_draw_status = -2;
+         return;
+      }
+      util_primconvert_save_flatshade_first(
+         converter, context->rasterizer && context->rasterizer->flatshade_first);
+      util_primconvert_draw_vbo(converter, info, drawid_offset, indirect,
+                                draws, num_draws);
+      util_primconvert_destroy(converter);
+      return;
+   }
+
    if (indirect) {
       if (!PS5_ENABLE_DRAW_INDIRECT_CANDIDATE || !info) {
          context->last_draw_status = -2;
@@ -15221,8 +15245,11 @@ ps5_screen_create(void)
                                 (1u << MESA_PRIM_LINES) |
                                 (1u << MESA_PRIM_LINE_STRIP) |
                                 (1u << MESA_PRIM_TRIANGLES) |
-                                (1u << MESA_PRIM_TRIANGLE_FAN) |
-                                (1u << MESA_PRIM_TRIANGLE_STRIP) |
+                                 (1u << MESA_PRIM_TRIANGLE_FAN) |
+                                 (1u << MESA_PRIM_TRIANGLE_STRIP) |
+                                 (1u << MESA_PRIM_QUADS) |
+                                 (1u << MESA_PRIM_QUAD_STRIP) |
+                                 (1u << MESA_PRIM_POLYGON) |
                                 (1u << MESA_PRIM_LINES_ADJACENCY) |
                                 (1u << MESA_PRIM_LINE_STRIP_ADJACENCY) |
                                 (1u << MESA_PRIM_TRIANGLES_ADJACENCY) |
