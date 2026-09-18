@@ -161,6 +161,7 @@ static nir_shader *image_shader(unsigned operation, bool dynamic, bool manual, e
                           : nir_imm_int(&b,7);
     nir_def *coord=nir_vec4(&b,id,zero,array ? nir_iand_imm(&b,id,3) : zero,zero);
     nir_def *value=nir_iadd_imm(&b,id,17), *result=NULL;
+    const enum glsl_sampler_dim dim=operation==5 ? GLSL_SAMPLER_DIM_MS : GLSL_SAMPLER_DIM_2D;
     switch(operation) {
     case 0: result=nir_image_load(&b,4,32,slot,coord,zero,zero,
         .image_dim=GLSL_SAMPLER_DIM_2D,.image_array=array,.format=format,.dest_type=type); break;
@@ -173,6 +174,8 @@ static nir_shader *image_shader(unsigned operation, bool dynamic, bool manual, e
         .image_dim=GLSL_SAMPLER_DIM_2D,.image_array=array,.format=format,.atomic_op=nir_atomic_op_cmpxchg); break;
     case 4: result=nir_image_size(&b,array ? 3 : 2,32,slot,zero,
         .image_dim=GLSL_SAMPLER_DIM_2D,.image_array=array,.format=format); break;
+    case 5: result=nir_image_samples(&b,32,slot,
+        .image_dim=GLSL_SAMPLER_DIM_MS,.image_array=array,.format=PIPE_FORMAT_NONE); break;
     }
     if(result) nir_store_ssbo(&b,nir_channel(&b,result,0),nir_imm_int(&b,15),
         nir_imul_imm(&b,id,4),.write_mask=1,.align_mul=4);
@@ -183,10 +186,10 @@ static nir_shader *image_shader(unsigned operation, bool dynamic, bool manual, e
             nir_intrinsic_instr *intr=nir_instr_as_intrinsic(instr);
             if(!nir_intrinsic_has_image_dim(intr)) continue;
             b.cursor=nir_before_instr(instr);
-            const glsl_type *type=glsl_array_type(glsl_image_type(GLSL_SAMPLER_DIM_2D,array,base_type),8,0);
+            const glsl_type *type=glsl_array_type(glsl_image_type(dim,array,base_type),8,0);
             nir_variable *var=nir_variable_create(b.shader,nir_var_image,type,"manual-image-array");
             var->data.binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_COMPUTE);
-            var->data.image.format=format;
+            var->data.image.format=operation==5 ? PIPE_FORMAT_NONE : format;
             nir_rewrite_image_intrinsic(intr,&nir_build_deref_array(&b,nir_build_deref_var(&b,var),slot)->def,
                 nir_image_intrinsic_type_deref);
         }
@@ -219,24 +222,34 @@ static void image_contract(void) {
         printf("Image compiler array=%u format=%u op=%u dynamic=%u code=%zu matches deref reference\n",array,formats[f],op,dynamic,out[0].machine_code_size);
         psbc_free_output(&out[0]); psbc_free_output(&out[1]);
     }
-    for(unsigned fault=0;fault<8;++fault) {
+    for(unsigned array=0;array<2;++array) for(unsigned dynamic=0;dynamic<2;++dynamic) {
+        PsbcShaderOutput out[2]={{0}};
+        for(unsigned manual=0;manual<2;++manual) {
+            nir_shader *nir=image_shader(5,dynamic,manual,PIPE_FORMAT_R32_FLOAT,array);
+            assert(psbc_compile_nir(nir,&opts,&out[manual])==PSBC_RESULT_OK);
+            ralloc_free(nir);
+        }
+        assert(out[0].machine_code_size==out[1].machine_code_size);
+        assert(!memcmp(out[0].machine_code,out[1].machine_code,out[0].machine_code_size));
+        psbc_free_output(&out[0]); psbc_free_output(&out[1]);
+    }
+    for(unsigned fault=0;fault<7;++fault) {
         PsbcCompileOptions bad=opts;
-        nir_shader *nir=image_shader(fault>=7 ? 2 : 0,false,false,
-            fault==7 ? PIPE_FORMAT_R32_FLOAT : PIPE_FORMAT_R32_UINT,false);
+        nir_shader *nir=image_shader(fault>=6 ? 2 : 0,false,false,
+            fault==6 ? PIPE_FORMAT_R32_FLOAT : PIPE_FORMAT_R32_UINT,false);
         if(fault==0) bad.gallium_buffer_arrays=false;
         if(fault==1) bad.descriptor_binding_count=2;
         if(fault==2) bad.descriptor_bindings[2].array_size=7;
         if(fault==3) bad.descriptor_bindings[2].stride=16;
-        if(fault>=4 && fault<=6) {
+        if(fault>=4 && fault<=5) {
             nir_foreach_function_impl(impl,nir) nir_foreach_block(block,impl)
             nir_foreach_instr(instr,block) {
                 if(instr->type!=nir_instr_type_intrinsic) continue;
                 nir_intrinsic_instr *intr=nir_instr_as_intrinsic(instr);
                 if(intr->intrinsic!=nir_intrinsic_image_load) continue;
-                /* 3D, cube and R16F images are supported now; keep real negatives. */
-                if(fault==4) nir_intrinsic_set_image_dim(intr,GLSL_SAMPLER_DIM_MS);
-                if(fault==5) nir_intrinsic_set_image_dim(intr,GLSL_SAMPLER_DIM_EXTERNAL);
-                if(fault==6) nir_intrinsic_set_format(intr,PIPE_FORMAT_R64_UINT);
+                /* Multisample images are supported now; keep real negatives. */
+                if(fault==4) nir_intrinsic_set_image_dim(intr,GLSL_SAMPLER_DIM_EXTERNAL);
+                if(fault==5) nir_intrinsic_set_format(intr,PIPE_FORMAT_R64_UINT);
             }
         }
         /* Exercise the actual boundary independently, before whole-shader optimization. */

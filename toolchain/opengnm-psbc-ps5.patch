@@ -731,6 +731,7 @@ index bacbc6a..c72d287 100644
 +    case nir_intrinsic_image_atomic:
 +    case nir_intrinsic_image_atomic_swap:
 +    case nir_intrinsic_image_size:
++    case nir_intrinsic_image_samples:
 +        break;
 +    default:
 +        return false;
@@ -746,6 +747,7 @@ index bacbc6a..c72d287 100644
 +    const enum pipe_format format = nir_intrinsic_format(intr);
 +    const bool atomic = intr->intrinsic == nir_intrinsic_image_atomic ||
 +                        intr->intrinsic == nir_intrinsic_image_atomic_swap;
++    const bool query = intr->intrinsic == nir_intrinsic_image_samples;
 +    /* A formatless writeonly image uses the bound descriptor's format.
 +     * Preserve its GLSL numeric type; loads and atomics still require formats. */
 +    const nir_alu_type store_type = format == PIPE_FORMAT_NONE &&
@@ -765,6 +767,7 @@ index bacbc6a..c72d287 100644
 +        format == PIPE_FORMAT_R32_SINT || format == PIPE_FORMAT_R32G32_SINT ||
 +        format == PIPE_FORMAT_R32G32B32A32_SINT;
 +    const bool float_format =
++        query ||
 +        store_type == nir_type_float32 ||
 +        format == PIPE_FORMAT_R8_UNORM || format == PIPE_FORMAT_R8_SNORM ||
 +        format == PIPE_FORMAT_R8G8_UNORM || format == PIPE_FORMAT_R8G8_SNORM ||
