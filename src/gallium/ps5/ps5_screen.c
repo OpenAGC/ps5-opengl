@@ -15229,6 +15229,7 @@ ps5_screen_create(void)
       caps->supported_prim_modes |= 1u << MESA_PRIM_PATCHES;
    caps->primitive_restart = true;
    caps->supported_prim_modes_with_restart = caps->supported_prim_modes;
+   caps->quads_follow_provoking_vertex_convention = true;
    caps->vertex_color_unclamped = true;
    caps->vs_instanceid = true;
    caps->start_instance = PS5_ENABLE_GLSL_420_CANDIDATE;
