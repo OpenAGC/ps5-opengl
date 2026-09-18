@@ -730,6 +730,7 @@ eglCreateContext(EGLDisplay display, EGLConfig config, EGLContext share,
    memset(&options, 0, sizeof(options));
    options.allow_compressed_fallback =
       PS5_ENABLE_COMPRESSED_FALLBACK_CANDIDATE;
+   options.allow_higher_compat_version = true;
    st_api_query_versions(&ps5_display.frontend, &options, &core, &compat,
                          &es1, &es2);
 #if PS5_ENABLE_CORE_CONTEXT_CANDIDATE

@@ -418,6 +418,7 @@ main(void)
 
    memset(&frontend, 0, sizeof(frontend));
    memset(&options, 0, sizeof(options));
+   options.allow_higher_compat_version = true;
    memset(&drawable, 0, sizeof(drawable));
    screen = ps5_screen_create();
    if (!screen) {

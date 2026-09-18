@@ -730,6 +730,9 @@ egl_public_gl44_state.o: egl_public_gl44_state.c
 egl_public_gl46_draw.o: egl_public_gl46_draw.c
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
 
+egl_public_gl46_compat.o: egl_public_gl46_compat.c
+	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
+
 egl_public_gl46_spirv.o: egl_public_gl46_spirv.c \
 		gl46_spirv_vert.inc gl46_spirv_frag.inc
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
@@ -2163,7 +2166,7 @@ egl_public_packed_vertex.elf: egl_public_packed_vertex.o ps5_egl.o \
 
 .PHONY: clean
 clean:
-	rm -f egl_public_core33_cubes.o egl_public_core33_cubes_uv.o egl_public_core33_cubes_profile.o egl_public_gl46_compute_cubes.o
+	rm -f egl_public_core33_cubes.o egl_public_core33_cubes_uv.o egl_public_core33_cubes_profile.o egl_public_gl46_compute_cubes.o egl_public_gl46_compat.o
 	rm -f gallium_lifecycle.elf gallium_lifecycle.o gallium_gate2_triangle.elf \
 		gallium_gate2_triangle.o gallium_mrt_candidate.elf \
 		gallium_mrt_candidate.o gallium_packed_stencil_candidate.elf \
