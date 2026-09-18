@@ -855,6 +855,9 @@ typedef struct video_api {
     int (*get_flip_status)(int32_t, void *);
 } video_api_t;
 
+static int load_apis(void *agc_module, void *driver_module,
+                     void *video_module, agc_api_t *agc, video_api_t *video);
+
 static volatile unsigned out_of_space;
 static uint8_t command_out_of_space(agc_command_buffer_t *, uint32_t, void *);
 
@@ -1468,6 +1471,26 @@ fail: {
     int close_rc = ps5_agc_gate2_shutdown_present();
     return close_rc != 0 ? close_rc : -1;
 }
+}
+
+int ps5_agc_gate2_prepare_present(void *framebuffer, size_t framebuffer_size)
+{
+    agc_api_t agc = {0};
+    video_api_t video = {0};
+    int attempts;
+
+    if (!framebuffer || framebuffer_size < FRAMEBUFFER_BYTES ||
+        ((uintptr_t)framebuffer & (FRAMEBUFFER_ALIGNMENT - 1u)))
+        return -1;
+    if (runtime_video_registered &&
+        runtime_video_framebuffer == framebuffer &&
+        runtime_video_framebuffer_size == framebuffer_size)
+        return 0;
+    if (load_apis(NULL, NULL, NULL, &agc, &video) != 0)
+        return -1;
+    flush_gpu_data(framebuffer, framebuffer_size);
+    return runtime_video_acquire(&video, framebuffer, framebuffer_size,
+                                 &attempts);
 }
 
 static int runtime_video_wait_idle(void)

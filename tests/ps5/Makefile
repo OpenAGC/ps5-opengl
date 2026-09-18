@@ -2098,6 +2098,9 @@ egl_public_core33_limits.o: egl_public_core33_limits.c
 egl_public_core33_context_share.o: egl_public_core33_context_share.c
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
 
+egl_public_gl46_clear_swap.o: egl_public_gl46_clear_swap.c
+	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
+
 egl_public_core33_pbuffer.o: egl_public_core33_pbuffer.c
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
 

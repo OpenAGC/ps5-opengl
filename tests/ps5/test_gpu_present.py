@@ -147,11 +147,76 @@ with tempfile.TemporaryDirectory() as tmp:
 egl = (root / "src/egl/ps5_egl.c").read_text()
 assert "&fence, surface->window ? ps5_before_swap_flush : NULL, surface)" in egl
 assert "ps5_context_queue_present(ps5_current_context->st->pipe, surface->buffer_index)" in egl
+assert egl.index("ps5_screen_prepare_present(ps5_display.screen)") < \
+       egl.index("ps5_agc_gate2_present(surface->buffer_index)")
 make = (root / "toolchain/ps5-opengl-core33.mk").read_text()
 egl_rule = make[make.index("$(PS5_OPENGL_BUILD)/ps5_egl.o:"):make.index("$(PS5_OPENGL_BUILD)/ps5_screen.o:")]
 assert "$(PS5_OPENGL_RUNTIME_DEFINES)" in egl_rule
 assert "if (runtime_gpu_present_buffer >= 0)\n        return -1; /* Unconfirmed presentation" in source
 print("PASS: bounded GPU-flip tail, post-tail marker, exact flip/idle completion, failures, CPU fallback")
+
+# Compile the real first-swap registration gate. A clear-only frame must not
+# depend on an application draw to open/register the native scanout pool.
+start = source.index("int ps5_agc_gate2_prepare_present(")
+prepare = source[start:source.index("\nstatic int runtime_video_wait_idle", start)]
+code = r'''
+#include <assert.h>
+#include <stddef.h>
+#include <stdint.h>
+#define FRAMEBUFFER_BYTES 64u
+#define FRAMEBUFFER_ALIGNMENT 16u
+typedef struct { int value; } agc_api_t;
+typedef struct { int value; } video_api_t;
+static int runtime_video_registered;
+static uint8_t *runtime_video_framebuffer;
+static size_t runtime_video_framebuffer_size;
+static int loads, flushes, acquires, load_result, acquire_result;
+static int load_apis(void *a, void *b, void *c, agc_api_t *agc, video_api_t *video) {
+    assert(!a && !b && !c && agc && video); ++loads; return load_result;
+}
+static void flush_gpu_data(const void *p, size_t n) {
+    assert(p && n >= FRAMEBUFFER_BYTES); ++flushes;
+}
+static int runtime_video_acquire(const video_api_t *video, uint8_t *framebuffer,
+                                 size_t size, int *attempts) {
+    assert(video && framebuffer && size >= FRAMEBUFFER_BYTES && attempts);
+    ++acquires; *attempts = 1; return acquire_result;
+}
+''' + prepare + r'''
+int main(void) {
+    _Alignas(FRAMEBUFFER_ALIGNMENT) uint8_t pool[128] = {0};
+    assert(ps5_agc_gate2_prepare_present(NULL, sizeof(pool)) == -1);
+    assert(ps5_agc_gate2_prepare_present(pool, FRAMEBUFFER_BYTES - 1) == -1);
+    assert(ps5_agc_gate2_prepare_present(pool + 1, sizeof(pool) - 1) == -1);
+    assert(!loads && !flushes && !acquires);
+
+    runtime_video_registered = 1;
+    runtime_video_framebuffer = pool;
+    runtime_video_framebuffer_size = sizeof(pool);
+    assert(ps5_agc_gate2_prepare_present(pool, sizeof(pool)) == 0);
+    assert(!loads && !flushes && !acquires);
+
+    runtime_video_registered = 0;
+    load_result = -7;
+    assert(ps5_agc_gate2_prepare_present(pool, sizeof(pool)) == -1);
+    assert(loads == 1 && !flushes && !acquires);
+
+    load_result = 0;
+    acquire_result = -9;
+    assert(ps5_agc_gate2_prepare_present(pool, sizeof(pool)) == -9);
+    assert(loads == 2 && flushes == 1 && acquires == 1);
+    acquire_result = 0;
+    assert(ps5_agc_gate2_prepare_present(pool, sizeof(pool)) == 0);
+    assert(loads == 3 && flushes == 2 && acquires == 2);
+}
+'''
+with tempfile.TemporaryDirectory() as tmp:
+    c, exe = Path(tmp) / "prepare-present.c", Path(tmp) / "prepare-present"
+    c.write_text(code)
+    subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                    str(c), "-o", str(exe)], check=True)
+    subprocess.run([str(exe)], check=True)
+print("PASS: first clear-only swap registers scanout; reuse and failures are bounded")
 
 # Compile the actual scanout-flush gate, including the unchanged default path.
 start = source.rindex("    PS5_PROFILE_MARK(1);", 0, source.index("    /* The first queued draw flushes"))

@@ -3965,6 +3965,8 @@ int ps5_agc_gate2_set_framebuffers(void *const *framebuffers,
    __attribute__((weak));
 int ps5_agc_gate2_set_scanout(void *framebuffer, size_t size)
    __attribute__((weak));
+int ps5_agc_gate2_prepare_present(void *framebuffer, size_t size)
+   __attribute__((weak));
 int ps5_agc_gate2_set_vertex_user_data(const uint32_t *values, unsigned count)
    __attribute__((weak));
 int ps5_agc_gate2_set_hull_user_data(const uint32_t *values, unsigned count)
@@ -4890,6 +4892,18 @@ ps5_resource_info(struct pipe_resource *base, void **address,
    if (allocation_size)
       *allocation_size = resource->allocation_size;
    return 0;
+}
+
+int
+ps5_screen_prepare_present(struct pipe_screen *base)
+{
+   struct ps5_screen *screen = (struct ps5_screen *)base;
+   struct ps5_resource *pool = screen && screen->render_pool
+      ? (struct ps5_resource *)screen->render_pool : NULL;
+
+   return pool && pool->data && ps5_agc_gate2_prepare_present
+      ? ps5_agc_gate2_prepare_present(pool->data, pool->allocation_size)
+      : -1;
 }
 
 static int

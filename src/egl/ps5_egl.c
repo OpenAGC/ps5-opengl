@@ -921,7 +921,9 @@ eglSwapBuffers(EGLDisplay display, EGLSurface surface_handle)
       int present_status;
 
       ps5_screen_submit_lock(ps5_display.screen);
-      present_status = ps5_agc_gate2_present(surface->buffer_index);
+      present_status = ps5_screen_prepare_present(ps5_display.screen);
+      if (present_status == 0)
+         present_status = ps5_agc_gate2_present(surface->buffer_index);
       ps5_screen_submit_unlock(ps5_display.screen);
       if (present_status != 0) {
          ps5_set_error(EGL_BAD_SURFACE);

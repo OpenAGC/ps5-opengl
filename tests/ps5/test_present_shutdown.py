@@ -13,8 +13,12 @@ runtime = (root / "src/platform/ps5_agc_native_runtime.c").read_text()
 egl = (root / "src/egl/ps5_egl.c").read_text()
 shutdown = runtime[runtime.index("int ps5_agc_gate2_shutdown_present(void)"):
                    runtime.index("static int runtime_video_acquire(")]
-acquire_wait = runtime[runtime.index("static int runtime_video_acquire("):
-                       runtime.index("static int runtime_video_prepare_draw(")]
+acquire_wait = (
+    runtime[runtime.index("static int runtime_video_acquire("):
+            runtime.index("int ps5_agc_gate2_prepare_present(")] +
+    runtime[runtime.index("static int runtime_video_wait_idle(void)\n{"):
+            runtime.index("static int runtime_video_prepare_draw(")]
+)
 video_api = runtime[runtime.index("typedef struct video_api {"):
                     runtime.index("} video_api_t;") + len("} video_api_t;")]
 hfr = runtime[runtime.index("#if PS5_SCANOUT_FPS > 60\n#ifndef PS5_NATIVE_TITLE_RUNTIME"):
