@@ -527,7 +527,7 @@ index 945737d..b2755c7 100644
  
  	psbc_free_output(&output);
 diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
-index bacbc6a..61bde98 100644
+index bacbc6a..c72d287 100644
 --- a/libpsbc/psbc_compile.c
 +++ b/libpsbc/psbc_compile.c
 @@ -12,6 +12,7 @@
@@ -538,7 +538,7 @@ index bacbc6a..61bde98 100644
  #include <stdarg.h>
  #include <stdio.h>
  #include <string.h>
-@@ -26,18 +27,321 @@
+@@ -26,18 +27,348 @@
  #include "ac_binary.h"
  #include "ac_nir.h"
  #include "amd_family.h"
@@ -887,7 +887,7 @@ index bacbc6a..61bde98 100644
  static mesa_shader_stage psbc_to_mesa_stage(PsbcStage s) {
      switch (s) {
      case PSBC_STAGE_VERTEX:     return MESA_SHADER_VERTEX;
-@@ -205,6 +509,12 @@ static uint32_t compute_db_shader_control(const struct radv_shader_info *info) {
+@@ -205,6 +536,12 @@ static uint32_t compute_db_shader_control(const struct radv_shader_info *info) {
  
  /* === Shader binary builder === */
  
@@ -900,7 +900,7 @@ index bacbc6a..61bde98 100644
  typedef struct {
      const struct nir_shader* nir;
      const struct radv_shader_info* rinfo;
-@@ -216,9 +526,717 @@ typedef struct {
+@@ -216,9 +553,717 @@ typedef struct {
      PsbcStage psbc_stage;
      const uint32_t* spirv_data;
      size_t spirv_size;
@@ -1618,7 +1618,7 @@ index bacbc6a..61bde98 100644
  /* Build the shader binary into a memory buffer instead of a file. */
  static PsbcResult buildshaderbinary(
      const BuildContext* ctx,
-@@ -287,7 +1305,7 @@ static PsbcResult buildshaderbinary(
+@@ -287,7 +1332,7 @@ static PsbcResult buildshaderbinary(
              outputswritten * sizeof(GnmVertexExportSemantic);
          break;
      case MESA_SHADER_FRAGMENT:
@@ -1627,7 +1627,7 @@ index bacbc6a..61bde98 100644
                            sizeof(GnmPixelInputSemantic);
          break;
      case MESA_SHADER_GEOMETRY:
-@@ -433,7 +1451,7 @@ static PsbcResult buildshaderbinary(
+@@ -433,7 +1478,7 @@ static PsbcResult buildshaderbinary(
                          clip_dist_mask,
                  },
              .numinputsemantics =
@@ -1636,7 +1636,7 @@ index bacbc6a..61bde98 100644
              .numexportsemantics = outputswritten,
          };
          memcpy(buf + offset, &vsh, sizeof(vsh));
-@@ -465,18 +1483,16 @@ static PsbcResult buildshaderbinary(
+@@ -465,18 +1510,16 @@ static PsbcResult buildshaderbinary(
                          ctx->rinfo->ps.writes_mrt0_alpha
                      ),
                      .spishadercolformat =
@@ -1658,7 +1658,7 @@ index bacbc6a..61bde98 100644
                      .dbshadercontrol = compute_db_shader_control(ctx->rinfo),
                      .cbshadermask = ac_get_cb_shader_mask(
                          ctx->rinfo->ps.spi_shader_col_format
-@@ -524,8 +1540,8 @@ static PsbcResult buildshaderbinary(
+@@ -524,8 +1567,8 @@ static PsbcResult buildshaderbinary(
          uint32_t gs_out_prim;
          switch (ctx->nir->info.gs.output_primitive) {
          case MESA_PRIM_POINTS:       gs_out_prim = V_028A6C_POINTLIST; break;
@@ -1669,7 +1669,7 @@ index bacbc6a..61bde98 100644
          default:                     gs_out_prim = V_028A6C_TRISTRIP;  break;
          }
  
-@@ -736,10 +1752,11 @@ static PsbcResult buildshaderbinary(
+@@ -736,10 +1779,11 @@ static PsbcResult buildshaderbinary(
          }
          break;
      case MESA_SHADER_FRAGMENT:
@@ -1684,7 +1684,7 @@ index bacbc6a..61bde98 100644
              };
              memcpy(buf + offset, &input, sizeof(input));
              offset += sizeof(input);
-@@ -852,19 +1869,21 @@ static PsbcResult buildshaderbinary(
+@@ -852,19 +1896,21 @@ static PsbcResult buildshaderbinary(
  
  static void setup_ac_info(struct ac_compiler_info* ac_info, enum amd_gfx_level gfxlevel) {
      ac_info->gfx_level = gfxlevel;
@@ -1713,7 +1713,7 @@ index bacbc6a..61bde98 100644
          ac_info->has_fma_mix = true;
      } else if (gfxlevel == GFX10) {
          ac_info->max_waves_per_simd = 20;
-@@ -928,26 +1947,1280 @@ static void setup_target(PsbcTarget target,
+@@ -928,26 +1974,1287 @@ static void setup_target(PsbcTarget target,
      }
  }
  
@@ -2103,7 +2103,7 @@ index bacbc6a..61bde98 100644
 +static bool psbc_tess_input_supported(const nir_shader* nir, bool buffers, bool streamout) {
 +    if (!internal_nir_entrypoint_valid(nir) ||
 +        (!buffers && (nir->info.num_ubos || nir->info.num_ssbos)) || nir->info.num_abos ||
-+        nir->info.num_images || (!buffers && nir->info.num_textures) || nir->info.shared_size ||
++        (!buffers && nir->info.num_images) || (!buffers && nir->info.num_textures) || nir->info.shared_size ||
 +        (!streamout && (nir->xfb_info || nir->info.has_transform_feedback_varyings)))
 +        return false;
 +    nir_foreach_variable_in_shader(v, nir) {
@@ -2115,6 +2115,8 @@ index bacbc6a..61bde98 100644
 +            continue;
 +        if (buffers && v->data.mode == nir_var_uniform &&
 +            glsl_type_is_sampler(glsl_without_array(v->type)))
++            continue;
++        if (buffers && v->data.mode == nir_var_image)
 +            continue;
 +        if (v->data.mode != nir_var_shader_in && v->data.mode != nir_var_shader_out)
 +            return false;
@@ -2170,8 +2172,11 @@ index bacbc6a..61bde98 100644
 +                    return false;
 +                if (instr->type == nir_instr_type_deref) {
 +                    nir_deref_instr* d = nir_instr_as_deref(instr);
-+                    if (d->modes & ~(nir_var_shader_in | nir_var_shader_out |
-+                                     nir_var_shader_temp | nir_var_function_temp))
++                    nir_variable_mode allowed = nir_var_shader_in | nir_var_shader_out |
++                                                nir_var_shader_temp | nir_var_function_temp;
++                    if (buffers)
++                        allowed |= nir_var_image;
++                    if (d->modes & ~allowed)
 +                        return false;
 +                }
 +                if (instr->type != nir_instr_type_intrinsic)
@@ -2522,7 +2527,8 @@ index bacbc6a..61bde98 100644
 +        PsbcDescriptorType type = options->vertex.descriptor_bindings[i].type;
 +        if (!options->vertex.gallium_buffer_arrays ||
 +            (type != PSBC_DESCRIPTOR_UNIFORM_BUFFER && type != PSBC_DESCRIPTOR_STORAGE_BUFFER &&
-+             type != PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER))
++             type != PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER &&
++             type != PSBC_DESCRIPTOR_STORAGE_IMAGE))
 +            return PSBC_RESULT_INVALID_ARGUMENT;
 +    }
 +    const nir_shader* inputs[] = {vs_nir, tcs_nir, tes_nir, gs_nir};
@@ -2999,7 +3005,7 @@ index bacbc6a..61bde98 100644
  
      /* Ensure library is initialized */
      psbc_init();
-@@ -961,17 +3234,37 @@ PsbcResult psbc_compile_shader(
+@@ -961,17 +3268,37 @@ PsbcResult psbc_compile_shader(
      /* Construct ac_compiler_info for the target GPU */
      struct ac_compiler_info ac_info = {0};
      setup_ac_info(&ac_info, gfxlevel);
@@ -3038,7 +3044,7 @@ index bacbc6a..61bde98 100644
      /* ACO uses debug.family for disassembly and init_program assertion */
      compiler_info.debug.family = chipfamily;
  
-@@ -981,6 +3274,7 @@ PsbcResult psbc_compile_shader(
+@@ -981,6 +3308,7 @@ PsbcResult psbc_compile_shader(
      /* Construct radv_shader_stage */
      struct radv_shader_stage stage = {0};
      stage.stage = mesa_stage;
@@ -3046,7 +3052,7 @@ index bacbc6a..61bde98 100644
      /* Set next_stage based on the pipeline graph.
       * For standalone compilation we assume the simplest pipeline:
       *   VS → FS, VS → HS → DS → FS, VS → GS → FS
-@@ -992,46 +3286,286 @@ PsbcResult psbc_compile_shader(
+@@ -992,46 +3320,286 @@ PsbcResult psbc_compile_shader(
      case MESA_SHADER_GEOMETRY:  stage.next_stage = MESA_SHADER_FRAGMENT;     break;
      default:                    stage.next_stage = MESA_SHADER_NONE;         break;
      }
@@ -3357,7 +3363,7 @@ index bacbc6a..61bde98 100644
  
      /* Determine previous stage for shader args declaration.
       * HS/GS need previous_stage=VERTEX so that the merged-pipeline args
-@@ -1046,13 +3580,34 @@ PsbcResult psbc_compile_shader(
+@@ -1046,13 +3614,34 @@ PsbcResult psbc_compile_shader(
      default:                    previous_stage = MESA_SHADER_NONE;      break;
      }
  
@@ -3393,7 +3399,7 @@ index bacbc6a..61bde98 100644
  
      /* For geometry shaders, run the legacy GS lowering pass.
       * On GFX10.3 (PS5), NGG GS requires merging with the previous stage,
-@@ -1080,16 +3635,75 @@ PsbcResult psbc_compile_shader(
+@@ -1080,16 +3669,75 @@ PsbcResult psbc_compile_shader(
              ralloc_free(gs_copy);
      }
  
@@ -3473,7 +3479,7 @@ index bacbc6a..61bde98 100644
          psbc_shutdown();
          return PSBC_RESULT_COMPILE_ACO;
      }
-@@ -1098,6 +3712,22 @@ PsbcResult psbc_compile_shader(
+@@ -1098,6 +3746,22 @@ PsbcResult psbc_compile_shader(
      struct radv_shader_binary_legacy* legacy =
          (struct radv_shader_binary_legacy*)binary;
  
@@ -3496,7 +3502,7 @@ index bacbc6a..61bde98 100644
      /* The data layout in radv_shader_binary_legacy is:
       * [stats | code | ir | disasm | debug_info]
       * Code starts at offset stats_size. */
-@@ -1116,28 +3746,104 @@ PsbcResult psbc_compile_shader(
+@@ -1116,28 +3780,104 @@ PsbcResult psbc_compile_shader(
          .psbc_stage = opts->stage,
          .spirv_data = spirv,
          .spirv_size = spirv_size,
@@ -3605,7 +3611,7 @@ index bacbc6a..61bde98 100644
  }
  
  const char* psbc_result_string(PsbcResult result) {
-@@ -1149,6 +3855,7 @@ const char* psbc_result_string(PsbcResult result) {
+@@ -1149,6 +3889,7 @@ const char* psbc_result_string(PsbcResult result) {
      case PSBC_RESULT_COMPILE_ACO:      return "ACO shader compilation failed";
      case PSBC_RESULT_OUT_OF_MEMORY:    return "out of memory";
      case PSBC_RESULT_INTERNAL_ERROR:   return "internal error";
@@ -4397,6 +4403,23 @@ index 4082a95..2ca8950 100644
  
     bool needs_vcc = false;
     bool preserve_s2 = false;
+diff --git a/src/amd/compiler/aco_live_var_analysis.cpp b/src/amd/compiler/aco_live_var_analysis.cpp
+index dcc9338..da2c549 100644
+--- a/src/amd/compiler/aco_live_var_analysis.cpp
++++ b/src/amd/compiler/aco_live_var_analysis.cpp
+@@ -689,6 +689,12 @@ update_vgpr_sgpr_demand(Program* program, RegisterDemand new_demand)
+ 
+       /* Adjust for LDS, workgroup multiples and callee ABI, and calculate max_reg_demand */
+       program->num_waves = max_suitable_waves(program, program->num_waves);
++      if (!program->num_waves) {
++         /* Fixed registers can lower occupancy below the workgroup minimum after
++          * the initial pressure check. Let the normal spiller reduce demand. */
++         program->max_reg_demand = temp_demand;
++         return;
++      }
+       if (program->is_callee) {
+          /* Decrease waves to reduce the chances of needing preserved VGPRs. */
+          std::pair<int, unsigned> best(INT_MIN, program->num_waves);
 diff --git a/src/amd/compiler/aco_lower_to_hw_instr.cpp b/src/amd/compiler/aco_lower_to_hw_instr.cpp
 index 337e296..3a6346c 100644
 --- a/src/amd/compiler/aco_lower_to_hw_instr.cpp
@@ -5017,6 +5040,22 @@ index 0b13351..9acc32a 100644
     struct ac_arg streamout_state; /* GFX12+ */
  
     /* Task */
+diff --git a/src/amd/vulkan/radv_shader_info.c b/src/amd/vulkan/radv_shader_info.c
+index bf0698c..e892eeb 100644
+--- a/src/amd/vulkan/radv_shader_info.c
++++ b/src/amd/vulkan/radv_shader_info.c
+@@ -1276,8 +1276,10 @@ gfx10_get_ngg_info(const struct radv_compiler_info *compiler_info, struct radv_s
+    const unsigned gs_vertices_out = gs_info ? gs_info->gs.vertices_out : 0;
+    ac_ngg_subgroup_info info;
+ 
++   /* Keep linked PS5 tessellation/GS programs within one wave per SIMD even
++    * when fixed FP64 varying inputs leave no room for two-wave occupancy. */
+    ac_ngg_compute_subgroup_info(gfx_level, es_info->stage, !!gs_info, input_prim, gs_vertices_out, gs_num_invocations,
+-                                128, 256, stage_info->wave_size, es_info->esgs_itemsize,
++                                128, 128, stage_info->wave_size, es_info->esgs_itemsize,
+                                 stage_info->ngg_lds_vertex_size, stage_info->ngg_lds_scratch_size, false, 0, &info);
+ 
+    out->hw_max_esverts = info.hw_max_esverts;
 diff --git a/src/amd/vulkan/radv_shader_info.h b/src/amd/vulkan/radv_shader_info.h
 index 705faaa..4038127 100644
 --- a/src/amd/vulkan/radv_shader_info.h
@@ -6525,36 +6564,3 @@ index 0000000..e6f9a71
 +    gl_Position = in_position;
 +    captured_position = in_position;
 +}
-diff --git a/src/amd/compiler/aco_live_var_analysis.cpp b/src/amd/compiler/aco_live_var_analysis.cpp
-index dcc9338..da2c549 100644
---- a/src/amd/compiler/aco_live_var_analysis.cpp
-+++ b/src/amd/compiler/aco_live_var_analysis.cpp
-@@ -689,6 +689,12 @@ update_vgpr_sgpr_demand(Program* program, RegisterDemand new_demand)
- 
-       /* Adjust for LDS, workgroup multiples and callee ABI, and calculate max_reg_demand */
-       program->num_waves = max_suitable_waves(program, program->num_waves);
-+      if (!program->num_waves) {
-+         /* Fixed registers can lower occupancy below the workgroup minimum after
-+          * the initial pressure check. Let the normal spiller reduce demand. */
-+         program->max_reg_demand = temp_demand;
-+         return;
-+      }
-       if (program->is_callee) {
-          /* Decrease waves to reduce the chances of needing preserved VGPRs. */
-          std::pair<int, unsigned> best(INT_MIN, program->num_waves);
-diff --git a/src/amd/vulkan/radv_shader_info.c b/src/amd/vulkan/radv_shader_info.c
-index bf0698c..e892eeb 100644
---- a/src/amd/vulkan/radv_shader_info.c
-+++ b/src/amd/vulkan/radv_shader_info.c
-@@ -1276,8 +1276,10 @@ gfx10_get_ngg_info(const struct radv_compiler_info *compiler_info, struct radv_s
-    const unsigned gs_vertices_out = gs_info ? gs_info->gs.vertices_out : 0;
-    ac_ngg_subgroup_info info;
- 
-+   /* Keep linked PS5 tessellation/GS programs within one wave per SIMD even
-+    * when fixed FP64 varying inputs leave no room for two-wave occupancy. */
-    ac_ngg_compute_subgroup_info(gfx_level, es_info->stage, !!gs_info, input_prim, gs_vertices_out, gs_num_invocations,
--                                128, 256, stage_info->wave_size, es_info->esgs_itemsize,
-+                                128, 128, stage_info->wave_size, es_info->esgs_itemsize,
-                                 stage_info->ngg_lds_vertex_size, stage_info->ngg_lds_scratch_size, false, 0, &info);
- 
-    out->hw_max_esverts = info.hw_max_esverts;

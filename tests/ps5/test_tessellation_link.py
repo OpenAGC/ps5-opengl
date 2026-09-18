@@ -598,7 +598,22 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
         nir_builder_instr_insert(&b,&tex->instr);
         nir_store_ssbo(&b,&tex->def,nir_imm_int(&b,0),nir_imm_int(&b,16),
             .write_mask=15,.align_mul=16);
+        const unsigned image_binding=4*tested+3;
+        nir_variable *image_var=nir_variable_create(*resource_input,nir_var_image,
+            glsl_image_type(GLSL_SAMPLER_DIM_2D,false,GLSL_TYPE_UINT),"linked-image");
+        image_var->data.binding=image_binding;
+        image_var->data.image.format=PIPE_FORMAT_R32_UINT;
+        nir_deref_instr *image_deref=nir_build_deref_var(&b,image_var);
+        nir_def *image=nir_image_load(&b,4,32,nir_imm_int(&b,0),
+            nir_imm_ivec4(&b,0,0,0,0),nir_imm_int(&b,0),nir_imm_int(&b,0),
+            .image_dim=GLSL_SAMPLER_DIM_2D,.format=PIPE_FORMAT_R32_UINT,
+            .dest_type=nir_type_uint32);
+        nir_intrinsic_instr *image_load=nir_instr_as_intrinsic(nir_def_instr(image));
+        nir_rewrite_image_intrinsic(image_load,&image_deref->def,nir_image_intrinsic_type_deref);
+        nir_store_ssbo(&b,nir_channel(&b,image,0),nir_imm_int(&b,0),nir_imm_int(&b,32),
+            .write_mask=1,.align_mul=4);
         b.shader->info.num_textures=1;
+        b.shader->info.num_images=1;
         BITSET_SET(b.shader->info.textures_used,texture_binding);
         (*resource_input)->num_uniforms=with_uniform;
         (*resource_input)->info.num_ssbos=1;
@@ -610,7 +625,7 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
         nir_validate_shader(*resource_input,"linked buffer input");
         PsbcTessellationCompileOptions resource_options=options;
         resource_options.vertex.gallium_buffer_arrays=true;
-        resource_options.vertex.descriptor_binding_count=3;
+        resource_options.vertex.descriptor_binding_count=4;
         resource_options.vertex.descriptor_bindings[0]=(PsbcDescriptorBinding){
             .binding=4*tested+1,.type=PSBC_DESCRIPTOR_UNIFORM_BUFFER,
             .array_size=1,.offset=0,.stride=16};
@@ -620,12 +635,15 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
         resource_options.vertex.descriptor_bindings[2]=(PsbcDescriptorBinding){
             .binding=texture_binding,.type=PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER,
             .array_size=1,.offset=32,.stride=48};
+        resource_options.vertex.descriptor_bindings[3]=(PsbcDescriptorBinding){
+            .binding=image_binding,.type=PSBC_DESCRIPTOR_STORAGE_IMAGE,
+            .array_size=1,.offset=80,.stride=32};
         PsbcResult result=psbc_compile_nir_tessellation_pipeline(
             inputs[0],inputs[1],inputs[2],resource_gs,&resource_options,&out);
         printf("linked buffers stage=%u result=%d\n",tested,result);
         assert(result==PSBC_RESULT_OK);
         assert(out.hs.metadata.descriptor_set0_valid && out.tes.metadata.descriptor_set0_valid);
-        assert(out.hs.metadata.descriptor_binding_count==3 && out.tes.metadata.descriptor_binding_count==3);
+        assert(out.hs.metadata.descriptor_binding_count==4 && out.tes.metadata.descriptor_binding_count==4);
         psbc_free_tessellation_output(&out); expect_empty(&out);
         resource_options.vertex.descriptor_bindings[2].binding++;
         assert(psbc_compile_nir_tessellation_pipeline(inputs[0],inputs[1],inputs[2],
