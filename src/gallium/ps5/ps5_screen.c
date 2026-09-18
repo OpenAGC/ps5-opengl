@@ -2030,7 +2030,7 @@ ps5_encode_rasterizer_state(const struct pipe_rasterizer_state *state,
                   1u << 12 : 0u) |
               (state->offset_point || state->offset_line ?
                   1u << 13 : 0u) |
-              (!state->flatshade_first ? 1u << 19 : 0u) |
+              (state->flatshade_first ? 1u << 19 : 0u) |
               (polygon_mode ? 1u << 24 : 0u);
    *valid = 1;
    return true;
