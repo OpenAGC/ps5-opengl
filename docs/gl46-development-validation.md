@@ -2,7 +2,7 @@
 
 The `gl46-dev` branch is development work, not a stable SDK or Khronos
 conformance claim. Its pinned CTS discovery inventory currently accounts for
-all **19,714** cases: **15,046 Pass**, **4,667 NotSupported**, and one
+all **19,714** cases: **15,097 Pass**, **4,616 NotSupported**, and one
 compatibility warning.
 
 ## NotSupported audit
@@ -16,13 +16,13 @@ an acceptance waiver.
 | Optional extension | 4,161 | Outside OpenGL 4.6 Core by itself |
 | Profile-inapplicable | 2 | Test does not apply to this context |
 | Format/sample limit | 86 | Legal advertised limit requires review with the case |
-| Core capability shortfall | 117 | Implementation work, now dominated by vertex-stage SSBO and pre-raster image limits |
+| Core capability shortfall | 66 | Implementation work, now dominated by pre-raster image limits |
 | Target capability shortfall | 192 | Unsupported texture targets require implementation review |
 | Extension-gated review | 12 | Verify whether the case is optional or exposes a core dependency |
 | Manual review | 97 | Diagnostic is not sufficient for automatic disposition |
 
 The large optional-extension count is dominated by sparse textures and
-fragment shading rate. It must not hide the remaining **418** capability/review cases
+fragment shading rate. It must not hide the remaining **367** capability/review cases
 in the final four rows.
 
 Commit `4893195787e31ce30ed33d6a3eba405a2df3d02b` corrected the advertised
@@ -39,6 +39,14 @@ storage slots produced by atomic-counter lowering. Commit
 unbound holes while retaining validation for bound resources; both cases pass
 in `results/opengl46-cts-tess-ssbo-functional2-fixed-20260917`.
 
+Commits `c1f86b66d612668068552a5b9afbaf96fc35edac` and
+`2916cf89f6c466659ee53d7ae9b36331bec61dc2` add vertex-stage shader-storage
+buffers and preserve separate vertex/geometry storage banks in merged geometry
+pipelines. All **51/51** affected cases pass: the first 14 are retained in
+`results/opengl46-cts-vs-ssbo51-20260917`, and the repaired case plus the 36
+previously unexecuted cases are retained in
+`results/opengl46-cts-vs-ssbo-remaining37-20260917`.
+
 Reproduce the audit from retained local QPA results:
 
 ```sh
@@ -48,8 +56,9 @@ python3 tools/audit-gl46-notsupported.py \
   --results results --json not-supported.json --markdown NOT-SUPPORTED.md
 ```
 
-That command reproduces the pre-fix baseline; apply the 464-case passing
-receipt above to obtain the current aggregate.
+That command reproduces the pre-fix baseline; apply the focused passing
+receipts above to obtain the current aggregate. The full 19,714-case inventory
+was not rerun for these isolated capability changes.
 
 ## Native stress and Piglit subset
 
