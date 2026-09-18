@@ -295,7 +295,8 @@ int main(void) {
         assert(unregisters == 0 && closes == 2);
         assert(ps5_agc_gate2_shutdown_present() == 0 && closes == 2); /* Idempotent. */
     }
-    /* Replacement must not open/register new backing while the old close fails. */
+    /* A smaller same-base view reuses the registered pool. Replacing the
+     * backing must not open/register while the old close fails. */
     for (int changed_pointer = 0; changed_pointer <= 1; ++changed_pointer) {
         unsigned char replacement[FRAMEBUFFER_POOL_BYTES];
         setup(); close_failure = 1;
@@ -303,6 +304,13 @@ int main(void) {
         unsigned char *next = changed_pointer ? replacement : scanout;
         size_t bytes = changed_pointer ? sizeof(replacement) : sizeof(scanout) / 2;
         int attempts = -1;
+        if (!changed_pointer) {
+            assert(!runtime_video_acquire(&api, next, bytes, &attempts));
+            assert(!attempts && !opens && !registrations && !sleeps && !closes);
+            close_failure = 0;
+            assert(!ps5_agc_gate2_shutdown_present() && closes == 1);
+            continue;
+        }
         assert(runtime_video_acquire(&api, next, bytes, &attempts) != 0);
         assert(!attempts && !opens && !registrations && !sleeps && closes == 1 && !unregisters);
         assert(runtime_video_handle == 7 && runtime_video_registered);
@@ -362,7 +370,7 @@ int main(void) {
     puts("present-shutdown: PASS close errors/batch guards retain runtime, surface and display ownership");
     puts("present-acquire/wait: PASS failed acquisition retains close ownership; errors stop; 120 waits bounded");
     puts("present-drain: PASS bounded drains precede close-only teardown; failures retain EGL resources");
-    puts("present-reacquire: PASS failed close retains old backing; pointer/size replacement succeeds on host retry");
+    puts("present-reacquire: PASS smaller same-base views reuse; failed close retains old backing");
 #ifdef PS5_GPU_PRESENT_BATCH
     puts("present-queued-shutdown: PASS unconfirmed scanout retains runtime/surface/display before drain or close");
 #endif

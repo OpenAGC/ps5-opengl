@@ -1406,7 +1406,7 @@ static int runtime_video_acquire(const video_api_t *video,
     *attempts = 0;
     if (runtime_video_registered &&
         runtime_video_framebuffer == framebuffer &&
-        runtime_video_framebuffer_size == framebuffer_size)
+        runtime_video_framebuffer_size >= framebuffer_size)
         return 0;
     if (runtime_video_handle >= 0 && ps5_agc_gate2_shutdown_present() != 0)
         return -1;
@@ -1484,7 +1484,7 @@ int ps5_agc_gate2_prepare_present(void *framebuffer, size_t framebuffer_size)
         return -1;
     if (runtime_video_registered &&
         runtime_video_framebuffer == framebuffer &&
-        runtime_video_framebuffer_size == framebuffer_size)
+        runtime_video_framebuffer_size >= framebuffer_size)
         return 0;
     if (load_apis(NULL, NULL, NULL, &agc, &video) != 0)
         return -1;

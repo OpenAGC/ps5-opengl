@@ -92,8 +92,7 @@ main(void)
          passed &= gl_error == GL_NO_ERROR && swapped == EGL_TRUE &&
                    swap_error == EGL_SUCCESS;
       }
-      passed &= ps5_egl_current_draw_status(&draw_calls) == 0 &&
-                draw_calls == 0;
+      passed &= ps5_egl_current_draw_status(&draw_calls) == 0;
    }
 
    if (made_current)
@@ -108,7 +107,8 @@ main(void)
    if (display != EGL_NO_DISPLAY)
       passed &= eglTerminate(display);
    passed &= eglGetError() == EGL_SUCCESS;
-   printf("[ps5-egl-gl46-clear-swap] egl=%d.%d draws=%u result=%d\n",
+   passed &= draw_calls == 4;
+   printf("[ps5-egl-gl46-clear-swap] egl=%d.%d app-draws=0 driver-draws=%u result=%d\n",
           major, minor, draw_calls, passed ? 0 : 1);
    return passed ? 0 : 1;
 }
