@@ -717,7 +717,7 @@ index bacbc6a..c72d287 100644
 +    return true;
 +}
 +
-+/* 32-bit R/RG/RGBA, 16-bit RGBA and RGBA8_UNORM single-sample images. Atomics remain
++/* 32-bit R/RG/RGBA, 16-bit RGBA and RGBA8_UNORM images. Atomics remain
 + * restricted to scalar integer formats with matching native descriptors. */
 +static bool lower_gallium_image_index(nir_builder* b, nir_instr* instruction,
 +                                     void* data) {
@@ -781,6 +781,7 @@ index bacbc6a..c72d287 100644
 +        slot.ssa->num_components != 1 || slot.ssa->bit_size != 32 ||
 +        (nir_src_is_const(slot) && nir_src_as_uint(slot) >= bank->array_size) ||
 +        (nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_2D &&
++         nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_MS &&
 +         nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_1D &&
 +         nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_3D &&
 +         nir_intrinsic_image_dim(intr) != GLSL_SAMPLER_DIM_CUBE &&

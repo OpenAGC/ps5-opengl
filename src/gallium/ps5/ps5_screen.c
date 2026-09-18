@@ -1040,6 +1040,26 @@ ps5_msaa4_color_format(enum pipe_format format)
 }
 
 static bool
+ps5_msaa4_color_support(enum pipe_format format,
+                        enum pipe_texture_target target,
+                        unsigned sample_count,
+                        unsigned storage_sample_count,
+                        unsigned bindings)
+{
+   const unsigned allowed = PIPE_BIND_RENDER_TARGET |
+      PIPE_BIND_SAMPLER_VIEW |
+      (PS5_ENABLE_GLSL_420_CANDIDATE ? PIPE_BIND_SHADER_IMAGE : 0);
+
+   return PS5_ENABLE_MSAA4_CANDIDATE &&
+          (target == PIPE_TEXTURE_2D ||
+           (PS5_ENABLE_MSAA_ARRAY_CANDIDATE &&
+            target == PIPE_TEXTURE_2D_ARRAY)) &&
+          sample_count == 4 && storage_sample_count == 4 && bindings &&
+          ps5_msaa4_color_format(format) && (bindings & allowed) &&
+          !(bindings & ~allowed);
+}
+
+static bool
 ps5_msaa4_depth_support(enum pipe_format format,
                         enum pipe_texture_target target,
                         unsigned sample_count,
@@ -4090,10 +4110,9 @@ ps5_resource_layout(const struct pipe_resource *templ, size_t *size,
         templ->nr_samples != 4 || templ->nr_storage_samples != 4 ||
         templ->last_level || templ->depth0 != 1 ||
         (templ->target == PIPE_TEXTURE_2D && templ->array_size != 1) ||
-        !((ps5_msaa4_color_format(templ->format) &&
-           (templ->bind &
-              (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW)) &&
-          !(templ->bind & PIPE_BIND_DISPLAY_TARGET)) ||
+        !(ps5_msaa4_color_support(
+             templ->format, templ->target, templ->nr_samples,
+             templ->nr_storage_samples, templ->bind) ||
           ps5_msaa4_depth_support(
              templ->format, templ->target, templ->nr_samples,
              templ->nr_storage_samples, templ->bind))))
@@ -4170,6 +4189,9 @@ ps5_resource_layout(const struct pipe_resource *templ, size_t *size,
                      templ->array_size > PS5_MAX_TEXTURE_ARRAY_LAYERS ||
                      !ps5_sampled_texture_format(templ->format) ||
                      (!depth_target &&
+                      !ps5_msaa4_color_support(
+                         templ->format, templ->target, templ->nr_samples,
+                         templ->nr_storage_samples, templ->bind) &&
                       !ps5_sampled_resource_bind(templ) &&
                       !ps5_compute_image_array_resource(templ)))) ||
        (texture_3d && (templ->array_size != 1 || !templ->depth0 ||
@@ -4792,7 +4814,10 @@ primary_ready:
       resource->layer_stride = offset;
       if (PS5_ENABLE_LAYERED_RENDER_TARGET_CANDIDATE &&
           templ->target == PIPE_TEXTURE_2D_ARRAY &&
-          (templ->bind & PIPE_BIND_RENDER_TARGET) &&
+          ((templ->bind & PIPE_BIND_RENDER_TARGET) ||
+           ps5_msaa4_color_support(
+              templ->format, templ->target, templ->nr_samples,
+              templ->nr_storage_samples, templ->bind)) &&
           !linear_sampled)
          resource->layer_stride = templ->nr_samples == 4
             ? ps5_tiled_color_msaa4_surface_size(
@@ -4959,7 +4984,7 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
    const bool depth = base && sampled && base->format == PIPE_FORMAT_Z32_FLOAT &&
                       ps5_linear_sampled_layout(base);
    const unsigned texel_size = depth || srgb ? 4 : base ? ps5_storage_image_texel_size(base->format) : 0;
-   const bool multisampled = base && sampled && base->nr_samples == 4 && base->nr_storage_samples == 4;
+   const bool multisampled = base && base->nr_samples == 4 && base->nr_storage_samples == 4;
    const bool one_d = base &&
       (base->target == PIPE_TEXTURE_1D || base->target == PIPE_TEXTURE_1D_ARRAY);
    const bool volume = base && base->target == PIPE_TEXTURE_3D;
@@ -4993,15 +5018,27 @@ ps5_resource_image_descriptor(struct pipe_resource *base, uint32_t descriptor[8]
    const bool tiled = !ps5_linear_sampled_layout(base);
    if (multisampled) {
       const size_t logical_layer = (size_t)base->width0 * base->height0 * texel_size;
-      /* For the admitted 4/16-byte formats, 4x MSAA halves both axes of
-       * the existing 64 KiB color tile. Keep the same checked footprint. */
+      const bool format_supported = sampled
+         ? (base->format == PIPE_FORMAT_R32_FLOAT ||
+            base->format == PIPE_FORMAT_R32G32B32A32_FLOAT ||
+            base->format == PIPE_FORMAT_R8G8B8A8_UNORM ||
+            base->format == PIPE_FORMAT_R8G8B8A8_SINT ||
+            base->format == PIPE_FORMAT_R8G8B8A8_UINT)
+         : ps5_storage_image_texel_size(base->format) != 0;
+      const unsigned sampled_binds = PIPE_BIND_SAMPLER_VIEW |
+                                     PIPE_BIND_RENDER_TARGET;
+      const bool binds_supported = sampled
+         ? (base->bind & sampled_binds) == sampled_binds &&
+           !(base->bind & ~sampled_binds)
+         : ps5_msaa4_color_support(
+              base->format, base->target, base->nr_samples,
+              base->nr_storage_samples, base->bind);
+      /* 4x MSAA halves both axes of the format-sized 64 KiB color tile.
+       * Keep the same checked footprint. */
       const size_t physical_layer = ps5_tiled_color_surface_size(base->format, base->width0 * 2, base->height0 * 2);
-      const unsigned binds = PIPE_BIND_SAMPLER_VIEW | PIPE_BIND_RENDER_TARGET;
       if (!tiled || (base->target != PIPE_TEXTURE_2D && base->target != PIPE_TEXTURE_2D_ARRAY) ||
-          (base->format != PIPE_FORMAT_R32_FLOAT && base->format != PIPE_FORMAT_R32G32B32A32_FLOAT &&
-           base->format != PIPE_FORMAT_R8G8B8A8_UNORM && base->format != PIPE_FORMAT_R8G8B8A8_SINT &&
-           base->format != PIPE_FORMAT_R8G8B8A8_UINT) ||
-          base->last_level || (base->bind & binds) != binds || (base->bind & ~binds) ||
+          !format_supported ||
+          base->last_level || !binds_supported ||
           resource->render_staging_size || resource->render_staging_offset ||
           ((uintptr_t)resource->data & (PS5_COLOR_TARGET_ALIGNMENT - 1u)) ||
           resource->level_offset[0] || resource->level_stride[0] != base->width0 * texel_size ||
@@ -5132,7 +5169,9 @@ ps5_storage_image_view_descriptor(const struct pipe_image_view *view,
    if (!array)
       return first || last ? -1 : 0;
    const size_t offset = (size_t)first * resource->layer_stride;
-   if (offset >= resource->size)
+   const size_t backing_size = base->nr_samples == 4
+      ? resource->allocation_size : resource->size;
+   if (offset >= backing_size)
       return -1;
    const uintptr_t address = (uintptr_t)resource->data + offset;
    if ((address & 255u) || address >> 48)
@@ -5143,7 +5182,8 @@ ps5_storage_image_view_descriptor(const struct pipe_image_view *view,
    if (view->u.tex.single_layer_view) {
       const bool one_d = base->target == PIPE_TEXTURE_1D_ARRAY;
       descriptor[3] = (descriptor[3] & UINT32_C(0x0fffffff)) |
-                     (one_d ? UINT32_C(0x80000000) : UINT32_C(0x90000000));
+                     (base->nr_samples == 4 ? UINT32_C(0xe0000000) :
+                      one_d ? UINT32_C(0x80000000) : UINT32_C(0x90000000));
       const unsigned pitch = resource->level_stride[0] / ps5_storage_image_texel_size(base->format);
       descriptor[4] = !one_d && !base->last_level && pitch > base->width0 ? pitch - 1u : 0;
    }
@@ -5178,15 +5218,17 @@ ps5_resource_storage_image_descriptor_owned(struct pipe_resource *base,
       const uintptr_t address = ((uint64_t)descriptor[0] << 8) |
                                 ((uint64_t)(descriptor[1] & 255u) << 40);
       const uintptr_t start = (uintptr_t)resource->data;
+      const size_t backing_size = base->nr_samples == 4
+         ? resource->allocation_size : resource->size;
       if (address < start || !resource->layer_stride ||
-          address - start >= resource->size || (address - start) % resource->layer_stride)
+          address - start >= backing_size || (address - start) % resource->layer_stride)
          return -1;
       const size_t first = (address - start) / resource->layer_stride;
       if (first >= base->array_size)
          return -1;
       view.u.tex.first_layer = first;
       const unsigned type = descriptor[3] >> 28;
-      view.u.tex.single_layer_view = type == 8 || type == 9;
+      view.u.tex.single_layer_view = type == 8 || type == 9 || type == 14;
       if (!view.u.tex.single_layer_view && descriptor[4] >= base->array_size - first)
          return -1;
       view.u.tex.last_layer = first + (view.u.tex.single_layer_view ? 0 : descriptor[4]);
@@ -5362,19 +5404,10 @@ ps5_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
                storage_sample_count == 4));
 
    if (sample_count > 1 || storage_sample_count > 1)
-      return PS5_ENABLE_MSAA4_CANDIDATE &&
-             (target == PIPE_TEXTURE_2D ||
-              (PS5_ENABLE_MSAA_ARRAY_CANDIDATE &&
-               target == PIPE_TEXTURE_2D_ARRAY)) &&
-             sample_count == 4 &&
-             storage_sample_count == 4 &&
-             ((ps5_msaa4_color_format(format) && bindings &&
-               (bindings &
-                  (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW)) &&
-              !(bindings & ~(PIPE_BIND_RENDER_TARGET |
-                              PIPE_BIND_SAMPLER_VIEW))) ||
+      return ps5_msaa4_color_support(format, target, sample_count,
+                                     storage_sample_count, bindings) ||
                ps5_msaa4_depth_support(format, target, sample_count,
-                                       storage_sample_count, bindings));
+                                       storage_sample_count, bindings);
 
    if (PS5_ENABLE_GLSL_430_CANDIDATE &&
        (format == PIPE_FORMAT_X24S8_UINT ||

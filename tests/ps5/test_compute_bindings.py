@@ -33,6 +33,8 @@ texel_format_at = source.index("static bool\nps5_texel_buffer_format(")
 texel_format = source[texel_format_at:source.index("\nstatic bool\nps5_cube_texture_target", texel_format_at)]
 tiled_at = source.index("static size_t\nps5_tiled_color_surface_size(")
 tiled_helper = source[tiled_at:source.index("static uint32_t\nps5_color_target_info(", tiled_at)]
+msaa_tile_at = source.index("static bool\nps5_tiled_color_msaa4_tile(")
+msaa_tile_helper = source[msaa_tile_at:source.index("static size_t\nps5_tiled_color_msaa4_surface_size(", msaa_tile_at)]
 array_at = source.index("static unsigned\nps5_storage_image_texel_size(")
 array_layout = source[array_at:source.index("static unsigned\nps5_texture_format_size(", array_at)]
 size_at = source.index("static unsigned\nps5_texture_format_size(")
@@ -48,6 +50,8 @@ for helper, following in (("ps5_cube_texture_target", "ps5_sampled_texture_targe
                           ("ps5_render_staging_required", "ps5_depth_staging_required")):
     start = source.index("static bool\n" + helper + "(")
     linear_helpers += source[start:source.index("static bool\n" + following + "(", start)]
+msaa_support_at = source.index("static bool\nps5_msaa4_color_format(")
+msaa_support = source[msaa_support_at:source.index("static bool\nps5_msaa4_depth_support(", msaa_support_at)]
 encoding_at = source.index("static bool\nps5_texture_descriptor_format(")
 format_encoding = source[encoding_at:source.index("static bool\nps5_texture_descriptor_wrap(", encoding_at)]
 barrier_at = source.index("static void\nps5_memory_barrier(")
@@ -88,6 +92,9 @@ code = r'''
 #define PS5_ENABLE_GEOMETRY_CANDIDATE 1
 #define PS5_ENABLE_TESSELLATION_CANDIDATE 1
 #define PS5_ENABLE_GLSL_430_CANDIDATE 1
+#define PS5_ENABLE_GLSL_420_CANDIDATE 1
+#define PS5_ENABLE_MSAA4_CANDIDATE 1
+#define PS5_ENABLE_MSAA_ARRAY_CANDIDATE 1
 #define PS5_ENABLE_RENDER_TO_TEXTURE_CANDIDATE 1
 #define PS5_ENABLE_LAYERED_RENDER_TARGET_CANDIDATE 1
 #define PS5_ENABLE_TEXTURE_CUBE_ARRAY_CANDIDATE 1
@@ -210,7 +217,7 @@ static int ps5_packed_depth_sampled_descriptor(struct pipe_resource *base,
     (void)base; (void)format; (void)first; (void)last; (void)descriptor;
     return -1;
 }
-''' + extent_helper + array_layout + linear_helpers + size_helper + format_encoding + tiled_helper + image_descriptor + r'''
+''' + extent_helper + array_layout + msaa_tile_helper + linear_helpers + msaa_support + size_helper + format_encoding + tiled_helper + image_descriptor + r'''
 static int ps5_resource_info(struct pipe_resource *base, void **address, size_t *size, size_t *allocation) {
     (void)allocation;
     if (fail_info) return -1;
@@ -1222,6 +1229,31 @@ int main(void) {
     assert(descriptor[0]==(uint32_t)((uintptr_t)pixels>>8));
     assert(descriptor[2]==(4u|(2u<<14)|0x80000000u));
     assert(descriptor[3]==0x90000204 && descriptor[4]==63 && descriptor[5]==0x400000);
+    /* Native 4x multisample storage images retain their sample layout and
+     * array sublayer addressing through the storage-image path. */
+    _Alignas(65536) static uint8_t msaa_pixels[131072];
+    struct ps5_resource msaa=image;
+    msaa.base.width0=8; msaa.base.height0=8;
+    msaa.base.nr_samples=msaa.base.nr_storage_samples=4;
+    msaa.base.bind=PIPE_BIND_SHADER_IMAGE;
+    msaa.data=msaa_pixels; msaa.size=8*8*4*4;
+    msaa.allocation_size=65536; msaa.level_stride[0]=8*4;
+    msaa.layer_stride=8*8*4;
+    assert(!ps5_resource_storage_image_descriptor(&msaa.base,0,descriptor));
+    assert((descriptor[3]&0xf0000000u)==0xe0000000u && descriptor[4]==0);
+    assert(((descriptor[5]>>4)&15)==2);
+    assert(!ps5_resource_storage_image_descriptor_owned(&msaa.base,descriptor));
+    msaa.base.target=PIPE_TEXTURE_2D_ARRAY; msaa.base.array_size=2;
+    msaa.size*=2; msaa.allocation_size=sizeof(msaa_pixels);
+    msaa.layer_stride=65536;
+    assert(!ps5_resource_storage_image_descriptor(&msaa.base,0,descriptor));
+    assert((descriptor[3]&0xf0000000u)==0xf0000000u && descriptor[4]==1);
+    struct pipe_image_view msaa_layer={.resource=&msaa.base,
+        .format=msaa.base.format,.access=PIPE_IMAGE_ACCESS_READ_WRITE,
+        .u.tex={.first_layer=1,.last_layer=1,.single_layer_view=true}};
+    assert(!ps5_storage_image_view_descriptor(&msaa_layer,descriptor));
+    assert((descriptor[3]&0xf0000000u)==0xe0000000u && descriptor[4]==0);
+    assert(!ps5_resource_storage_image_descriptor_owned(&msaa.base,descriptor));
     {
         struct ps5_resource srgb=image;
         srgb.base.format=PIPE_FORMAT_R8G8B8A8_SRGB;
@@ -1599,7 +1631,8 @@ int main(void) {
         /* AMD query_samples extracts log2(samples) from LAST_LEVEL. */
         assert((1u<<((descriptor[3]>>16)&15))==ms.base.nr_samples);
         assert(descriptor[4]==array && descriptor[5]==0x00400020);
-        assert(ps5_resource_storage_image_descriptor(&ms.base,0,descriptor)<0);
+        assert(!ps5_resource_storage_image_descriptor(&ms.base,0,descriptor));
+        assert(!ps5_resource_storage_image_descriptor_owned(&ms.base,descriptor));
         for(unsigned fault=0;fault<7;++fault) {
             struct ps5_resource bad=ms;
             if(fault==0) --bad.allocation_size;
