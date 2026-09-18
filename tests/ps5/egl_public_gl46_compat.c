@@ -231,6 +231,8 @@ main(void)
    unsigned material_passes = 0, alpha_passes = 0, point_passes = 0;
    unsigned polygon_passes = 0, legacy_passes = 0, draw_calls = 0;
    int draw_status = -1, made_current = 0, passed = 0;
+   unsigned setup_stage = 0;
+   EGLint setup_error = EGL_SUCCESS;
    GLfloat unclamped[4] = {0}, clamped[4] = {0};
    GLint polygon_mode[2] = {0};
    struct worker worker = {0};
@@ -240,21 +242,42 @@ main(void)
 
    log_line("[ps5-gl46-compat] stage=egl-start\n");
    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
-   if (display == EGL_NO_DISPLAY || !eglInitialize(display, &egl_major, &egl_minor) ||
-       !eglBindAPI(EGL_OPENGL_API) ||
-       !eglChooseConfig(display, config_attribs, &config, 1, &count) || count != 1)
+   if (display == EGL_NO_DISPLAY)
       goto cleanup;
+   setup_stage = 1;
+   if (!eglInitialize(display, &egl_major, &egl_minor))
+      goto cleanup;
+   setup_stage = 2;
+   if (!eglBindAPI(EGL_OPENGL_API))
+      goto cleanup;
+   setup_stage = 3;
+   if (!eglChooseConfig(display, config_attribs, &config, 1, &count) ||
+       count != 1)
+      goto cleanup;
+   setup_stage = 4;
    surface = eglCreatePbufferSurface(display, config, surface_attribs);
+   if (surface == EGL_NO_SURFACE)
+      goto cleanup;
+   setup_stage = 5;
    context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attribs);
+   if (context == EGL_NO_CONTEXT)
+      goto cleanup;
+   setup_stage = 6;
    shared = eglCreateContext(display, config, context, context_attribs);
-   if (surface == EGL_NO_SURFACE || context == EGL_NO_CONTEXT ||
-       shared == EGL_NO_CONTEXT ||
-       !eglMakeCurrent(display, surface, surface, context) ||
-       !eglSwapInterval(display, 0) ||
-       !eglQueryContext(display, context,
-                        EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR, &profile))
+   if (shared == EGL_NO_CONTEXT)
+      goto cleanup;
+   setup_stage = 7;
+   if (!eglMakeCurrent(display, surface, surface, context))
       goto cleanup;
    made_current = 1;
+   setup_stage = 8;
+   if (!eglSwapInterval(display, 0))
+      goto cleanup;
+   setup_stage = 9;
+   if (!eglQueryContext(display, context,
+                        EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR, &profile))
+      goto cleanup;
+   setup_stage = 10;
    log_line("[ps5-gl46-compat] stage=context-current\n");
    glGetIntegerv(GL_MAJOR_VERSION, &gl_major);
    glGetIntegerv(GL_MINOR_VERSION, &gl_minor);
@@ -501,6 +524,11 @@ main(void)
             passed ? 0 : 1);
 
 cleanup:
+   if (setup_stage < 10) {
+      setup_error = eglGetError();
+      log_line("[ps5-gl46-compat] setup-failed stage=%u egl=0x%x\n",
+               setup_stage, setup_error);
+   }
    if (!made_current && context != EGL_NO_CONTEXT &&
        surface != EGL_NO_SURFACE &&
        eglMakeCurrent(display, surface, surface, context))
