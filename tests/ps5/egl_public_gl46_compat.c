@@ -177,7 +177,8 @@ main(void)
        "#version 460 compatibility\n"
        "layout(location=0) in vec2 position; flat out vec3 c;\n"
        "void main(){gl_Position=vec4(position,0,1);"
-       "c=position.x<0?(position.y<0?vec3(1,0,0):vec3(0,0,1)):vec3(0,1,0);}\n";
+       "c=position.x<0?(position.y<0?vec3(1,0,0):vec3(0,0,1)):"
+       "(position.y<0?vec3(0,1,0):vec3(1,1,0));}\n";
    static const char *flat_fs =
       "#version 460 compatibility\n"
       "flat in vec3 c; layout(location=0) out vec4 color;\n"
