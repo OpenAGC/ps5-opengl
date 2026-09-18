@@ -224,7 +224,6 @@ struct ps5_context {
    struct pipe_context base;
    struct blitter_context *blitter;
    bool deferred_color_clear;
-   bool legacy_conversion;
    int last_draw_status;
    unsigned draw_calls;
    struct ps5_shader *vs;
@@ -10793,7 +10792,7 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
               BITFIELD_BIT(MESA_PRIM_QUAD_STRIP) |
               BITFIELD_BIT(MESA_PRIM_POLYGON)),
          .restart_primtypes_mask = 0,
-         .split_legacy_triangles = true,
+         .rotate_odd_triangles = true,
       };
       struct primconvert_context *converter =
          util_primconvert_create_config(base, &cfg);
@@ -10803,10 +10802,8 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
       }
       util_primconvert_save_flatshade_first(
          converter, context->rasterizer && context->rasterizer->flatshade_first);
-      context->legacy_conversion = true;
       util_primconvert_draw_vbo(converter, info, drawid_offset, indirect,
                                 draws, num_draws);
-      context->legacy_conversion = false;
       util_primconvert_destroy(converter);
       return;
    }
@@ -10836,8 +10833,7 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
    }
 
 #ifdef PS5_DEFERRED_DRAW_BATCH
-   if (!context->legacy_conversion &&
-       ps5_try_deferred_draw(base, info, drawid_offset, indirect, draws, num_draws))
+   if (ps5_try_deferred_draw(base, info, drawid_offset, indirect, draws, num_draws))
       return;
 #endif
 #ifdef PS5_MULTIDRAW_BATCH

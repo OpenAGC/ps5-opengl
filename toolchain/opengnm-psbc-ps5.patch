@@ -538,7 +538,7 @@ index bacbc6a..c72d287 100644
  #include <stdarg.h>
  #include <stdio.h>
  #include <string.h>
-@@ -26,18 +27,348 @@
+@@ -26,18 +27,352 @@
  #include "ac_binary.h"
  #include "ac_nir.h"
  #include "amd_family.h"
@@ -904,7 +904,7 @@ index bacbc6a..c72d287 100644
  typedef struct {
      const struct nir_shader* nir;
      const struct radv_shader_info* rinfo;
-@@ -216,9 +553,717 @@ typedef struct {
+@@ -216,9 +553,718 @@ typedef struct {
      PsbcStage psbc_stage;
      const uint32_t* spirv_data;
      size_t spirv_size;
@@ -936,7 +936,8 @@ index bacbc6a..c72d287 100644
 +                                    nir_intrinsic_instr* intrinsic,
 +                                    void* data) {
 +    const PsbcCompileOptions* options = data;
-+    const unsigned vertex_id = ps5_last_provoking_vertex(options->primitive_type);
++    const unsigned vertex_id = options->provoking_vtx_last
++        ? ps5_last_provoking_vertex(options->primitive_type) : 0;
 +    if (intrinsic->intrinsic != nir_intrinsic_load_input)
 +        return false;
 +    /* An implicit NGG PrimitiveID has one value per primitive, not P0/P1/P2.
@@ -3403,7 +3404,7 @@ index bacbc6a..c72d287 100644
  
      /* For geometry shaders, run the legacy GS lowering pass.
       * On GFX10.3 (PS5), NGG GS requires merging with the previous stage,
-@@ -1080,16 +3669,75 @@ PsbcResult psbc_compile_shader(
+@@ -1080,16 +3669,70 @@ PsbcResult psbc_compile_shader(
              ralloc_free(gs_copy);
      }
  
@@ -3417,14 +3418,9 @@ index bacbc6a..c72d287 100644
 +        nir_shader_intrinsics_pass(nir, lower_instance_id_bias,
 +                                   nir_metadata_control_flow, &stage.args);
 +    if (mesa_stage == MESA_SHADER_FRAGMENT &&
-+        opts->target == PSBC_TARGET_PS5 && opts->provoking_vtx_last) {
-+        unsigned vertex_id =
-+            ps5_last_provoking_vertex(opts->primitive_type);
-+        if (vertex_id)
-+            nir_shader_intrinsics_pass(nir, lower_flat_input_vertex,
-+                                       nir_metadata_control_flow,
-+                                       (void*)opts);
-+    }
++        opts->target == PSBC_TARGET_PS5)
++        nir_shader_intrinsics_pass(nir, lower_flat_input_vertex,
++                                   nir_metadata_control_flow, (void*)opts);
 +    if (mesa_stage == MESA_SHADER_FRAGMENT &&
 +        opts->target == PSBC_TARGET_PS5 &&
 +        !split_ps5_mixed_inputs(nir, &stage.info, opts->primitive_id_per_primitive)) {
