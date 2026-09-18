@@ -290,8 +290,10 @@ struct ps5_context {
    struct pipe_depth_stencil_alpha_state *depth_stencil_alpha;
    struct pipe_stencil_ref stencil_ref;
    struct ps5_query *active_occlusion_query;
-   struct ps5_query *active_primitives_generated_query;
-   struct ps5_query *active_primitives_emitted_query;
+   struct ps5_query
+      *active_primitives_generated_query[PIPE_MAX_VERTEX_STREAMS];
+   struct ps5_query
+      *active_primitives_emitted_query[PIPE_MAX_VERTEX_STREAMS];
    struct ps5_query
       *active_streamout_overflow_query[PIPE_MAX_VERTEX_STREAMS + 1];
    struct ps5_query *render_condition_query;
@@ -437,13 +439,35 @@ struct ps5_query {
 };
 
 static struct ps5_query **
-ps5_active_primitive_query(struct ps5_context *context, unsigned type)
+ps5_active_primitive_query(struct ps5_context *context, unsigned type,
+                           unsigned index)
 {
+   if (index >= PIPE_MAX_VERTEX_STREAMS)
+      return NULL;
    if (type == PIPE_QUERY_PRIMITIVES_GENERATED)
-      return &context->active_primitives_generated_query;
+      return &context->active_primitives_generated_query[index];
    if (type == PIPE_QUERY_PRIMITIVES_EMITTED)
-      return &context->active_primitives_emitted_query;
+      return &context->active_primitives_emitted_query[index];
    return NULL;
+}
+
+static bool
+ps5_any_primitive_query(const struct ps5_context *context)
+{
+   for (unsigned stream = 0; stream < PIPE_MAX_VERTEX_STREAMS; ++stream)
+      if (context->active_primitives_generated_query[stream] ||
+          context->active_primitives_emitted_query[stream])
+         return true;
+   return false;
+}
+
+static bool
+ps5_any_generated_query(const struct ps5_context *context)
+{
+   for (unsigned stream = 0; stream < PIPE_MAX_VERTEX_STREAMS; ++stream)
+      if (context->active_primitives_generated_query[stream])
+         return true;
+   return false;
 }
 
 static struct ps5_query **
@@ -6878,7 +6902,7 @@ ps5_blit_gpu_color(struct ps5_context *context, const struct pipe_blit_info *inf
        info->num_window_rectangles || info->alpha_blend || info->swizzle_enable ||
        info->sample0_only || info->dst_sample || context->render_condition_query ||
        context->stream_output_target_count || context->active_occlusion_query ||
-       context->active_primitives_generated_query || context->active_primitives_emitted_query ||
+       ps5_any_primitive_query(context) ||
        !info->src.box.width || !info->src.box.height ||
        info->src.box.width == INT_MIN || info->src.box.height == INT_MIN ||
        info->dst.box.width <= 0 || info->dst.box.height <= 0)
@@ -7721,7 +7745,8 @@ ps5_create_query(struct pipe_context *base, unsigned type, unsigned index)
    overflow_query = PS5_ENABLE_GLSL_460_CANDIDATE &&
       (type == PIPE_QUERY_SO_OVERFLOW_PREDICATE ||
        type == PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE);
-   if ((!overflow_query && index) ||
+   if ((primitive_query && index >= PIPE_MAX_VERTEX_STREAMS) ||
+       (!primitive_query && !overflow_query && index) ||
        (type == PIPE_QUERY_SO_OVERFLOW_PREDICATE &&
         index >= PIPE_MAX_VERTEX_STREAMS) ||
        (type == PIPE_QUERY_SO_OVERFLOW_ANY_PREDICATE && index) ||
@@ -7762,10 +7787,12 @@ ps5_destroy_query(struct pipe_context *base, struct pipe_query *pipe_query)
       return;
    if (context->active_occlusion_query == query)
       context->active_occlusion_query = NULL;
-   if (context->active_primitives_generated_query == query)
-      context->active_primitives_generated_query = NULL;
-   if (context->active_primitives_emitted_query == query)
-      context->active_primitives_emitted_query = NULL;
+   for (unsigned i = 0; i < PIPE_MAX_VERTEX_STREAMS; ++i) {
+      if (context->active_primitives_generated_query[i] == query)
+         context->active_primitives_generated_query[i] = NULL;
+      if (context->active_primitives_emitted_query[i] == query)
+         context->active_primitives_emitted_query[i] = NULL;
+   }
    for (unsigned i = 0; i <= PIPE_MAX_VERTEX_STREAMS; ++i)
       if (context->active_streamout_overflow_query[i] == query)
          context->active_streamout_overflow_query[i] = NULL;
@@ -7786,7 +7813,8 @@ ps5_begin_query(struct pipe_context *base, struct pipe_query *pipe_query)
    ps5_draw_batch_drain();
    if (!query || query->active)
       return false;
-   primitive_query = ps5_active_primitive_query(context, query->type);
+   primitive_query = ps5_active_primitive_query(
+      context, query->type, query->index);
    if (primitive_query) {
       if (!PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDATE || *primitive_query)
          return false;
@@ -7839,7 +7867,8 @@ ps5_end_query(struct pipe_context *base, struct pipe_query *pipe_query)
    ps5_draw_batch_drain();
    if (!query)
       return false;
-   primitive_query = ps5_active_primitive_query(context, query->type);
+   primitive_query = ps5_active_primitive_query(
+      context, query->type, query->index);
    if (primitive_query) {
       if (!query->active || *primitive_query != query)
          return false;
@@ -9266,7 +9295,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       return;
    }
    primitive_query_active = !streamout_active && (context->gs || tessellation_active) &&
-      context->queries_enabled && context->active_primitives_generated_query;
+      context->queries_enabled && ps5_any_generated_query(context);
    if (primitive_query_active &&
        !ps5_prepare_primitive_query(context, vertex_metadata, user_data, user_data_count)) {
       context->last_draw_status = -21;
@@ -9823,11 +9852,12 @@ ps5_draw_vbo_locked(struct pipe_context *base,
                (unsigned)streamout_written_vertices[stream];
          }
       }
-      if (context->queries_enabled &&
-          context->active_primitives_emitted_query &&
-          vertices_per_primitive)
-         context->active_primitives_emitted_query->value +=
-            emitted_primitives[0];
+      if (context->queries_enabled && vertices_per_primitive)
+         for (unsigned stream = 0; stream < PIPE_MAX_VERTEX_STREAMS;
+              ++stream)
+            if (context->active_primitives_emitted_query[stream])
+               context->active_primitives_emitted_query[stream]->value +=
+                  emitted_primitives[stream];
       if (context->queries_enabled) {
          bool any_overflow = false;
 
@@ -9857,10 +9887,12 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       printf("[ps5-gallium] primitive-query generated=%llu\n", (unsigned long long)generated_primitives[0]);
    }
    if (context->queries_enabled && context->last_draw_status == 0 &&
-       (!context->gs || streamout_active || primitive_query_active) &&
-       context->active_primitives_generated_query)
-      context->active_primitives_generated_query->value +=
-         generated_primitives[0];
+       (!context->gs || streamout_active || primitive_query_active))
+      for (unsigned stream = 0; stream < PIPE_MAX_VERTEX_STREAMS;
+           ++stream)
+         if (context->active_primitives_generated_query[stream])
+            context->active_primitives_generated_query[stream]->value +=
+               generated_primitives[stream];
 #ifdef PS5_PUBLIC_STENCIL_TEST
    if (context->last_draw_status == 0 && context->draw_calls == 17) {
       struct ps5_resource *depth = context->framebuffer.zsbuf.texture
@@ -10034,8 +10066,8 @@ ps5_multidraw_eligible(const struct ps5_context *context,
        ps5_shader_uses_storage(context->fs) ||
        ps5_shader_texture_count(context->vs) ||
        context->stream_output_target_count || context->render_condition_query ||
-       context->active_occlusion_query || context->active_primitives_generated_query ||
-       context->active_primitives_emitted_query || !context->framebuffer_valid ||
+       context->active_occlusion_query || ps5_any_primitive_query(context) ||
+       !context->framebuffer_valid ||
        context->framebuffer.nr_cbufs != 1 ||
        (depth && (depth->depth_staging_size || !dsa ||
                   dsa->stencil[0].enabled || dsa->stencil[1].enabled ||
@@ -10833,7 +10865,7 @@ ps5_clear_gpu_color(struct ps5_context *context, unsigned buffers,
        (color_clear_mask & PIPE_MASK_RGBA) != PIPE_MASK_RGBA ||
        context->framebuffer.nr_cbufs != 1 || context->render_condition_query ||
        context->stream_output_target_count || context->active_occlusion_query ||
-       context->active_primitives_generated_query || context->active_primitives_emitted_query)
+       ps5_any_primitive_query(context))
       return false;
 
    /* Tiny clears cost less on the CPU than the measured ~16 ms GPU round trip.
@@ -10953,8 +10985,7 @@ ps5_clear_gpu_depth_stencil(struct ps5_context *context, unsigned buffers,
        ((buffers & PIPE_CLEAR_STENCIL) && stencil_clear_mask != 0xff) ||
        ((buffers & PIPE_CLEAR_DEPTH) && !(depth >= 0.0 && depth <= 1.0)) ||
        context->render_condition_query || context->stream_output_target_count ||
-       context->active_occlusion_query || context->active_primitives_generated_query ||
-       context->active_primitives_emitted_query)
+       context->active_occlusion_query || ps5_any_primitive_query(context))
       return false;
    struct pipe_surface surface = context->framebuffer.zsbuf;
    const struct ps5_resource *target = (const struct ps5_resource *)surface.texture;
