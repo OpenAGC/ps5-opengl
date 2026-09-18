@@ -2,7 +2,7 @@
 
 The `gl46-dev` branch is development work, not a stable SDK or Khronos
 conformance claim. Its pinned CTS discovery inventory currently accounts for
-all **19,714** cases: **15,044 Pass**, **4,669 NotSupported**, and one
+all **19,714** cases: **15,046 Pass**, **4,667 NotSupported**, and one
 compatibility warning.
 
 ## NotSupported audit
@@ -16,13 +16,13 @@ an acceptance waiver.
 | Optional extension | 4,161 | Outside OpenGL 4.6 Core by itself |
 | Profile-inapplicable | 2 | Test does not apply to this context |
 | Format/sample limit | 86 | Legal advertised limit requires review with the case |
-| Core capability shortfall | 119 | Implementation work, now dominated by vertex-stage SSBO and pre-raster image limits |
+| Core capability shortfall | 117 | Implementation work, now dominated by vertex-stage SSBO and pre-raster image limits |
 | Target capability shortfall | 192 | Unsupported texture targets require implementation review |
 | Extension-gated review | 12 | Verify whether the case is optional or exposes a core dependency |
 | Manual review | 97 | Diagnostic is not sufficient for automatic disposition |
 
 The large optional-extension count is dominated by sparse textures and
-fragment shading rate. It must not hide the remaining **420** capability/review cases
+fragment shading rate. It must not hide the remaining **418** capability/review cases
 in the final four rows.
 
 Commit `4893195787e31ce30ed33d6a3eba405a2df3d02b` corrected the advertised
@@ -32,6 +32,12 @@ then passed all **464/464** affected constant-expression cases with zero
 NotSupported results, followed by clean teardown and healthy console services.
 The receipt is retained under
 `results/opengl46-cts-tess-ssbo-constant464-20260917`.
+
+The two functional tessellation-SSBO cases initially exposed sparse Gallium
+storage slots produced by atomic-counter lowering. Commit
+`efd4aec3685912ee3d390cbd43dd79e0713eef5d` now emits zero descriptors for
+unbound holes while retaining validation for bound resources; both cases pass
+in `results/opengl46-cts-tess-ssbo-functional2-fixed-20260917`.
 
 Reproduce the audit from retained local QPA results:
 
