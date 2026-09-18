@@ -3178,6 +3178,8 @@ ps5_prepare_tessellation_buffers(struct ps5_context *context,
                                    context->preraster_bindings_invalid[stage]))
          return false;
       for (unsigned i = 0; i < bank->array_size; ++i) {
+         uint32_t *srd =
+            (uint32_t *)(table->data + bank->offset + i * 16u);
          uintptr_t address;
          unsigned size;
          if (uniform) {
@@ -3203,8 +3205,12 @@ ps5_prepare_tessellation_buffers(struct ps5_context *context,
             const struct pipe_shader_buffer *bound = stage == 3
                ? &context->geometry_buffers[i] : &context->preraster_buffers[stage][i];
             const struct ps5_resource *resource = (const struct ps5_resource *)bound->buffer;
+            if (!resource) {
+               memset(srd, 0, 16);
+               continue;
+            }
             size = bound->buffer_size;
-            if (!resource || !resource->data || resource->base.target != PIPE_BUFFER ||
+            if (!resource->data || resource->base.target != PIPE_BUFFER ||
                 resource->base.screen != context->base.screen || !size ||
                 bound->buffer_offset > resource->size || size > resource->size - bound->buffer_offset) {
                printf("[ps5-gallium] tess-buffer reject=resource stage=%u index=%u bound=%u size=%u invalid=%u\n",
@@ -3215,7 +3221,6 @@ ps5_prepare_tessellation_buffers(struct ps5_context *context,
             }
             address = (uintptr_t)resource->data + bound->buffer_offset;
          }
-         uint32_t *srd = (uint32_t *)(table->data + bank->offset + i * 16u);
          srd[0] = address;
          srd[1] = address >> 32;
          srd[2] = size;

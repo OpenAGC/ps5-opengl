@@ -822,6 +822,19 @@ static void test_tessellation_buffers(void) {
         assert(ubo[0]==(uint32_t)addr && ubo[1]==addr>>32 && ubo[2]==64);
         assert(ssbo[0]==(uint32_t)(uintptr_t)buffers[i] && ssbo[2]==64);
     }
+    nir[2].info.num_ssbos=4;
+    ctx.preraster_buffers[2][3]=ctx.preraster_buffers[2][0];
+    assert(ps5_tessellation_buffer_layout(&ctx,&options));
+    metadata.descriptor_binding_count=options.descriptor_binding_count;
+    memcpy(metadata.descriptor_bindings,options.descriptor_bindings,sizeof(options.descriptor_bindings));
+    assert(ps5_prepare_tessellation_buffers(&ctx,&metadata,user,8));
+    uint32_t *sparse=(uint32_t *)(data+options.descriptor_bindings[5].offset);
+    assert(!sparse[4] && !sparse[8] && sparse[12]==(uint32_t)(uintptr_t)buffers[2]);
+    nir[2].info.num_ssbos=1;
+    memset(&ctx.preraster_buffers[2][3],0,sizeof(ctx.preraster_buffers[2][3]));
+    assert(ps5_tessellation_buffer_layout(&ctx,&options));
+    metadata.descriptor_binding_count=options.descriptor_binding_count;
+    memcpy(metadata.descriptor_bindings,options.descriptor_bindings,sizeof(options.descriptor_bindings));
     metadata.descriptor_set0_user_data_dword=8;
     assert(!ps5_prepare_tessellation_buffers(&ctx,&metadata,user,8));
     metadata.descriptor_set0_user_data_dword=2;
