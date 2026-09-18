@@ -3,7 +3,7 @@
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-# Build and install a relocatable PS5 OpenGL 3.3 developer package.
+# Build and install the relocatable PS5 OpenGL developer package.
 
 set -euo pipefail
 
@@ -56,6 +56,7 @@ archive_work=$(mktemp -d)
 trap 'rm -rf -- "$archive_work"' EXIT
 
 install -d "$prefix/include" "$prefix/lib/pkgconfig" \
+    "$prefix/lib/cmake/PS5OpenGL" "$prefix/share/ps5-opengl" \
     "$prefix/lib/cmake/PS5OpenGLCore33" \
     "$prefix/share/ps5-opengl-core33"
 for headers in EGL GL KHR; do
@@ -92,15 +93,23 @@ for import in "${imports[@]}"; do
 done
 install -m 0644 "$root/toolchain/libPS5OpenGLCore33.ld" \
     "$prefix/lib/libPS5OpenGLCore33.a"
+install -m 0644 "$root/toolchain/libPS5OpenGL.ld" \
+    "$prefix/lib/libPS5OpenGL.a"
 install -m 0644 "$root/toolchain/ps5-opengl-core33.pc" \
     "$prefix/lib/pkgconfig/ps5-opengl-core33.pc"
+install -m 0644 "$root/toolchain/ps5-opengl.pc" \
+    "$prefix/lib/pkgconfig/ps5-opengl.pc"
 install -m 0644 "$root/toolchain/PS5OpenGLCore33Config.cmake" \
     "$prefix/lib/cmake/PS5OpenGLCore33/PS5OpenGLCore33Config.cmake"
+install -m 0644 "$root/toolchain/PS5OpenGLConfig.cmake" \
+    "$prefix/lib/cmake/PS5OpenGL/PS5OpenGLConfig.cmake"
 install -m 0644 "$root/toolchain/ps5-opengl-core33-installed.mk" \
     "$prefix/share/ps5-opengl-core33/ps5-opengl-core33.mk"
+install -m 0644 "$root/toolchain/ps5-opengl-installed.mk" \
+    "$prefix/share/ps5-opengl/ps5-opengl.mk"
 
 (cd "$prefix" && find include lib share -type f -print0 | sort -z | \
     xargs -0 sha256sum) > "$prefix/manifest.sha256"
-printf 'PS5 OpenGL 3.3 package: %s\n' "$prefix"
-printf 'Archives: %u, Imports: %u, Core commands: 344\n' \
+printf 'PS5 OpenGL 4.6 package: %s\n' "$prefix"
+printf 'Archives: %u, Imports: %u, Core commands: 657\n' \
     "${#libraries[@]}" "${#imports[@]}"

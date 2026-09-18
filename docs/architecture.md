@@ -1,6 +1,6 @@
 # Architecture
 
-The public boundary is OpenGL 3.3 Core / GLSL 3.30 plus the native EGL facade.
+The public boundary is OpenGL 4.6 Core / GLSL 4.60 plus the native EGL facade.
 Version and extension reporting are derived from Mesa capabilities, not version
 string overrides.
 

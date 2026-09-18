@@ -1,10 +1,22 @@
 # OpenGL 4.6 development validation
 
-The `gl46-dev` branch is development work, not a stable SDK or Khronos
-conformance claim. Its pinned CTS discovery inventory currently accounts for
-all **19,714** cases. Focused review of the former 325-case capability queue
-raises the current aggregate to **15,233 Pass**, **4,480 NotSupported**, and
-one compatibility warning.
+The `gl46-dev` branch is a local release candidate, not a stable SDK or Khronos
+conformance claim. Its pinned CTS discovery inventory accounts for all
+**19,714** cases: **15,233 Pass**, **4,480 reviewed NotSupported**, and one
+legal compatibility warning.
+
+The static SDK exports all **657/657 OpenGL 4.6 Core commands**. Isolated Make,
+pkg-config and CMake consumers compile and link using only the installed SDK and
+the public PS5 payload toolchain.
+
+## Compatibility warning
+
+`KHR-GL46.direct_state_access.framebuffers_check_status` reports a CTS
+compatibility warning when two requested multisample counts both resolve to the
+same native four-sample allocation. OpenGL permits implementation-selected
+sample counts, and the tested framebuffer configurations are complete. The
+warning is retained as evidence rather than converted into a false driver
+failure or hidden by misreporting capabilities.
 
 ## NotSupported audit
 

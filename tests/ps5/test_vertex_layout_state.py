@@ -20,6 +20,8 @@ code = r'''
 #define VERT_ATTRIB_GENERIC0 16
 #define PSBC_MAX_VERTEX_ATTRIBUTES 16
 #define BITFIELD64_BIT(n) (UINT64_C(1) << (n))
+enum { PIPE_FORMAT_R64_FLOAT=2, PIPE_FORMAT_R64G64_FLOAT,
+       PIPE_FORMAT_R64G64B64_FLOAT, PIPE_FORMAT_R64G64B64A64_FLOAT };
 typedef struct { unsigned location,binding,format,stride,alignment,offset,instance_divisor; } PsbcVertexAttribute;
 struct pipe_vertex_element { unsigned dual_slot,src_format,vertex_buffer_index,src_offset,src_stride,instance_divisor; };
 struct ps5_vertex_elements { unsigned count; struct pipe_vertex_element elements[16]; };

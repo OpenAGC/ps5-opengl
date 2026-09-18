@@ -79,6 +79,8 @@ struct ps5_context { struct pipe_context base; unsigned render_condition_query,
     active_primitives_emitted_query,draw_calls; int last_draw_status;
     struct blitter_context *blitter;
     bool viewport_valid,scissor_valid,framebuffer_valid,queries_enabled; };
+static bool ps5_any_primitive_query(const struct ps5_context *c)
+{ return c->active_primitives_generated_query || c->active_primitives_emitted_query; }
 static bool linear;
 static bool ps5_agc_gate2_set_color_target_layouts = true;
 static bool ps5_linear_sampled_layout(const struct pipe_resource *r)

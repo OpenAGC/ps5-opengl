@@ -16,7 +16,12 @@ def section(start, end):
     return source[source.index(start):source.index(end)]
 
 
-code = r'''
+def function(name):
+    start = source.index("static unsigned\n" + name + "(")
+    return source[start:source.index("\n}", start) + 2]
+
+
+code = (r'''
 #include <assert.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -42,8 +47,9 @@ static void ps5_flush_gpu_data(void *p, size_t n) { assert(p && n); ++flushes; }
 ''' + section("struct ps5_resource {", "struct ps5_transfer {") + section(
     "static size_t\nps5_tiled_color_surface_size(", "static uint32_t\nps5_color_target_info(") + section(
     "static size_t\nps5_tiled_affine_offset(", "static size_t\nps5_tiled_depth_offset(") + section(
-    "static size_t\nps5_tiled_color_offset(", "static size_t\nps5_tiled_color_msaa4_offset(") + section(
-    "static unsigned\nps5_surface_width(", "static unsigned\nps5_linear_color_pitch(") + section(
+    "static size_t\nps5_tiled_color_offset(", "static size_t\nps5_tiled_color_msaa4_offset(") +
+    function("ps5_surface_width") + "\n" + function("ps5_surface_height") + "\n" +
+    function("ps5_surface_layer_count") + section(
     "static bool\nps5_stage_color_surface(", "static bool\nps5_stage_depth_surface(") + r'''
 /* Deliberately scalar: no lookup/decomposition shared with the staging loop. */
 static void reference(const struct pipe_surface *s, bool to_staging) {
@@ -127,7 +133,7 @@ int main(void) {
             check(RGBA8,edges[i],129,level);
     puts("color-staging: PASS scalar equivalence, 1/2/4/8/16-byte formats, tiles, mip/layer slices, bounds, flushes");
 }
-'''
+''')
 with tempfile.TemporaryDirectory() as directory:
     executable = str(Path(directory) / "color-staging")
     subprocess.run(["cc", "-std=c11", "-O2", "-Wall", "-Wextra", "-Werror",

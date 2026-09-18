@@ -1,6 +1,6 @@
 # PS5 OpenGL
 
-**OpenGL 3.3 Core and GLSL 3.30 for PlayStation 5 homebrew.**
+**OpenGL 4.6 Core and GLSL 4.60 for PlayStation 5 homebrew.**
 
 A native graphics stack built on Mesa/Gallium, with runtime shader compilation,
 fullscreen EGL presentation, a relocatable static SDK and an SDL2 bridge.
@@ -15,14 +15,16 @@ console enablement or guarantee that desktop applications run unchanged.
 
 ## Get started
 
-[Download SDK 0.2.0](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/sdk-0.2.0)
-or [build from source](docs/building.md).
+The `gl46-dev` branch contains the local 0.3.0 release candidate. Build it from
+[source](docs/building.md); no public 4.6 SDK has been released yet. The
+[0.2.0 download](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/sdk-0.2.0)
+remains the known-good OpenGL 3.3 release.
 
 The downloadable SDK includes GL/EGL and SDL2 static libraries, headers,
 Make/pkg-config/CMake integration, complete sources, examples, licenses and
 checksums. Choose one complete profile; do not mix its libraries with another SDK.
 
-| Profile | Qualification of SDK 0.2.0 downloads |
+| Profile | Qualification of the OpenGL 3.3 SDK 0.2.0 downloads |
 | --- | --- |
 | **4K120** — 3840×2160 | 202 sampled CTS passes, 82 focused GPU cases and bounded application/lifecycle checks |
 | **1440p120** — 2560×1440 | Build, export and consumer checks; not separately hardware-qualified |
@@ -32,15 +34,14 @@ See the [release guide](docs/release-g62.md) for checksums and scope.
 their own evidence. Fresh [CI-built archives](docs/ci-releases.md) are
 host-checked, not automatically console-qualified.
 
-**Source update:** the [EGL lifecycle safeguard](docs/lifecycle-reopen.md)
-now enforces a five-second interval before reopening a closed high-refresh
-presenter. Applications no longer need their own delay. Six EGL sessions passed
-without logged HDMI reconnects; the 4K window benchmark retained 119.88 FPS.
-This fix is in source, **not in the existing 0.2.0 downloads**.
+The 4.6 candidate includes the [EGL lifecycle safeguard](docs/lifecycle-reopen.md),
+which enforces the qualified five-second interval before reopening a closed
+high-refresh presenter. This fix is **not in the existing 0.2.0 downloads**.
 
 ## Features
 
-- OpenGL 3.3 Core / GLSL 3.30 with Mesa state tracking and runtime shader compilation.
+- OpenGL 4.6 Core / GLSL 4.60 with Mesa state tracking and runtime shader compilation.
+- All 657 OpenGL 4.6 Core commands exported by the relocatable static SDK.
 - Native fullscreen EGL and fixed 1080p60, 1440p120 and 4K120 build profiles.
 - GPU-backed draws, batching and eligible transfer, clear and mip/layer paths.
 - An SDL2 bridge for one fixed window, one unshared Core context and input/events.
@@ -88,12 +89,12 @@ loader. See [SDK integration](docs/consumer-build.md) for your own application.
 
 ## Validation
 
-**Current official-release CTS qualification is blocked:** a locally corrected
-CTS diagnostic passed **13/13 cases**, including the negative-shader case.
-The unchanged release still fails that case; upstream acceptance of the
-correction and required native EGL configurations remain unresolved. See the
-[qualification report](docs/cts-qualification.md). The new full campaign has
-not started; these results are separate from the historical matrix below.
+The OpenGL 4.6 development inventory accounts for **19,714 cases**:
+**15,233 Pass**, **4,480 reviewed `NotSupported`**, and one legal CTS
+compatibility warning. The warning permits two requested multisample counts to
+map to the same native count; it is not a failed result. See the
+[4.6 validation report](docs/gl46-development-validation.md). This is engineering
+validation, not Khronos certification.
 
 The frozen full campaign accounts for **39,544 results** across four configurations:
 
@@ -107,7 +108,7 @@ No gaps, duplicates or required-case failures remain in that accepted set.
 **Accounted results are not all passes.** Later runtime changes have focused
 regressions; they do not inherit the full campaign's acceptance.
 
-The [validation report](docs/validation.md) identifies the tested binaries,
+The historical OpenGL 3.3 [validation report](docs/validation.md) identifies the tested binaries,
 adaptations and exclusions. [Machine-readable evidence](validation/2026-09-07/README.md)
 is included and checked by `make test`; that command does not rerun the PS5 campaign.
 

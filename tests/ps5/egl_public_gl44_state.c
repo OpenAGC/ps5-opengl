@@ -82,7 +82,7 @@ main(void)
    EGLConfig config = NULL;
    EGLint count = 0;
    GLuint shaders[2] = {0}, program = 0, storage = 0, query_buffer = 0;
-   GLuint vao = 0, packed_buffer = 0;
+   GLuint vao = 0, packed_buffer = 0, dsa_buffer = 0;
    GLuint query = 0, texture = 0, ms_texture = 0;
    GLint linked = GL_FALSE, stride = 0;
    uint64_t query_value = 0;
@@ -91,7 +91,7 @@ main(void)
    GLenum immutable_error = GL_NO_ERROR, error = GL_NO_ERROR;
    PFNGLCLIPCONTROLPROC clip_control = NULL;
    PFNGLTEXTUREBARRIERPROC texture_barrier = NULL;
-   int storage_ok = 0, query_ok = 0, mirror_ok = 0, passed = 0;
+   int storage_ok = 0, dsa_ok = 0, query_ok = 0, mirror_ok = 0, passed = 0;
 
    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
    if (display == EGL_NO_DISPLAY || !eglInitialize(display, NULL, NULL) ||
@@ -103,6 +103,13 @@ main(void)
    if (surface == EGL_NO_SURFACE || context == EGL_NO_CONTEXT ||
        !eglMakeCurrent(display, surface, surface, context))
       goto done;
+
+   glCreateBuffers(1, &dsa_buffer);
+   glNamedBufferStorage(dsa_buffer, sizeof(initial), initial, GL_MAP_READ_BIT);
+   const uint32_t *dsa = glMapNamedBufferRange(
+      dsa_buffer, 0, sizeof(initial), GL_MAP_READ_BIT);
+   dsa_ok = dsa && !memcmp(dsa, initial, sizeof(initial)) &&
+            glUnmapNamedBuffer(dsa_buffer);
 
    glGetIntegerv(GL_MAX_VERTEX_ATTRIB_STRIDE, &stride);
    clip_control = (PFNGLCLIPCONTROLPROC)eglGetProcAddress("glClipControl");
@@ -184,7 +191,7 @@ main(void)
    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_MIRROR_CLAMP_TO_EDGE);
    mirror_ok = glGetError() == GL_NO_ERROR;
    error = glGetError();
-   passed = linked && stride >= 2048 && storage_ok && query_ok && mirror_ok &&
+   passed = linked && stride >= 2048 && storage_ok && dsa_ok && query_ok && mirror_ok &&
             pixel == UINT32_C(0xff00ff00) &&
             clip_pixel == UINT32_C(0xff000000) &&
             cull_pixel == UINT32_C(0xff000000) &&
@@ -202,11 +209,11 @@ main(void)
             has_extension("GL_NV_texture_barrier");
 
 done:
-   printf("[ps5-egl-gl45-state] gl=%s glsl=%s stride=%d linked=%d storage=%d "
+   printf("[ps5-egl-gl45-state] gl=%s glsl=%s stride=%d linked=%d storage=%d dsa=%d "
           "immutable=0x%x query=%llu mirror=%d pixel=%08x clip=%08x "
           "cull=%08x error=0x%x result=%s\n",
           glGetString(GL_VERSION), glGetString(GL_SHADING_LANGUAGE_VERSION),
-          stride, linked, storage_ok, immutable_error,
+          stride, linked, storage_ok, dsa_ok, immutable_error,
           (unsigned long long)query_value, mirror_ok, pixel, clip_pixel,
           cull_pixel, error,
           passed ? "pass" : "fail");
@@ -216,6 +223,8 @@ done:
    }
    if (texture)
       glDeleteTextures(1, &texture);
+   if (dsa_buffer)
+      glDeleteBuffers(1, &dsa_buffer);
    if (ms_texture)
       glDeleteTextures(1, &ms_texture);
    if (query)

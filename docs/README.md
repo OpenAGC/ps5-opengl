@@ -5,7 +5,8 @@ GL/EGL interfaces and the platform integration appropriate to your application.
 
 ## Build and integrate
 
-- [SDK 0.2.0](release-g62.md): downloads, checksums and exact-binary qualification.
+- [OpenGL 4.6 development validation](gl46-development-validation.md): current release-candidate evidence and boundaries.
+- [SDK 0.2.0](release-g62.md): historical OpenGL 3.3 downloads, checksums and exact-binary qualification.
 - [Building](building.md): dependencies, source setup and native folder apps.
 - [Using the SDK](consumer-build.md): Make, pkg-config, CMake and ownership rules.
 - [SDL2 integration](../integration/SDL2/README.md): window, context and input bridge.
@@ -25,7 +26,6 @@ GL/EGL interfaces and the platform integration appropriate to your application.
 - [Testing](testing.md): risk-based host and bounded native checks.
 - [CTS campaign](cts-campaign.md): efficient batching and submission prerequisites.
 - [CTS release qualification](cts-qualification.md): measured prerequisite results and current blockers.
-- [OpenGL 4.6 development validation](gl46-development-validation.md): CTS skip audit, stress gate and focused Piglit coverage.
 - [Validation](validation.md): frozen full-campaign results and evidence boundaries.
 - [Capability audit](development/capability-audit.md): version reporting and source checks.
 - [SDK build provenance](sdk-path-free-derivative.md): retained linker-metadata exception.

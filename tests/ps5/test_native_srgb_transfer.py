@@ -40,7 +40,8 @@ code = r'''
 #define MAX2(a,b) ((a) > (b) ? (a) : (b))
 #define ARRAY_SIZE(a) (sizeof(a) / sizeof((a)[0]))
 #define BITFIELD_BIT(b) (1u << (b))
-enum { PIPE_BUFFER, PIPE_TEXTURE_2D, PIPE_TEXTURE_RECT, PIPE_TEXTURE_3D };
+enum { PIPE_BUFFER, PIPE_TEXTURE_2D, PIPE_TEXTURE_RECT, PIPE_TEXTURE_3D,
+       PIPE_TEXTURE_2D_ARRAY };
 enum pipe_format { PIPE_FORMAT_R8G8B8A8_UNORM, PIPE_FORMAT_R8G8B8A8_SRGB,
     PIPE_FORMAT_R8_UNORM, PIPE_FORMAT_R8G8_UNORM, PIPE_FORMAT_R16G16B16A16_FLOAT,
     PIPE_FORMAT_Z32_FLOAT, PIPE_FORMAT_Z32_FLOAT_S8X24_UINT };
@@ -78,6 +79,7 @@ static unsigned ps5_texture_level_layers(const struct pipe_resource *r, unsigned
 /* Disabled capabilities and policy fallback guards live in test_native_color_layout.py. */
 static bool ps5_sampled_texture_format(unsigned f) { return f <= PIPE_FORMAT_R16G16B16A16_FLOAT; }
 static bool ps5_render_target_format(unsigned f) { return ps5_sampled_texture_format(f); }
+static bool ps5_msaa4_color_format(unsigned f) { return ps5_render_target_format(f); }
 static unsigned drains, flushes;
 static void ps5_draw_batch_drain_buffer(struct pipe_resource *r) { assert(r); ++drains; }
 static void ps5_flush_gpu_data(const void *p, size_t n) { assert(p && n); ++flushes; }
@@ -85,6 +87,7 @@ static void ps5_flush_gpu_data(const void *p, size_t n) { assert(p && n); ++flus
     "static size_t\nps5_tiled_depth_layer_xor(", "static bool\nps5_integer_texture_format(") + section(
     "static size_t\nps5_tiled_color_surface_size(", "static uint32_t\nps5_color_target_info(") + section(
     "static bool\nps5_map_bounds(", "static size_t\nps5_tiled_color_msaa4_offset(") + section(
+    "static size_t\nps5_tiled_color_msaa4_offset(", "static unsigned\nps5_tiled_rgba8_width(") + section(
     "static unsigned\nps5_tiled_rgba8_width(", "static unsigned\nps5_surface_width(") + section(
     "static bool\nps5_transfer_alloc_staging(", "static void\nps5_blit_scissor_bounds(") + section(
     "static void\nps5_texture_subdata(", "static bool\nps5_generate_mipmap(") + r'''

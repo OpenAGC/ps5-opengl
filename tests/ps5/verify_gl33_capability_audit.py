@@ -58,6 +58,9 @@ CORE33_MK = (ROOT / "toolchain/ps5-opengl-core33.mk").read_text()
 INSTALLED_MK = (
     ROOT / "toolchain/ps5-opengl-core33-installed.mk"
 ).read_text()
+GENERIC_INSTALLED_MK = (
+    ROOT / "toolchain/ps5-opengl-installed.mk"
+).read_text()
 SDK_INSTALLER = (
     ROOT / "toolchain/install-ps5-opengl-core33.sh"
 ).read_text()
@@ -400,6 +403,7 @@ require("PS5_OPENGL_IMPORT_STUBS" in CORE33_MK and
         "'!<thin>'" in SDK_INSTALLER and "ar -M" in SDK_INSTALLER and
         "manifest.sha256" in SDK_INSTALLER and
         "-lPS5OpenGLCore33" in INSTALLED_MK and
+        "-lPS5OpenGL" in GENERIC_INSTALLED_MK and
         "-lSceAgcDriver" in INSTALLED_MK and
         'python3 "$root/tools/check-sdk-consumers.py"' in SDK_VERIFY and
         '--sdk "$prefix" --payload-sdk "$sdk"' in SDK_VERIFY and
@@ -407,14 +411,14 @@ require("PS5_OPENGL_IMPORT_STUBS" in CORE33_MK and
         '--registry "$root/third_party/mesa-26.2.0/src/mesa/glapi/glapi/registry/gl.xml"' in SDK_VERIFY,
         "relocatable Core 3.3 SDK lost archives, imports, or consumer proof")
 require("summary['manifest'] = verify_manifest(sdk)" in SDK_CONSUMERS and
-        "libraries = [sdk / 'lib' / name for name in ('libglapi_bridge.a', 'libglapi.a')]" in SDK_CONSUMERS and
+        "('libps5_opengl_core33.a', 'libglapi_bridge.a', 'libglapi.a')" in SDK_CONSUMERS and
         "run(['nm', '-g', '--defined-only', *libraries]" in SDK_CONSUMERS and
-        "if len(commands) != 344 or commands - symbols:" in SDK_CONSUMERS and
+        "if len(commands) != 657 or commands - symbols:" in SDK_CONSUMERS and
         "run(['make', '--no-print-directory', '-f', 'Makefile.installed'" in SDK_CONSUMERS and
-        "run(['pkg-config', '--cflags', 'ps5-opengl-core33']" in SDK_CONSUMERS and
-        "run(['pkg-config', '--libs', 'ps5-opengl-core33']" in SDK_CONSUMERS and
-        "find_package(PS5OpenGLCore33 CONFIG REQUIRED)" in SDK_CONSUMERS and
-        "target_link_libraries(triangle PRIVATE PS5OpenGLCore33::OpenGL)" in SDK_CONSUMERS and
+        "run(['pkg-config', '--cflags', 'ps5-opengl']" in SDK_CONSUMERS and
+        "run(['pkg-config', '--libs', 'ps5-opengl']" in SDK_CONSUMERS and
+        "find_package(PS5OpenGL CONFIG REQUIRED)" in SDK_CONSUMERS and
+        "target_link_libraries(triangle PRIVATE PS5OpenGL::OpenGL)" in SDK_CONSUMERS and
         "run(['cmake', '--build'" in SDK_CONSUMERS,
         "delegated SDK checker lost installed integrity, exports, or consumer builds")
 
@@ -1084,7 +1088,7 @@ require("compiler_info.spirv_caps.Geometry = true;" in PSBC_C and
         "PSBC_UNRESOLVED_AGC_LINKAGE" in PSBC_C,
         "standalone geometry compiler proof is no longer marked diagnostic")
 require("psbc_compile_nir_geometry_pipeline" in PSBC_H and
-        "#define PSBC_MAX_DESCRIPTOR_BINDINGS 64" in PSBC_H and
+        "#define PSBC_MAX_DESCRIPTOR_BINDINGS 128" in PSBC_H and
         "shader_count = 2" in PSBC_C and
         "stage.info.force_indirect_descriptors = false;" in PSBC_C and
         "S_028B54_ES_EN(has_tessellation ? V_028B54_ES_STAGE_DS :" in PSBC_C and
@@ -1153,7 +1157,7 @@ require("-DHAVE_FUNC_ATTRIBUTE_PACKED=1" in PSBC_HOST_CONFIG,
         "host PSBC build lost the shared packed-NIR ABI")
 require('--verify-psbc' in PSBC_PS5_BUILD and
         json.loads((ROOT / 'dependencies.json').read_text())['psbc_patch']['patched_tree'] ==
-                    'cecb044ffa82627f5ef62b0358940c8b966560a1',
+                    'e79025508ce75db3889a63f681399bd54c83b805',
         "PS5 compiler archive is not pinned to the expected source tree")
 require("-DOPENGNM_PSBC_ORBIS=1" in PSBC_PS5_CONFIG and
         "defined(OPENGNM_PSBC_ORBIS)" in ACO_ISEL_HELPERS and
@@ -1325,8 +1329,8 @@ require("PSBC_HW_STAGE_NGG" in PACKAGE and "agc_stage = 2" in PACKAGE and
 
 require("PIPE_QUERY_PRIMITIVES_GENERATED" in SCREEN and
         "PIPE_QUERY_PRIMITIVES_EMITTED" in SCREEN and
-        "active_primitives_generated_query->value +=" in SCREEN and
-        "active_primitives_emitted_query->value +=" in SCREEN and
+        "active_primitives_generated_query[stream]->value +=" in SCREEN and
+        "active_primitives_emitted_query[stream]->value +=" in SCREEN and
         "GL_SEPARATE_ATTRIBS" in XFB_QUERY and
         "glBindBufferRange(GL_TRANSFORM_FEEDBACK_BUFFER, 1" in XFB_QUERY and
         "glBeginQuery(GL_PRIMITIVES_GENERATED" in XFB_QUERY and
@@ -1648,7 +1652,7 @@ require("caps->texture_multisample = PS5_ENABLE_MSAA4_CANDIDATE" in SCREEN and
         "ps5_agc_sample_shading" in BACKEND and
         "0x0293u" in BACKEND and
         "0x01b8u" in BACKEND and
-        "shader->nir->info.fs.uses_sample_shading" in SCREEN and
+        "context->fs->nir->info.fs.uses_sample_shading" in SCREEN and
         "radv_nir_lower_opt_fs_frag_pos" in PSBC_C and
         "nir->info.fs.uses_sample_shading" in PSBC_C and
         "UINT32_C(0x00000023)" in BACKEND and
@@ -1702,7 +1706,7 @@ require("st->ctx->Multisample.SampleCoverageValue" in
 
 require("PS5_ENABLE_SMOOTH_RASTER_CANDIDATE" in SCREEN and
         "nir_lower_poly_line_smooth(variant_nir, 4)" in SCREEN and
-        "options.rasterization_samples = 4" in SCREEN and
+        "options.rasterization_samples = poly_line_smooth ? 4" in SCREEN and
         "ps5_agc_poly_line_smooth" in BACKEND and
         "UINT32_C(0x02130000)" in BACKEND and
         "0x02f7u" in BACKEND and
@@ -1836,7 +1840,7 @@ require("egl_public_core33_compressed_dimensions.o:" in MAKEFILE and
 require("ps5_agc_gate2_set_color_target_views" in SCREEN and
         "render_staging_size *= layers" in SCREEN and
         "layer - surface->first_layer" in SCREEN and
-        "surface->last_layer > surface->first_layer" in SCREEN and
+        "surface->last_layer - surface->first_layer + 1u >" in SCREEN and
         "surface->first_layer <= surface->last_layer" in SCREEN and
         "ps5_agc_mrt_views" in BACKEND and
         "0x031bu" in BACKEND and

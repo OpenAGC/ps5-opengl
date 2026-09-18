@@ -74,7 +74,7 @@ def verify_manifest(sdk):
     for archive in (sdk / 'lib').glob('*.a'):
         with archive.open('rb') as stream:
             magic = stream.read(8)
-        if archive.name == 'libPS5OpenGLCore33.a':
+        if archive.name in ('libPS5OpenGL.a', 'libPS5OpenGLCore33.a'):
             if not re.search(r'\bGROUP\s*\(', archive.read_text()):
                 raise ValueError('Umbrella library is not a GROUP linker script')
         elif magic != b'!<arch>\n':
@@ -124,21 +124,30 @@ def main():
             if found:
                 summary['tools'][tool] = {'path': found, 'sha256': digest(Path(found)), 'version': run([found, '--version'])}
         summary['registry_sha256'] = digest(registry)
-        commands = set()
-        for feature in ET.parse(registry).getroot().findall('feature'):
-            if feature.get('api') != 'gl' or tuple(map(int, feature.get('number').split('.'))) > (3, 3):
-                continue
-            for requirement in feature.findall('require'):
-                if requirement.get('profile') in (None, 'core'):
-                    commands.update(c.get('name') for c in requirement.findall('command'))
-            for removal in feature.findall('remove'):
-                if removal.get('profile') == 'core':
-                    commands.difference_update(c.get('name') for c in removal.findall('command'))
-        libraries = [sdk / 'lib' / name for name in ('libglapi_bridge.a', 'libglapi.a')]
+        features = ET.parse(registry).getroot().findall('feature')
+        def core_commands(target):
+            commands = set()
+            for feature in features:
+                if feature.get('api') != 'gl' or tuple(map(int, feature.get('number').split('.'))) > target:
+                    continue
+                for requirement in feature.findall('require'):
+                    if requirement.get('profile') in (None, 'core'):
+                        commands.update(c.get('name') for c in requirement.findall('command'))
+                for removal in feature.findall('remove'):
+                    if removal.get('profile') == 'core':
+                        commands.difference_update(c.get('name') for c in removal.findall('command'))
+            return commands
+        commands = core_commands((4, 6))
+        libraries = [sdk / 'lib' / name for name in
+                     ('libps5_opengl_core33.a', 'libglapi_bridge.a', 'libglapi.a')]
         symbols = set(re.findall(r'\b(gl[A-Za-z0-9_]+)$', run(['nm', '-g', '--defined-only', *libraries], name='installed-symbols'), re.MULTILINE))
-        if len(commands) != 344 or commands - symbols:
+        if len(commands) != 657 or commands - symbols:
             raise ValueError(f'GL surface mismatch: count={len(commands)}, missing={sorted(commands - symbols)}')
+        gl33 = core_commands((3, 3))
+        if len(gl33) != 344 or gl33 - symbols:
+            raise ValueError(f'GL 3.3 compatibility surface mismatch: count={len(gl33)}, missing={sorted(gl33 - symbols)}')
         summary['gl33'] = {'commands': 344, 'exported': 344, 'libraries': {str(p): digest(p) for p in libraries}}
+        summary['gl46'] = {'commands': 657, 'exported': 657, 'libraries': {str(p): digest(p) for p in libraries}}
         for name in ('make', 'pkgconfig', 'cmake'):
             (output / name).mkdir()
             shutil.copyfile(example / 'main.c', output / name / 'main.c')
@@ -147,9 +156,11 @@ def main():
         make_log = run(['make', '--no-print-directory', '-f', 'Makefile.installed', '-j2',
                         f'PS5_PAYLOAD_SDK={payload}', f'PS5_OPENGL_PREFIX={sdk}',
                         f'CC={shlex.quote(str(cc))} -MD -MF main.d', f'CXX={shlex.quote(str(cxx))} -Wl,--trace'], make_dir, 'make-build')
-        cflags = shlex.split(run(['pkg-config', '--cflags', 'ps5-opengl-core33'], name='pkgconfig-cflags'))
-        libs = shlex.split(run(['pkg-config', '--libs', 'ps5-opengl-core33'], name='pkgconfig-libs'))
-        if not {'-lPS5OpenGLCore33', '-lSceAgcDriver', '-lSceVideoOut'} <= set(libs):
+        cflags = shlex.split(run(['pkg-config', '--cflags', 'ps5-opengl'], name='pkgconfig-cflags'))
+        libs = shlex.split(run(['pkg-config', '--libs', 'ps5-opengl'], name='pkgconfig-libs'))
+        if (not {'-lPS5OpenGL', '-lSceVideoOut'} <= set(libs) or
+                not any(value.endswith('/libSceAgc.so') for value in libs) or
+                not any(value.endswith('/libSceAgcDriver.so') for value in libs)):
             raise ValueError('Incomplete pkg-config contract')
         pkg_dir = output / 'pkgconfig'
         run([cc, *cflags, '-MD', '-MF', 'main.d', '-c', 'main.c', '-o', 'main.o'], pkg_dir, 'pkgconfig-compile')
@@ -157,17 +168,17 @@ def main():
         cmake_dir = output / 'cmake'
         (cmake_dir / 'CMakeLists.txt').write_text('''cmake_minimum_required(VERSION 3.16)
 project(independent_consumer LANGUAGES C CXX)
-find_package(PS5OpenGLCore33 CONFIG REQUIRED)
+find_package(PS5OpenGL CONFIG REQUIRED)
 add_executable(triangle main.c)
 set_target_properties(triangle PROPERTIES SUFFIX ".elf")
 set_property(TARGET triangle PROPERTY LINKER_LANGUAGE CXX)
-target_link_libraries(triangle PRIVATE PS5OpenGLCore33::OpenGL)
+target_link_libraries(triangle PRIVATE PS5OpenGL::OpenGL)
 target_compile_options(triangle PRIVATE -MD)
 target_link_options(triangle PRIVATE "LINKER:--gc-sections" "LINKER:--build-id=sha1" "LINKER:--trace")
 ''')
         run(['cmake', '-S', cmake_dir, '-B', cmake_dir / 'build', '-G', 'Unix Makefiles', f'-DCMAKE_C_COMPILER={cc}',
              f'-DCMAKE_CXX_COMPILER={cxx}', '-DCMAKE_TRY_COMPILE_TARGET_TYPE=STATIC_LIBRARY',
-             f'-DPS5OpenGLCore33_DIR={sdk / "lib/cmake/PS5OpenGLCore33"}'], name='cmake-configure')
+             f'-DPS5OpenGL_DIR={sdk / "lib/cmake/PS5OpenGL"}'], name='cmake-configure')
         cmake_log = run(['cmake', '--build', cmake_dir / 'build', '--verbose', '-j2'], name='cmake-build')
         summary['consumers'] = {}
         for name, work, trace in [('make', make_dir, make_log), ('pkgconfig', pkg_dir, pkg_log), ('cmake', cmake_dir / 'build', cmake_log)]:

@@ -9,7 +9,7 @@ See [Building](building.md) for dependencies.
 
 ```make
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
-include $(PS5_OPENGL_PREFIX)/share/ps5-opengl-core33/ps5-opengl-core33.mk
+include $(PS5_OPENGL_PREFIX)/share/ps5-opengl/ps5-opengl.mk
 CPPFLAGS += $(PS5_OPENGL_PUBLIC_CFLAGS)
 
 app.elf: app.o
@@ -20,7 +20,7 @@ app.elf: app.o
 
 ```sh
 PKG_CONFIG_PATH="$PS5_OPENGL_PREFIX/lib/pkgconfig" \
-  pkg-config --cflags --libs ps5-opengl-core33
+  pkg-config --cflags --libs ps5-opengl
 ```
 
 Compile C sources with the C compiler; use the C++ linker for the complete static
@@ -29,12 +29,12 @@ dependency graph. The verifier tests actual compilation/linking with these flags
 ## CMake
 
 ```cmake
-find_package(PS5OpenGLCore33 CONFIG REQUIRED)
-target_link_libraries(app PRIVATE PS5OpenGLCore33::OpenGL)
+find_package(PS5OpenGL CONFIG REQUIRED)
+target_link_libraries(app PRIVATE PS5OpenGL::OpenGL)
 set_property(TARGET app PROPERTY LINKER_LANGUAGE CXX)
 ```
 
-Set `PS5OpenGLCore33_DIR` to the package's `lib/cmake/PS5OpenGLCore33` directory
+Set `PS5OpenGL_DIR` to the package's `lib/cmake/PS5OpenGL` directory
 and configure PS5 cross-compilers. The boilerplate separately assembles a linked
 target into a runnable native folder application.
 
@@ -75,5 +75,6 @@ bash tools/verify-installed-sdk.sh
 ```
 
 This regenerates the SDK, verifies its manifest/metadata, links the triangle
-through Make, pkg-config and CMake, and checks 344 Core exports. It does not
-execute console tests. Do not regenerate a frozen package during a campaign.
+through Make, pkg-config and CMake, and checks all 657 OpenGL 4.6 Core exports
+plus the 344-command OpenGL 3.3 compatibility surface. It does not execute
+console tests. Do not regenerate a frozen package during a campaign.

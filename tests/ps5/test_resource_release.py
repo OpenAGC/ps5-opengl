@@ -29,7 +29,7 @@ struct pipe_resource { unsigned format; };
 struct pipe_screen { int unused; };
 struct ps5_resource {
     struct pipe_resource base;
-    struct pipe_resource *render_pool_owner;
+    struct pipe_resource *render_pool_owner, *stencil_sample;
     unsigned render_arena_first_slot, render_arena_slot_count;
     void *data, *stencil_data;
     int64_t direct_start, stencil_direct_start;

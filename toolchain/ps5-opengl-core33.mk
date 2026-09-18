@@ -17,6 +17,7 @@ PS5_OPENGL_RUNTIME_DEFINES ?=
 
 PS5_OPENGL_DRIVER := $(PS5_OPENGL_ROOT)/src/gallium/ps5
 PS5_OPENGL_PLATFORM := $(PS5_OPENGL_ROOT)/src/platform
+PS5_OPENGL_REGISTRY := $(PS5_OPENGL_MESA_SRC)/src/mesa/glapi/glapi/registry/gl.xml
 
 PS5_OPENGL_PUBLIC_CFLAGS := -DGL_GLEXT_PROTOTYPES=1 \
 	-I$(PS5_OPENGL_MESA_SRC)/include
@@ -87,6 +88,7 @@ PS5_OPENGL_RUNTIME_OBJECTS := \
 	$(PS5_OPENGL_BUILD)/ps5_screen.o \
 	$(PS5_OPENGL_BUILD)/ps5_agc_package.o \
 	$(PS5_OPENGL_BUILD)/ps5_agc_runtime_backend.o \
+	$(PS5_OPENGL_BUILD)/gl46_entrypoints.o \
 	$(PS5_OPENGL_BUILD)/u_framebuffer.o
 PS5_OPENGL_RUNTIME := $(PS5_OPENGL_BUILD)/libps5_opengl_core33.a
 PS5_OPENGL_IMPORT_STUBS := \
@@ -175,22 +177,32 @@ $(PS5_OPENGL_BUILD)/u_framebuffer.o: \
 	$(CC) $(PS5_OPENGL_COMMON_CFLAGS) -Wno-error=unused-parameter \
 		-c -o $@ $<
 
+$(PS5_OPENGL_BUILD)/gl46_entrypoints.c: \
+	$(PS5_OPENGL_ROOT)/tools/generate-gl46-entrypoints.py \
+	$(PS5_OPENGL_REGISTRY) $(PS5_OPENGL_GLAPI_BRIDGE) \
+	$(PS5_OPENGL_MESA_BUILD)/src/mesa/glapi/shared-glapi/libglapi.a \
+	| $(PS5_OPENGL_BUILD)
+	python3 $^ $@
+
+$(PS5_OPENGL_BUILD)/gl46_entrypoints.o: $(PS5_OPENGL_BUILD)/gl46_entrypoints.c
+	$(CC) $(PS5_OPENGL_COMMON_CFLAGS) -c -o $@ $<
+
 $(PS5_OPENGL_BUILD)/agc_link_stub.o: \
-	$(PS5_OPENGL_ROOT)/native-app/agc_link_stub.c | $(PS5_OPENGL_BUILD)
+	$(PS5_OPENGL_ROOT)/native-app/agc_link_stub.c $(ps5_opengl_mk_self) | $(PS5_OPENGL_BUILD)
 	$(CC) -std=c11 -O2 -fPIC -ffunction-sections -fdata-sections \
 		-c -o $@ $<
 
 $(PS5_OPENGL_BUILD)/agc_driver_link_stub.o: \
-	$(PS5_OPENGL_ROOT)/native-app/agc_driver_link_stub.c | $(PS5_OPENGL_BUILD)
+	$(PS5_OPENGL_ROOT)/native-app/agc_driver_link_stub.c $(ps5_opengl_mk_self) | $(PS5_OPENGL_BUILD)
 	$(CC) -std=c11 -O2 -fPIC -ffunction-sections -fdata-sections \
 		-c -o $@ $<
 
-$(PS5_OPENGL_BUILD)/libSceAgc.so: $(PS5_OPENGL_BUILD)/agc_link_stub.o
-	$(LD) --shared -soname libSceAgc.prx -o $@ $<
+$(PS5_OPENGL_BUILD)/libSceAgc.so: $(PS5_OPENGL_BUILD)/agc_link_stub.o $(ps5_opengl_mk_self)
+	$(PS5_PAYLOAD_SDK)/bin/prospero-lld --shared -soname libSceAgc.prx -o $@ $<
 
 $(PS5_OPENGL_BUILD)/libSceAgcDriver.so: \
-	$(PS5_OPENGL_BUILD)/agc_driver_link_stub.o
-	$(LD) --shared -soname libSceAgcDriver.prx -o $@ $<
+	$(PS5_OPENGL_BUILD)/agc_driver_link_stub.o $(ps5_opengl_mk_self)
+	$(PS5_PAYLOAD_SDK)/bin/prospero-lld --shared -soname libSceAgcDriver.prx -o $@ $<
 
 # Ninja owns Mesa's source/header graph; checking archive existence is not enough.
 .PHONY: ps5-opengl-mesa

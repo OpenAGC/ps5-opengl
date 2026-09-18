@@ -49,6 +49,9 @@ struct ps5_context {
     unsigned active_primitives_generated_query, active_primitives_emitted_query;
     struct constant constants[2][1]; struct ps5_resource *descriptor_storage[2];
 };
+static bool ps5_any_primitive_query(const struct ps5_context *c) {
+    return c->active_primitives_generated_query || c->active_primitives_emitted_query;
+}
 static unsigned target_width = 128, target_height = 128;
 static unsigned ps5_surface_width(const struct pipe_surface *s) { (void)s; return target_width; }
 static unsigned ps5_surface_height(const struct pipe_surface *s) { (void)s; return target_height; }
@@ -296,6 +299,9 @@ struct ps5_context { bool framebuffer_valid; unsigned render_condition_query,
     stream_output_target_count,active_occlusion_query,active_primitives_generated_query,
     active_primitives_emitted_query;
     struct { struct pipe_surface zsbuf; unsigned width,height; } framebuffer; };
+static bool ps5_any_primitive_query(const struct ps5_context *c) {
+    return c->active_primitives_generated_query || c->active_primitives_emitted_query;
+}
 static size_t ps5_tiled_depth_surface_size(unsigned w,unsigned h,unsigned samples)
 { assert(samples==1); return (size_t)w*h*4; }
 static size_t ps5_tiled_stencil_surface_size(unsigned w,unsigned h) { return (size_t)w*h; }

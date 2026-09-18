@@ -364,6 +364,8 @@ struct ps5_context {
     const struct pipe_depth_stencil_alpha_state *depth_stencil_alpha;
     int last_draw_status;
 };
+static bool ps5_any_primitive_query(const struct ps5_context *c)
+{ return c->active_primitives_generated_query || c->active_primitives_emitted_query; }
 enum { TEST_DRAWS = 2 * PS5_MULTIDRAW_BATCH_CAPACITY + 3,
        TEST_COPIES = 3 * TEST_DRAWS, SNAPSHOTS = 3 * PS5_MULTIDRAW_BATCH_CAPACITY };
 static struct ps5_resource original[3], copies[TEST_COPIES], borrowed, depth_buffer;
@@ -607,7 +609,8 @@ print("PASS: descriptors/uniforms, chunk retirement, draw IDs, rollback, all 16 
 
 # Reuse the same Gallium mocks, but exercise the actual cross-call queue too.
 start = source.index("static struct {\n   struct ps5_context *owner;")
-deferred = source[start:source.index("\n#endif\n\nstatic void\nps5_draw_vbo(", start)]
+deferred = source[start:source.index(
+    "\n#endif\n\nstatic bool\nps5_lower_default_tess_levels(", start)]
 deferred_code = code[:code.index("int main(void) {")] + r'''
 static unsigned ps5_deferred_mutex;
 static void simple_mtx_lock(unsigned *m) { assert(m == &ps5_deferred_mutex && !locked); locked=1; }

@@ -9,7 +9,7 @@ not the number of source files or historical gate labels here.
 | `egl_public_*.c` | Public EGL/OpenGL behavior gates, built into `PPSA99005` |
 | `test_*.py` | Focused host checks; some compile real driver helpers and NIR/ACO shaders |
 | `verify_gl33_capability_audit.py` | Current source-level Core feature/compiler contract |
-| `verify_gl33_link_surface.py` | Installed SDK's 344 required Core entry points |
+| `verify_gl46_link_surface.py` | Installed SDK's 657 required OpenGL 4.6 Core entry points |
 | Other `verify_*.py`, early `agc_*`/`psbc_*` probes | Development-stage assertions and research history, not a current aggregate test suite |
 | `native-app.mk` | Native runtime archive used by the SDK and folder-app builder |
 

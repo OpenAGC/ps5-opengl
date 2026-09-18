@@ -25,7 +25,11 @@ defines = "\n".join(re.findall(
     r"^#define PS5_AGC_(?:MAX_\w+|MRT_TARGETS|FRAMEBUFFER_\w+|COLOR_TARGET_ALIGNMENT) .+$",
     backend, re.M))
 scissor = screen[screen.index("   scissor = context->rasterizer"):]
-scissor = scissor[:scissor.index("\n}")]
+scissor = scissor[:scissor.index("   }\n   return true;")]
+scissor = re.sub(r"context->scissor_valid &\s+\(UINT16_C\(1\) << viewport_index\)",
+                  "context->scissor_valid", scissor)
+scissor = scissor.replace("&context->scissor[viewport_index]", "&context->scissor")
+scissor = scissor.replace("native->scissor[viewport_index]", "native->scissor")
 allocation = screen[screen.index("   if (PS5_ENABLE_SHARED_RENDER_POOL_CANDIDATE && ps5->render_pool &&"):]
 allocation = allocation[:allocation.index("   direct_limit = sceKernelGetDirectMemorySize();")]
 target_extents = screen[screen.index("         target_widths[i] = surface->texture"):]
@@ -70,6 +74,7 @@ static bool encode_scissor(struct context *context, struct native *native) {
     const struct pipe_scissor_state *scissor;
     unsigned minx, miny, maxx, maxy;
 ''' + scissor + r'''
+    return true;
 }
 #define PS5_ENABLE_SHARED_RENDER_POOL_CANDIDATE 1
 #define PIPE_BIND_DISPLAY_TARGET 1
@@ -160,7 +165,7 @@ int main(void) {
     assert(ps5_agc_gate2_set_color_target_extents(&width, &height, 1) == 0);
     ps5_agc_mrt_sizes[0]--;
     assert(ps5_agc_gate2_set_color_target_extents(&width, &height, 1) == -1);
-    width = 8193;
+    width = 16385;
     assert(ps5_agc_gate2_set_color_target_extents(&width, &height, 1) == -1);
     width = 0;
     assert(ps5_agc_gate2_set_color_target_extents(&width, &height, 1) == -1);
@@ -187,10 +192,10 @@ int main(void) {
             }
         }
     }
-    assert(ps5_agc_gate2_set_depth_target_extents(8192, 8192) == 0);
-    assert(ps5_agc_gate2_set_depth_target_extents(8192, 8193) == -1);
+    assert(ps5_agc_gate2_set_depth_target_extents(16384, 16384) == 0);
+    assert(ps5_agc_gate2_set_depth_target_extents(16384, 16385) == -1);
     assert(ps5_agc_gate2_set_depth_target_extents(0, 64) == -1);
-    assert(ps5_agc_depth_width == 8192 && ps5_agc_depth_height == 8192);
+    assert(ps5_agc_depth_width == 16384 && ps5_agc_depth_height == 16384);
     struct context context = { .framebuffer = {64, 8192} };
     struct native native;
     assert(encode_scissor(&context, &native));

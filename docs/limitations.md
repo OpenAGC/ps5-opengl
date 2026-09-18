@@ -1,6 +1,6 @@
 # Supported boundaries and limitations
 
-PS5 OpenGL is an experimental OpenGL 3.3 Core implementation, not a
+PS5 OpenGL is an experimental OpenGL 4.6 Core implementation, not a
 Khronos-certified driver or a guarantee of universal application compatibility.
 
 ## API and integration
@@ -11,7 +11,7 @@ input and lifecycle adaptation. GLX, WGL and reusable GLFW integration are absen
 a desktop compatibility profile is not a supported product claim.
 
 The [SDL2 bridge](../integration/SDL2/README.md) supports one fixed-size window
-and one unshared Core 3.3 context. It is not a complete SDL platform port.
+and one unshared Core context. It is not a complete SDL platform port.
 The [physical-input check](sdl-input-validation.md) covers one controller/user,
 selected buttons/stick actions and reconnect at 1440p—not all input devices or
 automatic acceptance for every SDK version.
@@ -48,17 +48,16 @@ counters exclude process RSS, foreign heaps and module-internal allocations.
 
 ## Verification scope
 
-- The [official-release CTS prerequisites](cts-qualification.md) are blocked:
-  required default/window configurations and upstream disposition of a local
-  compute-stage test correction remain unresolved. The patched diagnostic
-  passed 13/13; it is not a complete new CTS baseline or upstream acceptance.
+- The OpenGL 4.6 inventory accounts for 15,233 passes, 4,480 reviewed
+  `NotSupported` results and one legal compatibility warning. This engineering
+  disposition is not Khronos certification or an acceptance waiver.
 - The [full campaign](validation.md) belongs to one frozen runtime: 37,404 passes
   plus 2,140 reviewed exclusions, not 39,544 passes.
 - [SDK 0.2.0](release-g62.md) has a 202-execution sample and 82 focused GPU cases
   on its 4K runtime. Two explicitly identified extreme-axis executions were
   deferred because prior single-case times exceeded the two-minute bound.
-- The newer lifecycle fix has its own focused evidence; it does not inherit
-  the older full campaign or every 0.2.0 application check.
+- The 4.6 candidate and lifecycle fix have focused evidence; they do not inherit
+  every check performed against the older 0.2.0 binaries.
 - The current 1440p packages are host-checked, not separately hardware-qualified.
   Fresh CI builds likewise require their own native evidence.
 - Hardware results cover one firmware-6.02 console and the recorded HDMI4 setup.

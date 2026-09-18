@@ -107,6 +107,7 @@ test-imgui:
 	python3 tests/ps5/test_imgui_egl_cleanup.py
 test-compiler:
 	python3 tools/fetch-sources.py --verify-psbc
+	python3 tests/ps5/verify_gl46_link_surface.py
 	python3 tests/ps5/test_fragment_exports.py
 	python3 tests/ps5/test_meta_vertex_inputs.py
 	python3 tests/ps5/test_unused_primitive_export.py
