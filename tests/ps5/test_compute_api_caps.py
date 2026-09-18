@@ -28,6 +28,8 @@ def caps_source():
     assert "caps->max_label_length = 256;" in source
     assert ".compute_private_buffer = true, .compute_buffer_spills = true" in source
     assert ("if (PS5_ENABLE_GLSL_430_CANDIDATE)\n"
+            "      vs_caps->max_shader_buffers = PS5_COMPUTE_STORAGE_SLOTS;" in source)
+    assert ("if (PS5_ENABLE_GLSL_430_CANDIDATE)\n"
             "         tcs_caps->max_shader_buffers = tes_caps->max_shader_buffers =\n"
             "            PS5_COMPUTE_STORAGE_SLOTS;" in source)
     default = re.search(r"#ifndef PS5_ENABLE_COMPUTE_API_TEST\s*\n"

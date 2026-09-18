@@ -113,6 +113,7 @@ code = r'''
 #define PS5_MAX_COLOR_HEIGHT 8192
 #define PS5_COLOR_TARGET_ALIGNMENT 0x10000u
 #define PS5_MAX_CONSTANT_BUFFERS 13
+#define PS5_VERTEX_STORAGE_OFFSET 1792
 #define PS5_GEOMETRY_STORAGE_OFFSET 2048
 #define PS5_CONSTANT_DATA_OFFSET 2560
 #define PS5_TESSELLATION_BUFFER_OFFSET (2560+4*PS5_MAX_CONSTANT_BUFFER_SIZE)
@@ -217,7 +218,7 @@ static bool fragment_mode;
 static unsigned fragment_drains;
 static void ps5_draw_batch_drain(void) { ++fragment_drains; }
 static bool ps5_render_condition_passes(const struct ps5_context *context) { (void)context; return render_condition_pass; }
-static void ps5_flush_gpu_data(const void *address, size_t size) { assert(address && (fragment_mode ? size==64 || size==256 || size==512 || size==768 || size==4*PS5_TESSELLATION_BUFFER_STRIDE || size==PS5_DESCRIPTOR_STORAGE_BYTES : size==12)); }
+static void ps5_flush_gpu_data(const void *address, size_t size) { assert(address && (fragment_mode ? size==32 || size==64 || size==256 || size==512 || size==768 || size==4*PS5_TESSELLATION_BUFFER_STRIDE || size==PS5_DESCRIPTOR_STORAGE_BYTES : size==12)); }
 ''' + texel_format + texel_descriptor + r'''
 static bool ps5_uses_merged_geometry_metadata(const struct ps5_context *c, const struct ps5_shader *s, const PsbcShaderMetadata *m) { return false; }
 static unsigned ps5_texture_count(const struct ps5_context *c, const struct ps5_shader *s, const PsbcShaderMetadata *m) { return s->nir->info.num_textures; }
@@ -882,6 +883,35 @@ static void test_tessellation_buffers(void) {
     fragment_mode=false;
 }
 
+static void vertex_storage_contract(void) {
+    struct pipe_screen screen={0}, foreign={0};
+    struct ps5_context ctx={.base.screen=&screen};
+    uint8_t data[PS5_DESCRIPTOR_STORAGE_BYTES]={0}, bytes[64]={0};
+    struct ps5_resource table={.base={.screen=&screen,.target=PIPE_BUFFER},
+        .data=data,.size=sizeof(data)};
+    struct ps5_resource resource={.base={.screen=&screen,.target=PIPE_BUFFER},
+        .data=bytes,.size=sizeof(bytes)};
+    struct test_nir nir={.info={.num_ssbos=4}};
+    struct ps5_shader shader={.nir=&nir,.stage=PSBC_STAGE_VERTEX};
+    ctx.vs=&shader; ctx.descriptor_storage[0]=&table.base;
+    ctx.preraster_buffers[0][3]=(struct pipe_shader_buffer){
+        .buffer=&resource.base,.buffer_offset=16,.buffer_size=32};
+    PsbcShaderMetadata metadata={.descriptor_binding_count=1,
+        .descriptor_set0_valid=true,.descriptor_set0_user_data_dword=2,
+        .address32_hi=(uintptr_t)data>>32,.descriptor_bindings={{
+            .binding=PSBC_GALLIUM_SSBO_ARRAY_BINDING(PSBC_STAGE_VERTEX),
+            .type=PSBC_DESCRIPTOR_STORAGE_BUFFER,.array_size=16,
+            .offset=PS5_VERTEX_STORAGE_OFFSET,.stride=16}}};
+    uint32_t user[4]={0}; fragment_mode=true;
+    assert(ps5_prepare_vertex_storage(&ctx,&metadata,user,4));
+    uint32_t *srd=(uint32_t *)(data+PS5_VERTEX_STORAGE_OFFSET);
+    assert(!srd[0] && !srd[4] && !srd[8]);
+    assert(srd[12]==(uint32_t)(uintptr_t)(bytes+16) && srd[14]==32);
+    resource.base.screen=&foreign;
+    assert(!ps5_prepare_vertex_storage(&ctx,&metadata,user,4));
+    fragment_mode=false;
+}
+
 static void test_stage_samplers(void) {
     struct ps5_context ctx={0};
     const mesa_shader_stage stages[]={MESA_SHADER_VERTEX,MESA_SHADER_FRAGMENT,
@@ -913,6 +943,7 @@ static void test_stage_samplers(void) {
 
 int main(void) {
     test_stage_samplers();
+    vertex_storage_contract();
     test_tessellation_buffers();
     preraster_binding_contract();
     atomic_handoff_contract();
