@@ -316,6 +316,8 @@ struct ps5_context {
    bool geometry_bindings_invalid;
    struct pipe_image_view compute_images[PS5_COMPUTE_IMAGE_SLOTS];
    struct pipe_image_view fragment_images[PS5_COMPUTE_IMAGE_SLOTS];
+   struct pipe_image_view preraster_images[4][PS5_COMPUTE_IMAGE_SLOTS];
+   bool preraster_images_invalid[4];
    bool fragment_images_invalid;
    bool compute_images_invalid;
    bool compute_bindings_invalid;
@@ -562,15 +564,18 @@ ps5_streamout_buffer_stream(unsigned stream_buffer_mask, unsigned buffer);
  * Advertise enough backing storage for the 1024 user components required by
  * OpenGL 3.3 after that reservation. */
 #define PS5_MAX_DEFAULT_CONSTANT_BUFFER_SIZE 0x1080u
-#define PS5_VERTEX_STORAGE_OFFSET 0x700u
-#define PS5_GEOMETRY_STORAGE_OFFSET 0x800u
-#define PS5_CONSTANT_DATA_OFFSET 0xa00u
+#define PS5_VERTEX_STORAGE_OFFSET 0x800u
+#define PS5_VERTEX_IMAGE_OFFSET 0xa00u
+#define PS5_GEOMETRY_STORAGE_OFFSET 0xc00u
+#define PS5_GEOMETRY_IMAGE_OFFSET 0xe00u
+#define PS5_CONSTANT_DATA_OFFSET 0x1000u
 #define PS5_FRAGMENT_UBO_OFFSET (PS5_COMPUTE_STORAGE_SLOTS * 16u + PS5_COMPUTE_IMAGE_SLOTS * 32u)
 #define PS5_FRAGMENT_TEXTURE_OFFSET (PS5_FRAGMENT_UBO_OFFSET + PS5_MAX_CONSTANT_BUFFERS * 16u)
 #define PS5_TESSELLATION_BUFFER_OFFSET \
    (PS5_CONSTANT_DATA_OFFSET + 4u * PS5_MAX_CONSTANT_BUFFER_SIZE)
 #define PS5_TESSELLATION_BUFFER_STRIDE \
-   ((PS5_MAX_CONSTANT_BUFFERS + PS5_COMPUTE_STORAGE_SLOTS) * 16u)
+   ((PS5_MAX_CONSTANT_BUFFERS + PS5_COMPUTE_STORAGE_SLOTS) * 16u + \
+    PS5_COMPUTE_IMAGE_SLOTS * 32u)
 #define PS5_TESSELLATION_TEXTURE_OFFSET \
    (PS5_TESSELLATION_BUFFER_OFFSET + 4u * PS5_TESSELLATION_BUFFER_STRIDE)
 #define PS5_DESCRIPTOR_STORAGE_BYTES \
@@ -799,12 +804,22 @@ _Static_assert(PS5_MAX_CONSTANT_BUFFERS * 16u <= PS5_CONSTANT_DATA_OFFSET,
                "constant descriptors overlap copied data");
 _Static_assert(PS5_TEXTURE_DESCRIPTOR_BYTES +
                   2u * PS5_MAX_CONSTANT_BUFFERS * 16u <=
-               PS5_CONSTANT_DATA_OFFSET,
-               "merged VS/GS descriptors overlap copied data");
+               PS5_VERTEX_STORAGE_OFFSET,
+               "merged VS/GS UBO descriptors overlap vertex storage");
+_Static_assert(PS5_VERTEX_STORAGE_OFFSET +
+                  PS5_COMPUTE_STORAGE_SLOTS * 16u <=
+               PS5_VERTEX_IMAGE_OFFSET,
+               "vertex storage descriptors overlap vertex images");
+_Static_assert(PS5_VERTEX_IMAGE_OFFSET + PS5_COMPUTE_IMAGE_SLOTS * 32u <=
+               PS5_GEOMETRY_STORAGE_OFFSET,
+               "vertex images overlap geometry storage descriptors");
 _Static_assert(PS5_GEOMETRY_STORAGE_OFFSET +
                   PS5_COMPUTE_STORAGE_SLOTS * 16u <=
+               PS5_GEOMETRY_IMAGE_OFFSET,
+               "geometry storage descriptors overlap geometry images");
+_Static_assert(PS5_GEOMETRY_IMAGE_OFFSET + PS5_COMPUTE_IMAGE_SLOTS * 32u <=
                PS5_CONSTANT_DATA_OFFSET,
-               "geometry storage descriptors overlap copied data");
+               "geometry images overlap copied data");
 _Static_assert(PS5_FRAGMENT_TEXTURE_OFFSET +
                   PS5_MAX_TEXTURE_UNITS * PS5_TEXTURE_DESCRIPTOR_STRIDE <=
                PS5_CONSTANT_DATA_OFFSET,
@@ -2753,6 +2768,67 @@ ps5_image_view_incomplete(const struct pipe_image_view *view)
 }
 
 static bool
+ps5_prepare_preraster_images(struct ps5_context *context,
+                             const struct ps5_shader *shader,
+                             const PsbcShaderMetadata *metadata,
+                             uint32_t *user_data, unsigned user_data_count,
+                             unsigned expected_offset)
+{
+   const unsigned count = shader ? shader->nir->info.num_images : 0;
+   const unsigned stage = shader ? shader->nir->info.stage : MESA_SHADER_STAGES;
+   struct ps5_resource *table =
+      (struct ps5_resource *)context->descriptor_storage[0];
+   const PsbcDescriptorBinding *bank = NULL;
+
+   if (!count)
+      return true;
+   if (stage > MESA_SHADER_GEOMETRY || count > PS5_COMPUTE_IMAGE_SLOTS ||
+       context->preraster_images_invalid[stage] || !table || !table->data ||
+       table->size < expected_offset + PS5_COMPUTE_IMAGE_SLOTS * 32u ||
+       !metadata->descriptor_set0_valid ||
+       metadata->descriptor_set0_user_data_dword >= user_data_count ||
+       (uintptr_t)table->data >> 32 != metadata->address32_hi)
+      return false;
+   for (unsigned i = 0; i < metadata->descriptor_binding_count; ++i) {
+      const PsbcDescriptorBinding *candidate = &metadata->descriptor_bindings[i];
+      if (candidate->binding == PSBC_GALLIUM_IMAGE_ARRAY_BINDING(shader->stage)) {
+         if (bank)
+            return false;
+         bank = candidate;
+      }
+   }
+   if (!bank || bank->set || bank->type != PSBC_DESCRIPTOR_STORAGE_IMAGE ||
+       bank->array_size != PS5_COMPUTE_IMAGE_SLOTS ||
+       bank->offset != expected_offset || bank->stride != 32)
+      return false;
+
+   memset(table->data + bank->offset, 0, bank->array_size * bank->stride);
+   for (unsigned i = 0; i < count; ++i) {
+      const struct pipe_image_view *view = &context->preraster_images[stage][i];
+      const struct ps5_resource *resource = (const struct ps5_resource *)view->resource;
+      uint32_t *descriptor =
+         (uint32_t *)(table->data + bank->offset + i * bank->stride);
+      if (ps5_image_view_incomplete(view))
+         continue;
+      if (!resource || (resource->base.target == PIPE_BUFFER
+             ? !ps5_image_buffer_descriptor(view, metadata->address32_hi,
+                                             descriptor)
+             : ps5_storage_image_view_descriptor(view, descriptor)))
+         return false;
+      if (resource->base.target == PIPE_BUFFER)
+         ps5_flush_gpu_data(resource->data + view->u.buf.offset,
+                            view->u.buf.size);
+      else
+         ps5_flush_gpu_data(resource->data, resource->size);
+   }
+   user_data[metadata->descriptor_set0_user_data_dword] =
+      (uintptr_t)table->data;
+   ps5_flush_gpu_data(table->data + bank->offset,
+                      bank->array_size * bank->stride);
+   return true;
+}
+
+static bool
 ps5_prepare_fragment_storage(struct ps5_context *context, uint32_t *user_data,
                              unsigned user_data_count)
 {
@@ -2836,7 +2912,7 @@ ps5_prepare_vertex_storage(struct ps5_context *context,
       return true;
    if (count > PS5_COMPUTE_STORAGE_SLOTS ||
        context->preraster_bindings_invalid[MESA_SHADER_VERTEX] ||
-       context->vs->nir->info.num_images || !table || !table->data ||
+       !table || !table->data ||
        table->size < PS5_VERTEX_STORAGE_OFFSET +
                         PS5_COMPUTE_STORAGE_SLOTS * 16u ||
        !metadata->descriptor_set0_valid ||
@@ -2898,7 +2974,7 @@ ps5_prepare_geometry_storage(struct ps5_context *context,
    if (!count)
       return true;
    if (count > PS5_COMPUTE_STORAGE_SLOTS || context->geometry_bindings_invalid ||
-       context->gs->nir->info.num_images || !table || !table->data ||
+       !table || !table->data ||
        table->size < PS5_GEOMETRY_STORAGE_OFFSET +
                         PS5_COMPUTE_STORAGE_SLOTS * 16u ||
        !metadata->descriptor_set0_valid ||
@@ -2960,8 +3036,8 @@ ps5_prepare_constant(struct ps5_context *context,
    bool merged_geometry;
    bool merged_geometry_storage;
    bool indirect_ubo;
+   unsigned resource_bindings;
    const bool storage_fs = slot == 1 && ps5_shader_uses_storage(shader);
-   const bool storage_vs = slot == 0 && ps5_shader_storage_count(shader);
 
    if (!shader || !shader->active || slot >= 2)
       return false;
@@ -2970,8 +3046,13 @@ ps5_prepare_constant(struct ps5_context *context,
    merged_geometry = ps5_uses_merged_geometry_metadata(context, shader,
                                                        metadata);
    merged_geometry_storage = merged_geometry &&
-      (ps5_shader_storage_count(context->vs) ||
-       ps5_shader_storage_count(context->gs));
+      (ps5_shader_uses_storage(context->vs) ||
+       ps5_shader_uses_storage(context->gs));
+   resource_bindings = (shader->nir->info.num_ssbos != 0) +
+                       (shader->nir->info.num_images != 0);
+   if (merged_geometry)
+      resource_bindings += (context->gs->nir->info.num_ssbos != 0) +
+                           (context->gs->nir->info.num_images != 0);
    indirect_ubo = false;
    if (!storage_fs && !merged_geometry)
       for (index = 0; index < metadata->descriptor_binding_count; ++index)
@@ -2999,10 +3080,9 @@ ps5_prepare_constant(struct ps5_context *context,
        storage->size < (PS5_ENABLE_UBO_CANDIDATE
                            ? PS5_DESCRIPTOR_STORAGE_BYTES
                            : PS5_DIRECT_ALIGNMENT) ||
-       metadata->descriptor_binding_count !=
+      metadata->descriptor_binding_count !=
           (storage_fs ? 2u + (shader->nir->info.num_images != 0) :
-                        expected_ubo_bindings + merged_geometry_storage +
-                           storage_vs) +
+                        expected_ubo_bindings + resource_bindings) +
              expected_texture_count ||
        !metadata->descriptor_set0_valid ||
        metadata->descriptor_set0_user_data_dword >= user_data_count)
@@ -3156,7 +3236,7 @@ ps5_tessellation_buffer_layout(const struct ps5_context *context,
       if (!shader)
          continue;
       if (shader->stage != PSBC_STAGE_VERTEX + stage ||
-          shader->nir->info.num_images ||
+          shader->nir->info.num_images > PS5_COMPUTE_IMAGE_SLOTS ||
           shader->nir->info.num_ubos > PS5_MAX_CONSTANT_BUFFERS ||
           shader->nir->info.num_ssbos > PS5_COMPUTE_STORAGE_SLOTS)
          return false;
@@ -3177,6 +3257,16 @@ ps5_tessellation_buffer_layout(const struct ps5_context *context,
                .type = PSBC_DESCRIPTOR_STORAGE_BUFFER,
                .array_size = shader->nir->info.num_ssbos,
                .offset = offset + PS5_MAX_CONSTANT_BUFFERS * 16u, .stride = 16,
+            };
+      if (shader->nir->info.num_images)
+         options->descriptor_bindings[options->descriptor_binding_count++] =
+            (PsbcDescriptorBinding){
+               .binding = PSBC_GALLIUM_IMAGE_ARRAY_BINDING(shader->stage),
+               .type = PSBC_DESCRIPTOR_STORAGE_IMAGE,
+               .array_size = PS5_COMPUTE_IMAGE_SLOTS,
+               .offset = offset +
+                  (PS5_MAX_CONSTANT_BUFFERS + PS5_COMPUTE_STORAGE_SLOTS) * 16u,
+               .stride = 32,
             };
       for (unsigned unit = 0; unit < PS5_MAX_TEXTURE_UNITS; ++unit) {
          if (!BITSET_TEST(shader->nir->info.textures_used, unit))
@@ -3241,6 +3331,41 @@ ps5_prepare_tessellation_buffers(struct ps5_context *context,
          continue; /* Encoded by the shared texture preparation path below. */
       const unsigned stage = (bank->binding - 1u) / 4u;
       const bool uniform = bank->type == PSBC_DESCRIPTOR_UNIFORM_BUFFER;
+      if (bank->type == PSBC_DESCRIPTOR_STORAGE_IMAGE) {
+         if (stage > MESA_SHADER_GEOMETRY ||
+             context->preraster_images_invalid[stage]) {
+            fprintf(stderr, "[ps5-gallium] tess-buffer reject=image-state stage=%u invalid=%u\n",
+                    stage, stage <= MESA_SHADER_GEOMETRY &&
+                              context->preraster_images_invalid[stage]);
+            return false;
+         }
+         memset(table->data + bank->offset, 0,
+                bank->array_size * bank->stride);
+         for (unsigned i = 0; i < stages[stage]->nir->info.num_images; ++i) {
+            const struct pipe_image_view *view =
+               &context->preraster_images[stage][i];
+            const struct ps5_resource *resource =
+               (const struct ps5_resource *)view->resource;
+            uint32_t *descriptor =
+               (uint32_t *)(table->data + bank->offset + i * bank->stride);
+            if (ps5_image_view_incomplete(view))
+               continue;
+            if (!resource || (resource->base.target == PIPE_BUFFER
+                   ? !ps5_image_buffer_descriptor(view, metadata->address32_hi,
+                                                   descriptor)
+                   : ps5_storage_image_view_descriptor(view, descriptor))) {
+               fprintf(stderr, "[ps5-gallium] tess-buffer reject=image-resource stage=%u index=%u target=%u\n",
+                       stage, i, resource ? resource->base.target : 0u);
+               return false;
+            }
+            if (resource->base.target == PIPE_BUFFER)
+               ps5_flush_gpu_data(resource->data + view->u.buf.offset,
+                                  view->u.buf.size);
+            else
+               ps5_flush_gpu_data(resource->data, resource->size);
+         }
+         continue;
+      }
       if (!uniform && (stage == 3 ? context->geometry_bindings_invalid :
                                    context->preraster_bindings_invalid[stage]))
          return false;
@@ -3319,8 +3444,8 @@ ps5_prepare_texture(struct ps5_context *context,
    unsigned expected_ubo_bindings;
    bool merged_geometry;
    bool merged_geometry_storage;
+   unsigned resource_bindings;
    const bool storage_fs = slot == 1 && ps5_shader_uses_storage(shader);
-   const bool storage_vs = slot == 0 && ps5_shader_storage_count(shader);
 
    if (!shader || (!shader->active && !metadata_override) || slot >= PS5_DESCRIPTOR_STAGE_COUNT)
       return false;
@@ -3330,8 +3455,13 @@ ps5_prepare_texture(struct ps5_context *context,
    merged_geometry = ps5_uses_merged_geometry_metadata(context, shader,
                                                        metadata);
    merged_geometry_storage = merged_geometry &&
-      (ps5_shader_storage_count(context->vs) ||
-       ps5_shader_storage_count(context->gs));
+      (ps5_shader_uses_storage(context->vs) ||
+       ps5_shader_uses_storage(context->gs));
+   resource_bindings = (shader->nir->info.num_ssbos != 0) +
+                       (shader->nir->info.num_images != 0);
+   if (merged_geometry)
+      resource_bindings += (context->gs->nir->info.num_ssbos != 0) +
+                           (context->gs->nir->info.num_images != 0);
    expected_texture_count = ps5_texture_count(context, shader, metadata);
    if (!expected_texture_count)
       return true;
@@ -3345,8 +3475,8 @@ ps5_prepare_texture(struct ps5_context *context,
    unsigned expected_binding_count =
       (storage_fs ? 1u + (shader->nir->info.num_images != 0) +
                        (expected_ubo_count != 0) :
-                    expected_ubo_bindings + merged_geometry_storage +
-                       storage_vs) + expected_texture_count;
+                    expected_ubo_bindings + resource_bindings) +
+         expected_texture_count;
    if (merged_tessellation) {
       PsbcCompileOptions layout = {0};
       if (!ps5_tessellation_buffer_layout(context, &layout))
@@ -9348,6 +9478,14 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       context->last_draw_status = -15;
       return;
    }
+   if (!tessellation_active &&
+       !ps5_prepare_preraster_images(context, context->vs, input_metadata,
+                                     input_user_data, input_user_data_count,
+                                     PS5_VERTEX_IMAGE_OFFSET)) {
+      printf("[ps5-gallium] resource-prepare reject=vertex-images\n");
+      context->last_draw_status = -15;
+      return;
+   }
    if (tessellation_active &&
        (!ps5_prepare_texture(context, context->vs, 0, input_user_data,
                              input_user_data_count, input_metadata, NULL) ||
@@ -9361,6 +9499,14 @@ ps5_draw_vbo_locked(struct pipe_context *base,
        !ps5_prepare_geometry_storage(context, vertex_metadata, user_data,
                                      user_data_count)) {
       printf("[ps5-gallium] resource-prepare reject=geometry-storage\n");
+      context->last_draw_status = -15;
+      return;
+   }
+   if (context->gs && !tessellation_active &&
+       !ps5_prepare_preraster_images(context, context->gs, vertex_metadata,
+                                     user_data, user_data_count,
+                                     PS5_GEOMETRY_IMAGE_OFFSET)) {
+      printf("[ps5-gallium] resource-prepare reject=geometry-images\n");
       context->last_draw_status = -15;
       return;
    }
@@ -11877,8 +12023,10 @@ ps5_shader_compile_options(const struct ps5_shader *shader,
             return false;
       return true;
    }
-   if (shader->nir->info.num_images ||
-       shader->nir->info.num_ssbos > PS5_COMPUTE_STORAGE_SLOTS)
+   if (shader->nir->info.num_images > PS5_COMPUTE_IMAGE_SLOTS ||
+       shader->nir->info.num_ssbos > PS5_COMPUTE_STORAGE_SLOTS ||
+       ((shader->nir->info.num_images || shader->nir->info.num_ssbos) &&
+        shader->stage != PSBC_STAGE_VERTEX))
       return false;
    options->vertex_attribute_count = layout->count;
    memcpy(options->vertex_attributes, layout->attributes,
@@ -11890,8 +12038,7 @@ ps5_shader_compile_options(const struct ps5_shader *shader,
          return false;
    }
    if (shader->nir->info.num_ssbos) {
-      if (shader->stage != PSBC_STAGE_VERTEX ||
-          options->descriptor_binding_count >= PSBC_MAX_DESCRIPTOR_BINDINGS)
+      if (options->descriptor_binding_count >= PSBC_MAX_DESCRIPTOR_BINDINGS)
          return false;
       options->gallium_buffer_arrays = true;
       options->descriptor_bindings[options->descriptor_binding_count++] =
@@ -11903,11 +12050,24 @@ ps5_shader_compile_options(const struct ps5_shader *shader,
             .stride = 16,
          };
    }
+   if (shader->nir->info.num_images) {
+      if (options->descriptor_binding_count >= PSBC_MAX_DESCRIPTOR_BINDINGS)
+         return false;
+      options->gallium_buffer_arrays = true;
+      options->descriptor_bindings[options->descriptor_binding_count++] =
+         (PsbcDescriptorBinding){
+            .binding = PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_VERTEX),
+            .type = PSBC_DESCRIPTOR_STORAGE_IMAGE,
+            .array_size = PS5_COMPUTE_IMAGE_SLOTS,
+            .offset = PS5_VERTEX_IMAGE_OFFSET,
+            .stride = 32,
+         };
+   }
    if (shader->nir->info.num_ubos) {
       if (shader->nir->info.num_ubos >
              (PS5_ENABLE_UBO_CANDIDATE ? PS5_MAX_CONSTANT_BUFFERS : 1))
          return false;
-      if (shader->nir->info.num_ssbos || ps5_shader_has_indirect_ubo(shader)) {
+      if (ps5_shader_uses_storage(shader) || ps5_shader_has_indirect_ubo(shader)) {
          if (options->descriptor_binding_count >= PSBC_MAX_DESCRIPTOR_BINDINGS)
             return false;
          options->gallium_buffer_arrays = true;
@@ -12558,6 +12718,8 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
    unsigned geometry_ubos;
    unsigned vertex_ssbos;
    unsigned geometry_ssbos;
+   unsigned vertex_images;
+   unsigned geometry_images;
    unsigned vertex_ubo_bindings;
    bool merged_storage;
    struct ps5_texture_offset_state texture_offset = {.first = PS5_MAX_TEXTURE_UNITS, .valid = true};
@@ -12589,12 +12751,16 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
    geometry_ubos = context->gs->nir->info.num_ubos;
    vertex_ssbos = context->vs->nir->info.num_ssbos;
    geometry_ssbos = context->gs->nir->info.num_ssbos;
-   merged_storage = vertex_ssbos || geometry_ssbos;
+   vertex_images = context->vs->nir->info.num_images;
+   geometry_images = context->gs->nir->info.num_images;
+   merged_storage = vertex_ssbos || geometry_ssbos ||
+                    vertex_images || geometry_images;
    vertex_ubo_bindings = vertex_ubos
-      ? ((vertex_ssbos || ps5_shader_has_indirect_ubo(context->vs))
+      ? ((vertex_ssbos || vertex_images ||
+          ps5_shader_has_indirect_ubo(context->vs))
             ? 1u : vertex_ubos)
       : 0u;
-   if (context->gs->nir->info.num_images ||
+   if (geometry_images > PS5_COMPUTE_IMAGE_SLOTS ||
        geometry_ssbos > PS5_COMPUTE_STORAGE_SLOTS ||
        vertex_ubos + geometry_ubos > 2u * PS5_MAX_CONSTANT_BUFFERS)
       return false;
@@ -12616,6 +12782,19 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
                .stride = 16,
             };
       }
+      if (geometry_images) {
+         if (options.descriptor_binding_count >= PSBC_MAX_DESCRIPTOR_BINDINGS)
+            return false;
+         options.descriptor_bindings[options.descriptor_binding_count++] =
+            (PsbcDescriptorBinding){
+               .binding =
+                  PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_GEOMETRY),
+               .type = PSBC_DESCRIPTOR_STORAGE_IMAGE,
+               .array_size = PS5_COMPUTE_IMAGE_SLOTS,
+               .offset = PS5_GEOMETRY_IMAGE_OFFSET,
+               .stride = 32,
+            };
+      }
    }
    merged_textures = ps5_shader_texture_count(context->vs);
    for (unsigned binding = 0; binding < PS5_MAX_TEXTURE_UNITS; ++binding) {
@@ -12634,6 +12813,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
                              &context->geometry_output.metadata) ||
        options.descriptor_binding_count !=
           merged_textures + (vertex_ssbos != 0) + (geometry_ssbos != 0) +
+             (vertex_images != 0) + (geometry_images != 0) +
              (merged_storage ? 0 : vertex_ubo_bindings)) {
       printf("[ps5-gallium] geometry-select reject=texture-count vertex=%u geometry=%u merged=%u descriptors=%u\n",
              context->vs->nir->info.num_textures,
@@ -13281,10 +13461,20 @@ ps5_set_shader_images(struct pipe_context *base, mesa_shader_stage stage,
                        const struct pipe_image_view *images)
 {
    struct ps5_context *context = (struct ps5_context *)base;
-   if (stage != MESA_SHADER_COMPUTE && stage != MESA_SHADER_FRAGMENT)
+   bool *invalid;
+   struct pipe_image_view *bound_images;
+   if (stage == MESA_SHADER_COMPUTE) {
+      invalid = &context->compute_images_invalid;
+      bound_images = context->compute_images;
+   } else if (stage == MESA_SHADER_FRAGMENT) {
+      invalid = &context->fragment_images_invalid;
+      bound_images = context->fragment_images;
+   } else if (stage <= MESA_SHADER_GEOMETRY) {
+      invalid = &context->preraster_images_invalid[stage];
+      bound_images = context->preraster_images[stage];
+   } else {
       return;
-   bool *invalid = stage == MESA_SHADER_COMPUTE ? &context->compute_images_invalid : &context->fragment_images_invalid;
-   struct pipe_image_view *bound_images = stage == MESA_SHADER_COMPUTE ? context->compute_images : context->fragment_images;
+   }
    *invalid = true;
    if (start > PS5_COMPUTE_IMAGE_SLOTS || count > PS5_COMPUTE_IMAGE_SLOTS - start ||
        unbind > PS5_COMPUTE_IMAGE_SLOTS - start - count)
@@ -13309,7 +13499,7 @@ ps5_set_shader_images(struct pipe_context *base, mesa_shader_stage stage,
       } else if (ps5_storage_image_view_descriptor(v, descriptor))
          return;
    }
-   if (stage == MESA_SHADER_FRAGMENT)
+   if (stage != MESA_SHADER_COMPUTE)
       ps5_draw_batch_drain();
    for (unsigned i = 0; i < count + unbind; ++i) {
       struct pipe_image_view next = images && i < count ? images[i] : (struct pipe_image_view){0};
@@ -14617,6 +14807,10 @@ ps5_context_destroy(struct pipe_context *base)
       pipe_resource_reference(&context->compute_images[index].resource, NULL);
    for (index = 0; index < PS5_COMPUTE_IMAGE_SLOTS; ++index)
       pipe_resource_reference(&context->fragment_images[index].resource, NULL);
+   for (unsigned stage = 0; stage < 4; ++stage)
+      for (index = 0; index < PS5_COMPUTE_IMAGE_SLOTS; ++index)
+         pipe_resource_reference(
+            &context->preraster_images[stage][index].resource, NULL);
    pipe_resource_reference(&context->compute_descriptors, NULL);
    for (unsigned i = 0; i < PS5_COMPUTE_TEXTURE_SLOTS; ++i)
       pipe_sampler_view_reference(&context->compute_views[i], NULL);
@@ -15097,6 +15291,8 @@ ps5_screen_create(void)
    vs_caps->indirect_temp_addr = true;
    vs_caps->indirect_const_addr = true;
    vs_caps->integers = true;
+   if (PS5_ENABLE_GLSL_420_CANDIDATE)
+      vs_caps->max_shader_images = PS5_COMPUTE_IMAGE_SLOTS;
    if (PS5_ENABLE_GLSL_430_CANDIDATE)
       vs_caps->max_shader_buffers = PS5_COMPUTE_STORAGE_SLOTS;
 
