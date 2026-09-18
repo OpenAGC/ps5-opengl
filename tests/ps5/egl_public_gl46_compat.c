@@ -190,10 +190,13 @@ main(void)
    static const float *legacy_vertices[] = {quads, strip, polygon_vertices};
    static const GLsizei legacy_counts[] = {4, 4, 5};
    const EGLint config_attribs[] = {
-      EGL_SURFACE_TYPE, EGL_WINDOW_BIT,
+      EGL_SURFACE_TYPE, EGL_PBUFFER_BIT,
       EGL_RENDERABLE_TYPE, EGL_OPENGL_BIT,
       EGL_RED_SIZE, 8, EGL_GREEN_SIZE, 8, EGL_BLUE_SIZE, 8,
       EGL_DEPTH_SIZE, 24, EGL_NONE,
+   };
+   const EGLint surface_attribs[] = {
+      EGL_WIDTH, WIDTH, EGL_HEIGHT, HEIGHT, EGL_NONE,
    };
    const EGLint context_attribs[] = {
       EGL_CONTEXT_MAJOR_VERSION_KHR, 4,
@@ -221,12 +224,14 @@ main(void)
    int thread_created = 0, sharing_passed = 0;
    EGLBoolean cleanup_ok = EGL_TRUE;
 
+   setvbuf(stdout, NULL, _IONBF, 0);
+   printf("[ps5-gl46-compat] stage=egl-start\n");
    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
    if (display == EGL_NO_DISPLAY || !eglInitialize(display, &egl_major, &egl_minor) ||
        !eglBindAPI(EGL_OPENGL_API) ||
        !eglChooseConfig(display, config_attribs, &config, 1, &count) || count != 1)
       goto cleanup;
-   surface = eglCreateWindowSurface(display, config, (EGLNativeWindowType)0, NULL);
+   surface = eglCreatePbufferSurface(display, config, surface_attribs);
    context = eglCreateContext(display, config, EGL_NO_CONTEXT, context_attribs);
    shared = eglCreateContext(display, config, context, context_attribs);
    if (surface == EGL_NO_SURFACE || context == EGL_NO_CONTEXT ||
@@ -237,6 +242,7 @@ main(void)
                         EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR, &profile))
       goto cleanup;
    made_current = 1;
+   printf("[ps5-gl46-compat] stage=context-current\n");
    glGetIntegerv(GL_MAJOR_VERSION, &gl_major);
    glGetIntegerv(GL_MINOR_VERSION, &gl_minor);
    glGetIntegerv(GL_CONTEXT_PROFILE_MASK, &profile_mask);
@@ -250,6 +256,7 @@ main(void)
    programs[3] = program(flat_vs, flat_fs);
    if (!programs[0] || !programs[1] || !programs[2] || !programs[3])
       goto cleanup;
+   printf("[ps5-gl46-compat] stage=programs-linked\n");
 
    glGenVertexArrays(1, &vao);
    glBindVertexArray(vao);
@@ -279,6 +286,7 @@ main(void)
       material_passes += pixel[0] == (i & 1 ? 255 : 0) &&
                          pixel[1] == pixel[0] && pixel[2] == pixel[0];
    }
+   printf("[ps5-gl46-compat] stage=material passes=%u\n", material_passes);
 
    glUseProgram(programs[1]);
    GLint depth = glGetUniformLocation(programs[1], "depth");
@@ -310,6 +318,7 @@ main(void)
    }
    glDisable(GL_ALPHA_TEST);
    glDisable(GL_DEPTH_TEST);
+   printf("[ps5-gl46-compat] stage=alpha passes=%u\n", alpha_passes);
 
    glGenTextures(1, &float_texture);
    glBindTexture(GL_TEXTURE_2D, float_texture);
@@ -334,6 +343,8 @@ main(void)
    glDrawArrays(GL_TRIANGLES, 0, 3);
    glReadPixels(WIDTH / 2, HEIGHT / 2, 1, 1, GL_RGBA, GL_FLOAT, clamped);
    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+   printf("[ps5-gl46-compat] stage=clamp values=%g/%g:%g/%g\n",
+          unclamped[0], unclamped[1], clamped[0], clamped[1]);
 
    glUseProgram(programs[2]);
    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(point), point);
@@ -354,6 +365,7 @@ main(void)
    glDisable(GL_POINT_SPRITE);
    point_passes += glIsEnabled(GL_POINT_SPRITE) == GL_FALSE;
    glDisable(GL_PROGRAM_POINT_SIZE);
+   printf("[ps5-gl46-compat] stage=point passes=%u\n", point_passes);
 
    glUseProgram(programs[1]);
    glUniform1f(depth, 0);
@@ -388,6 +400,9 @@ main(void)
                     cull_back_front > 0 && cull_back_back == 0 &&
                     cull_front_front == 0 && cull_front_back > 0 &&
                     polygon_mode[0] == GL_FILL && polygon_mode[1] == GL_FILL;
+   printf("[ps5-gl46-compat] stage=polygon pass=%u counts=%u/%u/%u/%u/%u/%u\n",
+          polygon_passes, mixed_front, mixed_back, cull_back_front,
+          cull_back_back, cull_front_front, cull_front_back);
 
    glUseProgram(programs[3]);
    for (unsigned mode = 0; mode < 3; ++mode) {
@@ -418,6 +433,7 @@ main(void)
    glReadPixels(WIDTH / 2, HEIGHT / 2, 1, 1, GL_RGBA,
                 GL_UNSIGNED_BYTE, pixels);
    legacy_passes += pixels[0] == 0 && pixels[1] == 0 && pixels[2] == 255;
+   printf("[ps5-gl46-compat] stage=legacy passes=%u\n", legacy_passes);
 
    glGenTextures(1, &shared_texture);
    glBindTexture(GL_TEXTURE_2D, shared_texture);
@@ -452,6 +468,7 @@ main(void)
 
    made_current = eglMakeCurrent(display, surface, surface, context);
    sharing_passed &= made_current;
+   printf("[ps5-gl46-compat] stage=sharing pass=%u\n", sharing_passed);
 
    draw_status = ps5_egl_current_draw_status(&draw_calls);
    passed = egl_major == 1 && egl_minor == 4 && gl_major == 4 && gl_minor == 6 &&
