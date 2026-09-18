@@ -904,7 +904,7 @@ index bacbc6a..c72d287 100644
  typedef struct {
      const struct nir_shader* nir;
      const struct radv_shader_info* rinfo;
-@@ -216,9 +553,720 @@ typedef struct {
+@@ -216,9 +553,722 @@ typedef struct {
      PsbcStage psbc_stage;
      const uint32_t* spirv_data;
      size_t spirv_size;
@@ -938,8 +938,10 @@ index bacbc6a..c72d287 100644
 +    const PsbcCompileOptions* options = data;
 +    /* The Gallium flag carries GL's flatshade_first state despite its legacy
 +     * name. Select the corresponding lane explicitly on PS5. */
-+    const unsigned vertex_id = options->provoking_vtx_last ?
-+        ps5_last_provoking_vertex(options->primitive_type) : 1;
++    const unsigned vertex_id = options->flat_input_vertex_valid ?
++        options->flat_input_vertex :
++        (options->provoking_vtx_last ?
++            ps5_last_provoking_vertex(options->primitive_type) : 1);
 +    if (intrinsic->intrinsic != nir_intrinsic_load_input)
 +        return false;
 +    /* An implicit NGG PrimitiveID has one value per primitive, not P0/P1/P2.
@@ -3818,7 +3820,7 @@ index 000e7e1..38eaf28 100644
  } PsbcShaderOutput;
  
  typedef struct {
-@@ -61,8 +233,69 @@ typedef struct {
+@@ -61,8 +233,71 @@ typedef struct {
      PsbcStage   stage;
      const char* entrypoint;  /* Default: "main" */
      bool        optimise;    /* Default: true */
@@ -3831,6 +3833,8 @@ index 000e7e1..38eaf28 100644
 +    bool        force_accelerated_dot; /* Diagnostic only: emit native dot ISA */
 +    uint32_t    primitive_type; /* GFX10 DI primitive type: 0, 1..6, 10..13 */
 +    bool        provoking_vtx_last; /* Select the final flat-shaded vertex */
++    bool        flat_input_vertex_valid;
++    uint8_t     flat_input_vertex;
 +    uint32_t    address32_hi; /* Upper half for ACO 32-bit GPU pointers */
 +    uint32_t    vertex_attribute_count;
 +    PsbcVertexAttribute vertex_attributes[PSBC_MAX_VERTEX_ATTRIBUTES];

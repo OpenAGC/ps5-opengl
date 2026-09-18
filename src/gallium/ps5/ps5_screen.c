@@ -226,6 +226,9 @@ struct ps5_context {
    bool deferred_color_clear;
    int last_draw_status;
    unsigned draw_calls;
+   bool legacy_primitive_conversion;
+   unsigned legacy_first_index;
+   int legacy_flat_input_vertex;
    struct ps5_shader *vs;
    struct ps5_shader *tcs;
    struct ps5_shader *default_tcs;
@@ -357,6 +360,7 @@ struct ps5_shader_variant {
    bool poly_line_smooth;
    bool omit_implicit_primitive_id;
    bool primitive_id_per_primitive;
+   int8_t flat_input_vertex;
    PsbcShaderOutput output;
    PsbcShaderOutput streamout_output;
    uint8_t *package;
@@ -531,6 +535,7 @@ ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
                           bool poly_line_smooth,
                           bool omit_implicit_primitive_id,
                           bool primitive_id_per_primitive,
+                          int flat_input_vertex,
                           const struct ps5_fragment_exports *exports);
 static bool
 ps5_select_geometry_pipeline(struct ps5_context *context,
@@ -9165,7 +9170,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
                       VARYING_BIT_PRIMITIVE_ID) &&
                     !BITSET_TEST(context->fs->nir->info.system_values_read,
                                  SYSTEM_VALUE_PRIMITIVE_ID),
-                 false, NULL) ||
+                 false, -1, NULL) ||
               !ps5_select_geometry_pipeline(
                  context,
                  (uint32_t)((uintptr_t)descriptor_resource->data >> 32),
@@ -9199,6 +9204,8 @@ ps5_draw_vbo_locked(struct pipe_context *base,
           /* Both explicit GS IDs and the compiler's implicit VS IDs use
            * per-vertex transport on PS5. */
           poly_line_smooth, false, false,
+          context->legacy_primitive_conversion ?
+             context->legacy_flat_input_vertex : -1,
           &fragment_exports)) {
       context->last_draw_status = -14;
       return;
@@ -10792,7 +10799,7 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
               BITFIELD_BIT(MESA_PRIM_QUAD_STRIP) |
               BITFIELD_BIT(MESA_PRIM_POLYGON)),
          .restart_primtypes_mask = 0,
-         .rotate_legacy_triangles_left = true,
+         .split_legacy_triangles = true,
       };
       struct primconvert_context *converter =
          util_primconvert_create_config(base, &cfg);
@@ -10802,8 +10809,12 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
       }
       util_primconvert_save_flatshade_first(
          converter, context->rasterizer && context->rasterizer->flatshade_first);
+      context->legacy_primitive_conversion = true;
+      context->legacy_first_index = UINT_MAX;
       util_primconvert_draw_vbo(converter, info, drawid_offset, indirect,
                                 draws, num_draws);
+      context->legacy_primitive_conversion = false;
+      context->legacy_flat_input_vertex = -1;
       util_primconvert_destroy(converter);
       return;
    }
@@ -10832,8 +10843,19 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
       return;
    }
 
+   if (context->legacy_primitive_conversion && info && draws &&
+       num_draws == 1 && info->mode == MESA_PRIM_TRIANGLES &&
+       draws[0].count == 3) {
+      if (context->legacy_first_index == UINT_MAX)
+         context->legacy_first_index = draws[0].start;
+      const unsigned triangle =
+         (draws[0].start - context->legacy_first_index) / 3u;
+      context->legacy_flat_input_vertex = (triangle & 1u) ? 1 : 2;
+   }
+
 #ifdef PS5_DEFERRED_DRAW_BATCH
-   if (ps5_try_deferred_draw(base, info, drawid_offset, indirect, draws, num_draws))
+   if (!context->legacy_primitive_conversion &&
+       ps5_try_deferred_draw(base, info, drawid_offset, indirect, draws, num_draws))
       return;
 #endif
 #ifdef PS5_MULTIDRAW_BATCH
@@ -12376,6 +12398,7 @@ ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
                           bool poly_line_smooth,
                           bool omit_implicit_primitive_id,
                           bool primitive_id_per_primitive,
+                          int flat_input_vertex,
                           const struct ps5_fragment_exports *exports)
 {
    const struct ps5_fragment_exports no_exports = {.color_mask = 1};
@@ -12401,6 +12424,7 @@ ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
           variant->poly_line_smooth == poly_line_smooth &&
           variant->omit_implicit_primitive_id == omit_implicit_primitive_id &&
           variant->primitive_id_per_primitive == primitive_id_per_primitive &&
+          variant->flat_input_vertex == flat_input_vertex &&
           variant->exports.formats == exports->formats &&
           variant->exports.int8_mask == exports->int8_mask &&
           variant->exports.int10_mask == exports->int10_mask &&
@@ -12423,6 +12447,7 @@ ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
    variant->poly_line_smooth = poly_line_smooth;
    variant->omit_implicit_primitive_id = omit_implicit_primitive_id;
    variant->primitive_id_per_primitive = primitive_id_per_primitive;
+   variant->flat_input_vertex = flat_input_vertex;
    variant->exports = *exports;
    if (!ps5_shader_compile_options(shader, address32_hi, layout,
                                    primitive_type, provoking_vtx_last,
@@ -12433,6 +12458,8 @@ ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
    options.spi_shader_col_format = exports->formats;
    options.omit_implicit_primitive_id = omit_implicit_primitive_id;
    options.primitive_id_per_primitive = primitive_id_per_primitive;
+   options.flat_input_vertex_valid = flat_input_vertex >= 0;
+   options.flat_input_vertex = flat_input_vertex >= 0 ? flat_input_vertex : 0;
    options.color_is_int8 = exports->int8_mask;
    options.color_is_int10 = exports->int10_mask;
    if (shader->stage == PSBC_STAGE_FRAGMENT)
@@ -13955,7 +13982,7 @@ ps5_create_shader_state(struct pipe_screen *screen,
        stage != PSBC_STAGE_TESS_EVAL &&
        !(stage == PSBC_STAGE_VERTEX && ps5_shader_uses_storage(shader)) &&
        !ps5_select_shader_variant(shader, address32_hi, &layout, 0, false,
-                                  false, false, false, false, NULL)) {
+                                  false, false, false, false, -1, NULL)) {
       ralloc_free(shader->nir);
       free(shader);
       return NULL;
