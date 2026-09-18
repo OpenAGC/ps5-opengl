@@ -734,6 +734,48 @@ egl_public_gl46_spirv.o: egl_public_gl46_spirv.c \
 		gl46_spirv_vert.inc gl46_spirv_frag.inc
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
 
+egl_public_gl46_piglit.o: egl_public_gl46_piglit.c
+	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
+
+# Reuse the complete public oracles in one native title. Each oracle owns its
+# EGL/Gallium lifecycle, so this also catches stale state across recreation.
+egl_public_gl46_stress.o: gl46_stress_main.o gl46_stress_buffer.o \
+		gl46_stress_compute_api.o gl46_stress_compute_render.o \
+		gl46_stress_indirect.o gl46_stress_spirv.o gl46_stress_piglit.o
+	$(LD) -r -o $@ $^
+
+gl46_stress_main.o: egl_public_gl46_stress.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+
+gl46_stress_buffer.o: egl_public_gl44_state.c
+	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 \
+		-Dmain=ps5_stress_buffer_main -c -o $@ $<
+
+gl46_stress_compute_api.o: egl_public_compute_api.c $(DRIVER)/ps5_screen.h
+	$(CC) $(CFLAGS) -DHAVE_PTHREAD=1 -DHAVE_STRUCT_TIMESPEC=1 \
+		-Wno-error=unused-parameter -Wno-error=missing-field-initializers \
+		-Wno-unreachable-code-generic-assoc -I$(MESA_SRC)/src/mesa \
+		-Dmain=ps5_stress_compute_api_main -c -o $@ $<
+
+gl46_stress_compute_render.o: egl_public_compute_render.c $(DRIVER)/ps5_screen.h
+	$(CC) $(CFLAGS) $(PSBC_CFLAGS) \
+		-DPS5_SCANOUT_HEIGHT=$(or $(PS5_SCANOUT_HEIGHT),1080) \
+		-Dmain=ps5_stress_compute_render_main \
+		-Wno-unreachable-code-generic-assoc -c -o $@ $<
+
+gl46_stress_indirect.o: egl_public_draw_indirect.c
+	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 \
+		-Dmain=ps5_stress_indirect_main -c -o $@ $<
+
+gl46_stress_spirv.o: egl_public_gl46_spirv.c \
+		gl46_spirv_vert.inc gl46_spirv_frag.inc
+	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 \
+		-Dmain=ps5_stress_spirv_main -c -o $@ $<
+
+gl46_stress_piglit.o: egl_public_gl46_piglit.c
+	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 \
+		-Dmain=ps5_stress_piglit_main -c -o $@ $<
+
 egl_public_glsl400.o: egl_public_glsl400.c egl_public_draw_indirect.c
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
 
