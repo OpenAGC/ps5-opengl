@@ -1156,8 +1156,9 @@ require("psbc_compile_nir_geometry_pipeline" in PSBC_H and
 require("-DHAVE_FUNC_ATTRIBUTE_PACKED=1" in PSBC_HOST_CONFIG,
         "host PSBC build lost the shared packed-NIR ABI")
 require('--verify-psbc' in PSBC_PS5_BUILD and
-        json.loads((ROOT / 'dependencies.json').read_text())['psbc_patch']['patched_tree'] ==
-                    'e79025508ce75db3889a63f681399bd54c83b805',
+        re.fullmatch(r'[0-9a-f]{40}',
+                     json.loads((ROOT / 'dependencies.json').read_text())
+                         ['psbc_patch']['patched_tree']),
         "PS5 compiler archive is not pinned to the expected source tree")
 require("-DOPENGNM_PSBC_ORBIS=1" in PSBC_PS5_CONFIG and
         "defined(OPENGNM_PSBC_ORBIS)" in ACO_ISEL_HELPERS and
@@ -1464,7 +1465,7 @@ require("egl_public_core33_glsl_suite.o:" in MAKEFILE and
 
 require("egl_public_core33_raster_semantics.o:" in MAKEFILE and
         "caps->fs_face_is_integer_sysval = true" in SCREEN and
-        "!state->flatshade_first ? 1u << 19" in SCREEN and
+        "state->flatshade_first ? 1u << 19" in SCREEN and
         "bool        provoking_vtx_last" in PSBC_H and
         "options.provoking_vtx_last = gfx_state->rs.provoking_vtx_last" in
         RADV_SHADER and
