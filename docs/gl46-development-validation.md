@@ -9,6 +9,18 @@ The static SDK exports all **657/657 OpenGL 4.6 Core commands**. Isolated Make,
 pkg-config and CMake consumers compile and link using only the installed SDK and
 the public PS5 payload toolchain.
 
+## Compatibility application gate
+
+The hardware gate at commit `0f127f0` passes OpenGL 4.6 Compatibility and GLSL
+4.60 compatibility contexts, material ambient state, all eight alpha functions,
+color clamping, point sprites, polygon mode/culling restoration, legacy
+`QUADS`/`QUAD_STRIP`/`POLYGON` draws, first/last provoking-vertex flat shading,
+and shared-context migration and cleanup. Its eboot SHA-256 is
+`63ffcaaa8ef71fd5e77a9d0f9141dad18d348e40e1c89a210a78fba0514a1254`.
+The consolidated receipt reports `legacy=8/8 share=1 result=0` and clean runtime
+layer release. The repository's 128 host tests and published-validation audit
+also pass.
+
 ## Compatibility warning
 
 `KHR-GL46.direct_state_access.framebuffers_check_status` reports a CTS
