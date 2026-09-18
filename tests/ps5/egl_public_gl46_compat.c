@@ -194,11 +194,7 @@ main(void)
    static const float polygon_vertices[] = {
       0,.8f,-.75f,.25f,-.45f,-.7f,.45f,-.7f,.75f,.25f,
    };
-   static const uint8_t indices[] = {0, 1, 2, 3, 4, 0};
-   static const uint8_t flat_probe_indices[6][6] = {
-      {0,1,2,0,2,3}, {1,2,0,0,2,3}, {2,0,1,0,2,3},
-      {0,1,3,1,2,3}, {1,3,0,1,2,3}, {3,0,1,1,2,3},
-   };
+   static const uint8_t indices[] = {0, 1, 2, 3, 4};
    static const GLenum alpha_funcs[] = {
       GL_NEVER, GL_LESS, GL_EQUAL, GL_LEQUAL,
       GL_GREATER, GL_NOTEQUAL, GL_GEQUAL, GL_ALWAYS,
@@ -235,7 +231,6 @@ main(void)
    uint8_t pixels[PIXELS * 4];
    uint8_t flat_first[8] = {0}, flat_last[8] = {0};
    uint8_t triangle_first[4] = {0}, triangle_last[4] = {0};
-   uint8_t flat_probe[6][8] = {{0}};
    unsigned material_passes = 0, alpha_passes = 0, point_passes = 0;
    unsigned polygon_passes = 0, legacy_passes = 0, draw_calls = 0;
    int draw_status = -1, made_current = 0, passed = 0;
@@ -466,26 +461,6 @@ main(void)
       }
    }
    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(quads), quads);
-   for (unsigned probe = 0; probe < 6; ++probe) {
-      glProvokingVertex(probe < 3 ? GL_FIRST_VERTEX_CONVENTION :
-                                    GL_LAST_VERTEX_CONVENTION);
-      glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, 6,
-                      flat_probe_indices[probe]);
-      glClear(GL_COLOR_BUFFER_BIT);
-      glDrawElements(GL_TRIANGLES, 6, GL_UNSIGNED_BYTE, NULL);
-      glReadPixels(35, 65, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE,
-                   flat_probe[probe]);
-      glReadPixels(90, 30, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE,
-                   flat_probe[probe] + 4);
-   }
-   glBufferSubData(GL_ELEMENT_ARRAY_BUFFER, 0, sizeof(indices), indices);
-   log_line("[ps5-gl46-compat] flat-probe=%u%u%u,%u%u%u:%u%u%u,%u%u%u:%u%u%u,%u%u%u|%u%u%u,%u%u%u:%u%u%u,%u%u%u:%u%u%u,%u%u%u\n",
-            flat_probe[0][0], flat_probe[0][1], flat_probe[0][2], flat_probe[0][4], flat_probe[0][5], flat_probe[0][6],
-            flat_probe[1][0], flat_probe[1][1], flat_probe[1][2], flat_probe[1][4], flat_probe[1][5], flat_probe[1][6],
-            flat_probe[2][0], flat_probe[2][1], flat_probe[2][2], flat_probe[2][4], flat_probe[2][5], flat_probe[2][6],
-            flat_probe[3][0], flat_probe[3][1], flat_probe[3][2], flat_probe[3][4], flat_probe[3][5], flat_probe[3][6],
-            flat_probe[4][0], flat_probe[4][1], flat_probe[4][2], flat_probe[4][4], flat_probe[4][5], flat_probe[4][6],
-            flat_probe[5][0], flat_probe[5][1], flat_probe[5][2], flat_probe[5][4], flat_probe[5][5], flat_probe[5][6]);
    glGetIntegerv(GL_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION, &quads_follow);
    glProvokingVertex(GL_FIRST_VERTEX_CONVENTION);
    glClear(GL_COLOR_BUFFER_BIT);
