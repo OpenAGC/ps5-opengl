@@ -10,6 +10,8 @@ PS5_OPENGL_PUBLIC_CFLAGS := -DGL_GLEXT_PROTOTYPES=1 \
 	-I$(PS5_OPENGL_PREFIX)/include
 PS5_OPENGL_LDLIBS := -Wl,-u,ps5_agc_gate2_run \
 	-L$(PS5_OPENGL_PREFIX)/lib -Wl,--start-group \
-	-lPS5OpenGLCore33 -Wl,--end-group -lSceAgc -lSceAgcDriver \
+	-lPS5OpenGLCore33 -Wl,--end-group \
+	$(PS5_OPENGL_PREFIX)/lib/libSceAgc.so \
+	$(PS5_OPENGL_PREFIX)/lib/libSceAgcDriver.so \
 	-lSceVideoOut -lkernel_web -lSceSystemService
 PS5_OPENGL_LDFLAGS := -Wl,--gc-sections -Wl,--build-id=sha1

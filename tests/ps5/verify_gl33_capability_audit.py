@@ -404,7 +404,7 @@ require("PS5_OPENGL_IMPORT_STUBS" in CORE33_MK and
         "manifest.sha256" in SDK_INSTALLER and
         "-lPS5OpenGLCore33" in INSTALLED_MK and
         "-lPS5OpenGL" in GENERIC_INSTALLED_MK and
-        "-lSceAgcDriver" in INSTALLED_MK and
+        "$(PS5_OPENGL_PREFIX)/lib/libSceAgcDriver.so" in INSTALLED_MK and
         'python3 "$root/tools/check-sdk-consumers.py"' in SDK_VERIFY and
         '--sdk "$prefix" --payload-sdk "$sdk"' in SDK_VERIFY and
         '--example-dir "$root/examples/core33-triangle"' in SDK_VERIFY and
