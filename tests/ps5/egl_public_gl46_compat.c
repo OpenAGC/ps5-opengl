@@ -229,13 +229,14 @@ main(void)
    GLuint float_texture = 0, framebuffer = 0, shared_texture = 0;
    uint8_t pixels[PIXELS * 4];
    uint8_t flat_first[8] = {0}, flat_last[8] = {0};
+   uint8_t triangle_first[4] = {0}, triangle_last[4] = {0};
    unsigned material_passes = 0, alpha_passes = 0, point_passes = 0;
    unsigned polygon_passes = 0, legacy_passes = 0, draw_calls = 0;
    int draw_status = -1, made_current = 0, passed = 0;
    unsigned setup_stage = 0;
    EGLint setup_error = EGL_SUCCESS;
    GLfloat unclamped[4] = {0}, clamped[4] = {0};
-   GLint polygon_mode[2] = {0};
+   GLint polygon_mode[2] = {0}, quads_follow = 0;
    struct worker worker = {0};
    pthread_t thread;
    pthread_attr_t thread_attributes;
@@ -459,6 +460,15 @@ main(void)
       }
    }
    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(quads), quads);
+   glGetIntegerv(GL_QUADS_FOLLOW_PROVOKING_VERTEX_CONVENTION, &quads_follow);
+   glProvokingVertex(GL_FIRST_VERTEX_CONVENTION);
+   glClear(GL_COLOR_BUFFER_BIT);
+   glDrawArrays(GL_TRIANGLES, 0, 3);
+   glReadPixels(90, 30, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, triangle_first);
+   glProvokingVertex(GL_LAST_VERTEX_CONVENTION);
+   glClear(GL_COLOR_BUFFER_BIT);
+   glDrawArrays(GL_TRIANGLES, 0, 3);
+   glReadPixels(90, 30, 1, 1, GL_RGBA, GL_UNSIGNED_BYTE, triangle_last);
    glProvokingVertex(GL_FIRST_VERTEX_CONVENTION);
    glClear(GL_COLOR_BUFFER_BIT);
    glDrawArrays(GL_QUADS, 0, 4);
@@ -475,8 +485,11 @@ main(void)
    legacy_passes += flat_last[0] == 0 && flat_last[1] == 0 &&
                     flat_last[2] == 255 && flat_last[4] == 0 &&
                     flat_last[5] == 0 && flat_last[6] == 255;
-   log_line("[ps5-gl46-compat] stage=legacy passes=%u flat=%u/%u/%u,%u/%u/%u:%u/%u/%u,%u/%u/%u\n",
-            legacy_passes, flat_first[0], flat_first[1], flat_first[2],
+   log_line("[ps5-gl46-compat] stage=legacy passes=%u follows=%d tri=%u/%u/%u:%u/%u/%u flat=%u/%u/%u,%u/%u/%u:%u/%u/%u,%u/%u/%u\n",
+            legacy_passes, quads_follow,
+            triangle_first[0], triangle_first[1], triangle_first[2],
+            triangle_last[0], triangle_last[1], triangle_last[2],
+            flat_first[0], flat_first[1], flat_first[2],
             flat_first[4], flat_first[5], flat_first[6],
             flat_last[0], flat_last[1], flat_last[2],
             flat_last[4], flat_last[5], flat_last[6]);
