@@ -86,7 +86,7 @@ diff --git a/src/gallium/auxiliary/indices/u_primconvert.c b/src/gallium/auxilia
  };
  
 +static void
-+rotate_even_triangles(void *indices, unsigned count, unsigned index_size)
++rotate_leading_triangles(void *indices, unsigned count, unsigned index_size)
 +{
 +   uint8_t *bytes = indices, tmp[4];
 +
@@ -194,16 +194,20 @@ diff --git a/src/gallium/auxiliary/indices/u_primconvert.c b/src/gallium/auxilia
        } else
           trans_func(src, draw.start, draw.count, new_draw->count, info->restart_index, dst);
  
-@@ -269,6 +290,8 @@ primconvert_init_draw(struct primconvert_context *pc,
+@@ -269,6 +290,12 @@ primconvert_init_draw(struct primconvert_context *pc,
     else {
        gen_func(draw.start, new_draw->count, dst);
     }
-+   if (pc->cfg.rotate_even_triangles && new_info->mode == MESA_PRIM_TRIANGLES)
-+      rotate_even_triangles(dst, new_draw->count, new_info->index_size);
++   if (pc->cfg.rotate_legacy_triangles &&
++       new_info->mode == MESA_PRIM_TRIANGLES &&
++       (info->mode == MESA_PRIM_QUADS ||
++        info->mode == MESA_PRIM_QUAD_STRIP ||
++        info->mode == MESA_PRIM_POLYGON))
++      rotate_leading_triangles(dst, new_draw->count, new_info->index_size);
     new_info->was_line_loop = info->mode == MESA_PRIM_LINE_LOOP;
  
     if (src_transfer)
-@@ -279,6 +302,13 @@ primconvert_init_draw(struct primconvert_context *pc,
+@@ -279,6 +306,13 @@ primconvert_init_draw(struct primconvert_context *pc,
     free(direct_draws);
     free(rewrite_buffer);
     return true;
@@ -223,11 +227,27 @@ diff --git a/src/gallium/auxiliary/indices/u_primconvert.h b/src/gallium/auxilia
 @@ -39,6 +39,7 @@ struct primconvert_config {
     uint32_t restart_primtypes_mask;
     bool fixed_prim_restart;
-+   bool rotate_even_triangles;
++   bool rotate_legacy_triangles;
  };
  
  struct primconvert_context *util_primconvert_create(struct pipe_context *pipe,
                                                      uint32_t primtypes_mask);
+diff --git a/src/gallium/auxiliary/util/u_vbuf.c b/src/gallium/auxiliary/util/u_vbuf.c
+--- a/src/gallium/auxiliary/util/u_vbuf.c
++++ b/src/gallium/auxiliary/util/u_vbuf.c
+@@ -378,10 +378,11 @@ u_vbuf_create(struct pipe_context *pipe, struct u_vbuf_caps *caps)
+        /* require all but patches */
+        ((caps->supported_prim_modes & caps->supported_restart_modes & BITFIELD_MASK(MESA_PRIM_COUNT))) !=
+                                       BITFIELD_MASK(MESA_PRIM_COUNT)) {
+-      struct primconvert_config cfg;
++      struct primconvert_config cfg = {0};
+       cfg.fixed_prim_restart = caps->rewrite_restart_index;
+       cfg.primtypes_mask = caps->supported_prim_modes;
+       cfg.restart_primtypes_mask = caps->supported_restart_modes;
++      cfg.rotate_legacy_triangles = true;
+       mgr->pc = util_primconvert_create_config(pipe, &cfg);
+    }
+    mgr->translate_cache = translate_cache_create();
 diff --git a/src/mesa/state_tracker/st_format.c b/src/mesa/state_tracker/st_format.c
 --- a/src/mesa/state_tracker/st_format.c
 +++ b/src/mesa/state_tracker/st_format.c
