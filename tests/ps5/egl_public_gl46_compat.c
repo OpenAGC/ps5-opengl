@@ -18,6 +18,7 @@
 #define PIXELS (WIDTH * HEIGHT)
 
 int ps5_egl_current_draw_status(unsigned *draw_calls);
+int sceKernelDebugOutText(int channel, const char *text);
 
 static GLuint
 shader(GLenum type, const char *source)
@@ -225,7 +226,9 @@ main(void)
    EGLBoolean cleanup_ok = EGL_TRUE;
 
    setvbuf(stdout, NULL, _IONBF, 0);
+   sceKernelDebugOutText(0, "[ps5-gl46-compat] main-entered\n");
    printf("[ps5-gl46-compat] stage=egl-start\n");
+   fflush(stdout);
    display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
    if (display == EGL_NO_DISPLAY || !eglInitialize(display, &egl_major, &egl_minor) ||
        !eglBindAPI(EGL_OPENGL_API) ||
@@ -243,6 +246,7 @@ main(void)
       goto cleanup;
    made_current = 1;
    printf("[ps5-gl46-compat] stage=context-current\n");
+   fflush(stdout);
    glGetIntegerv(GL_MAJOR_VERSION, &gl_major);
    glGetIntegerv(GL_MINOR_VERSION, &gl_minor);
    glGetIntegerv(GL_CONTEXT_PROFILE_MASK, &profile_mask);
@@ -257,6 +261,7 @@ main(void)
    if (!programs[0] || !programs[1] || !programs[2] || !programs[3])
       goto cleanup;
    printf("[ps5-gl46-compat] stage=programs-linked\n");
+   fflush(stdout);
 
    glGenVertexArrays(1, &vao);
    glBindVertexArray(vao);
@@ -287,6 +292,7 @@ main(void)
                          pixel[1] == pixel[0] && pixel[2] == pixel[0];
    }
    printf("[ps5-gl46-compat] stage=material passes=%u\n", material_passes);
+   fflush(stdout);
 
    glUseProgram(programs[1]);
    GLint depth = glGetUniformLocation(programs[1], "depth");
@@ -319,6 +325,7 @@ main(void)
    glDisable(GL_ALPHA_TEST);
    glDisable(GL_DEPTH_TEST);
    printf("[ps5-gl46-compat] stage=alpha passes=%u\n", alpha_passes);
+   fflush(stdout);
 
    glGenTextures(1, &float_texture);
    glBindTexture(GL_TEXTURE_2D, float_texture);
@@ -345,6 +352,7 @@ main(void)
    glBindFramebuffer(GL_FRAMEBUFFER, 0);
    printf("[ps5-gl46-compat] stage=clamp values=%g/%g:%g/%g\n",
           unclamped[0], unclamped[1], clamped[0], clamped[1]);
+   fflush(stdout);
 
    glUseProgram(programs[2]);
    glBufferSubData(GL_ARRAY_BUFFER, 0, sizeof(point), point);
@@ -366,6 +374,7 @@ main(void)
    point_passes += glIsEnabled(GL_POINT_SPRITE) == GL_FALSE;
    glDisable(GL_PROGRAM_POINT_SIZE);
    printf("[ps5-gl46-compat] stage=point passes=%u\n", point_passes);
+   fflush(stdout);
 
    glUseProgram(programs[1]);
    glUniform1f(depth, 0);
@@ -403,6 +412,7 @@ main(void)
    printf("[ps5-gl46-compat] stage=polygon pass=%u counts=%u/%u/%u/%u/%u/%u\n",
           polygon_passes, mixed_front, mixed_back, cull_back_front,
           cull_back_back, cull_front_front, cull_front_back);
+   fflush(stdout);
 
    glUseProgram(programs[3]);
    for (unsigned mode = 0; mode < 3; ++mode) {
@@ -434,6 +444,7 @@ main(void)
                 GL_UNSIGNED_BYTE, pixels);
    legacy_passes += pixels[0] == 0 && pixels[1] == 0 && pixels[2] == 255;
    printf("[ps5-gl46-compat] stage=legacy passes=%u\n", legacy_passes);
+   fflush(stdout);
 
    glGenTextures(1, &shared_texture);
    glBindTexture(GL_TEXTURE_2D, shared_texture);
@@ -469,6 +480,7 @@ main(void)
    made_current = eglMakeCurrent(display, surface, surface, context);
    sharing_passed &= made_current;
    printf("[ps5-gl46-compat] stage=sharing pass=%u\n", sharing_passed);
+   fflush(stdout);
 
    draw_status = ps5_egl_current_draw_status(&draw_calls);
    passed = egl_major == 1 && egl_minor == 4 && gl_major == 4 && gl_minor == 6 &&
@@ -486,6 +498,7 @@ main(void)
           clamped[0], clamped[1], point_passes, polygon_passes,
           legacy_passes, sharing_passed, draw_status, draw_calls,
           passed ? 0 : 1);
+   fflush(stdout);
 
 cleanup:
    if (!made_current && context != EGL_NO_CONTEXT &&
@@ -524,5 +537,6 @@ cleanup:
    passed &= cleanup_ok;
    printf("[ps5-gl46-compat] cleanup=%u result=%d\n",
           cleanup_ok, passed ? 0 : 1);
+   fflush(stdout);
    return passed ? 0 : 1;
 }
