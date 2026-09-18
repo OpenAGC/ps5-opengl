@@ -864,7 +864,7 @@ int main(void) {
 }
 '''
 driver = (ROOT / "src/gallium/ps5/ps5_screen.c").read_text()
-swizzle_start = driver.index("static bool\nps5_texture_descriptor_swizzle(")
+swizzle_start = driver.index("static unsigned\nps5_format_swizzle(")
 format_start = driver.index("static unsigned\nps5_storage_image_texel_size(")
 swizzle = driver[format_start:driver.index("static bool\nps5_compute_image_array_resource(",format_start)] + driver[swizzle_start:driver.index("static bool\nps5_texture_descriptor_wrap(",swizzle_start)]
 code = code.replace("static void compile(",swizzle+"static void compile(",1)

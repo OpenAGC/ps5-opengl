@@ -1656,17 +1656,23 @@ ps5_texture_descriptor_format(enum pipe_format format, uint32_t *word1)
    }
 }
 
+static unsigned
+ps5_format_swizzle(enum pipe_format format, unsigned swizzle)
+{
+   if (swizzle < 4 && ps5_storage_image_texel_size(format) &&
+       swizzle >= ps5_storage_image_channels(format))
+      return util_format_description(format)->swizzle[swizzle];
+   return swizzle;
+}
+
 static bool
 ps5_texture_descriptor_swizzle(unsigned swizzle, enum pipe_format format, uint32_t *selector)
 {
    static const uint8_t selectors[] = {4, 5, 6, 7, 0, 1};
 
+   swizzle = ps5_format_swizzle(format, swizzle);
    if (swizzle >= ARRAY_SIZE(selectors))
       return false;
-   /* Compose missing logical channels independently of storage channel width. */
-   if (swizzle < 4 && ps5_storage_image_texel_size(format) &&
-       swizzle >= ps5_storage_image_channels(format))
-      swizzle = util_format_description(format)->swizzle[swizzle];
    *selector = selectors[swizzle];
    return true;
 }
@@ -2312,10 +2318,10 @@ ps5_texel_buffer_descriptor(const struct pipe_sampler_view *view,
    state.va = (uintptr_t)resource->data + offset;
    state.size = size / texel_size;
    state.format = view->format;
-   state.swizzle[0] = view->swizzle_r;
-   state.swizzle[1] = view->swizzle_g;
-   state.swizzle[2] = view->swizzle_b;
-   state.swizzle[3] = view->swizzle_a;
+   state.swizzle[0] = ps5_format_swizzle(view->format, view->swizzle_r);
+   state.swizzle[1] = ps5_format_swizzle(view->format, view->swizzle_g);
+   state.swizzle[2] = ps5_format_swizzle(view->format, view->swizzle_b);
+   state.swizzle[3] = ps5_format_swizzle(view->format, view->swizzle_a);
    state.stride = texel_size;
    state.gfx10_oob_select = V_008F0C_OOB_SELECT_STRUCTURED_WITH_OFFSET;
    state.has_desc_resource_level = true;
@@ -2327,14 +2333,16 @@ static bool
 ps5_image_buffer_descriptor(const struct pipe_image_view *view,
                             uint32_t address32_hi, uint32_t descriptor[8])
 {
+   const struct util_format_description *format =
+      view ? util_format_description(view->format) : NULL;
    struct pipe_sampler_view sampled = {
       .texture = view ? view->resource : NULL,
       .format = view ? view->format : PIPE_FORMAT_NONE,
       .target = PIPE_BUFFER,
-      .swizzle_r = PIPE_SWIZZLE_X,
-      .swizzle_g = PIPE_SWIZZLE_Y,
-      .swizzle_b = PIPE_SWIZZLE_Z,
-      .swizzle_a = PIPE_SWIZZLE_W,
+      .swizzle_r = format ? format->swizzle[0] : PIPE_SWIZZLE_NONE,
+      .swizzle_g = format ? format->swizzle[1] : PIPE_SWIZZLE_NONE,
+      .swizzle_b = format ? format->swizzle[2] : PIPE_SWIZZLE_NONE,
+      .swizzle_a = format ? format->swizzle[3] : PIPE_SWIZZLE_NONE,
    };
 
    if (!view || !view->resource || view->resource->target != PIPE_BUFFER)
