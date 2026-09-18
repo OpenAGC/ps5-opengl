@@ -2,7 +2,7 @@
 
 The `gl46-dev` branch is development work, not a stable SDK or Khronos
 conformance claim. Its pinned CTS discovery inventory currently accounts for
-all **19,714** cases: **15,097 Pass**, **4,616 NotSupported**, and one
+all **19,714** cases: **15,139 Pass**, **4,574 NotSupported**, and one
 compatibility warning.
 
 ## NotSupported audit
@@ -16,13 +16,13 @@ an acceptance waiver.
 | Optional extension | 4,161 | Outside OpenGL 4.6 Core by itself |
 | Profile-inapplicable | 2 | Test does not apply to this context |
 | Format/sample limit | 86 | Legal advertised limit requires review with the case |
-| Core capability shortfall | 66 | Implementation work, now dominated by pre-raster image limits |
+| Core capability shortfall | 24 | Multisampled images remain honestly limited by `GL_MAX_IMAGE_SAMPLES = 0` |
 | Target capability shortfall | 192 | Unsupported texture targets require implementation review |
 | Extension-gated review | 12 | Verify whether the case is optional or exposes a core dependency |
 | Manual review | 97 | Diagnostic is not sufficient for automatic disposition |
 
 The large optional-extension count is dominated by sparse textures and
-fragment shading rate. It must not hide the remaining **367** capability/review cases
+fragment shading rate. It must not hide the remaining **325** capability/review cases
 in the final four rows.
 
 Commit `4893195787e31ce30ed33d6a3eba405a2df3d02b` corrected the advertised
@@ -46,6 +46,17 @@ pipelines. All **51/51** affected cases pass: the first 14 are retained in
 `results/opengl46-cts-vs-ssbo51-20260917`, and the repaired case plus the 36
 previously unexecuted cases are retained in
 `results/opengl46-cts-vs-ssbo-remaining37-20260917`.
+
+Commits `0cac2d2`, `d657910`, and `79f1e35` add pre-raster image banks,
+preserve images through tessellation linking, and compose missing texel-buffer
+channels consistently for sampled and image access. Of the **66** affected
+cases, **42** now pass and **24** remain NotSupported solely because the driver
+advertises the legal limit `GL_MAX_IMAGE_SAMPLES = 0`; there are no failures.
+The final exact regression and remaining-group receipts are retained in
+`results/gl46-preraster-images-sync-fix-v2` and
+`results/gl46-preraster-images-remaining59`. Advertising a nonzero limit is
+deferred until multisampled image load/store is implemented, rather than
+claiming support based only on `imageSize` coverage.
 
 Reproduce the audit from retained local QPA results:
 
