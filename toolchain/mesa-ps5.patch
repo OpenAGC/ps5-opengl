@@ -86,11 +86,11 @@ diff --git a/src/gallium/auxiliary/indices/u_primconvert.c b/src/gallium/auxilia
  };
  
 +static void
-+rotate_odd_triangles(void *indices, unsigned count, unsigned index_size)
++rotate_even_triangles(void *indices, unsigned count, unsigned index_size)
 +{
 +   uint8_t *bytes = indices, tmp[4];
 +
-+   for (unsigned triangle = 1; triangle < count / 3; triangle += 2) {
++   for (unsigned triangle = 0; triangle < count / 3; triangle += 2) {
 +      uint8_t *first = bytes + triangle * 3 * index_size;
 +      memcpy(tmp, first + 2 * index_size, index_size);
 +      memmove(first + index_size, first, 2 * index_size);
@@ -198,8 +198,8 @@ diff --git a/src/gallium/auxiliary/indices/u_primconvert.c b/src/gallium/auxilia
     else {
        gen_func(draw.start, new_draw->count, dst);
     }
-+   if (pc->cfg.rotate_odd_triangles && new_info->mode == MESA_PRIM_TRIANGLES)
-+      rotate_odd_triangles(dst, new_draw->count, new_info->index_size);
++   if (pc->cfg.rotate_even_triangles && new_info->mode == MESA_PRIM_TRIANGLES)
++      rotate_even_triangles(dst, new_draw->count, new_info->index_size);
     new_info->was_line_loop = info->mode == MESA_PRIM_LINE_LOOP;
  
     if (src_transfer)
@@ -223,7 +223,7 @@ diff --git a/src/gallium/auxiliary/indices/u_primconvert.h b/src/gallium/auxilia
 @@ -39,6 +39,7 @@ struct primconvert_config {
     uint32_t restart_primtypes_mask;
     bool fixed_prim_restart;
-+   bool rotate_odd_triangles;
++   bool rotate_even_triangles;
  };
  
  struct primconvert_context *util_primconvert_create(struct pipe_context *pipe,
