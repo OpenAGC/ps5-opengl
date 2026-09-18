@@ -76,6 +76,7 @@ offscreen throughput is not displayed FPS. See [performance and methodology](doc
 | [Sokol](examples/core33-sokol/README.md) | Existing OpenGL renderer integration |
 | [Sokol cube](examples/core33-sokol-cube/README.md) | Rotation, depth testing and culling |
 | [Textured cubes benchmark](examples/core33-cubes/README.md) | Ordinary versus instanced drawing |
+| [OpenGL 4.6 compute cubes](examples/core46-compute-cubes/README.md) | Compute-driven SSBO animation and indirect instanced drawing |
 
 After setting up the [build prerequisites](docs/building.md):
 

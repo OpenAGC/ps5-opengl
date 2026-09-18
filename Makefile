@@ -7,13 +7,14 @@ PS5_NATIVE_APP_TEMPLATE ?= $(abspath ../ps5-native-app-boilerplate)
 PS5_PAYLOAD_SDK ?= $(PS5_NATIVE_APP_TEMPLATE)/.deps/native/ps5-payload-sdk
 export PS5_NATIVE_APP_TEMPLATE PS5_PAYLOAD_SDK
 
-.PHONY: help source-fetch cts-fetch sdk imgui-demo nanovg sokol sokol-cube cubes test test-imgui test-sokol-cube test-cubes test-glsl test-compiler test-multidraw test-layered-mip test-depth-targets test-staging
+.PHONY: help source-fetch cts-fetch sdk imgui-demo nanovg sokol sokol-cube cubes gl46-demo test test-imgui test-sokol-cube test-cubes test-glsl test-compiler test-multidraw test-layered-mip test-depth-targets test-staging
 help:
 	@printf '%s\n' 'source-fetch: pinned graphics/example sources' \
 	  'sdk: build the compiler, Mesa and installed native OpenGL SDK' \
 	  'imgui-demo / nanovg / sokol: package one example using the installed SDK' \
 	  'sokol-cube: package the upstream 3D sample; see examples/core33-sokol-cube' \
 	  'cubes: package the 3D frame benchmark using the current source runtime' \
+	  'gl46-demo: package the compute-driven OpenGL 4.6 cube animation' \
 	  'test: dependency-free host tests and published validation audit' \
 	  'test-imgui: software-Mesa renderer and TV-demo input checks' \
 	  'cts-fetch: also fetch pinned optional CTS sources; see docs/testing.md'
@@ -41,6 +42,8 @@ test-sokol-cube:
 	bash tools/test-sokol-cube-host.sh
 cubes:
 	bash tools/build-native-test-app.sh egl_public_core33_cubes
+gl46-demo:
+	bash tools/build-native-test-app.sh egl_public_gl46_compute_cubes
 test-cubes:
 	bash tools/test-cubes-host.sh
 test-glsl:
