@@ -228,6 +228,7 @@ main(void)
    GLuint vao = 0, vbo = 0, ebo = 0, programs[4] = {0};
    GLuint float_texture = 0, framebuffer = 0, shared_texture = 0;
    uint8_t pixels[PIXELS * 4];
+   uint8_t flat_first[4] = {0}, flat_last[4] = {0};
    unsigned material_passes = 0, alpha_passes = 0, point_passes = 0;
    unsigned polygon_passes = 0, legacy_passes = 0, draw_calls = 0;
    int draw_status = -1, made_current = 0, passed = 0;
@@ -237,7 +238,8 @@ main(void)
    GLint polygon_mode[2] = {0};
    struct worker worker = {0};
    pthread_t thread;
-   int thread_created = 0, sharing_passed = 0;
+   pthread_attr_t thread_attributes;
+   int thread_attributes_initialized = 0, thread_created = 0, sharing_passed = 0;
    EGLBoolean cleanup_ok = EGL_TRUE;
 
    log_line("[ps5-gl46-compat] stage=egl-start\n");
@@ -461,15 +463,19 @@ main(void)
    glClear(GL_COLOR_BUFFER_BIT);
    glDrawArrays(GL_QUADS, 0, 4);
    glReadPixels(WIDTH / 2, HEIGHT / 2, 1, 1, GL_RGBA,
-                GL_UNSIGNED_BYTE, pixels);
-   legacy_passes += pixels[0] == 255 && pixels[1] == 0 && pixels[2] == 0;
+                GL_UNSIGNED_BYTE, flat_first);
+   legacy_passes += flat_first[0] == 255 && flat_first[1] == 0 &&
+                    flat_first[2] == 0;
    glProvokingVertex(GL_LAST_VERTEX_CONVENTION);
    glClear(GL_COLOR_BUFFER_BIT);
    glDrawElements(GL_QUADS, 4, GL_UNSIGNED_BYTE, NULL);
    glReadPixels(WIDTH / 2, HEIGHT / 2, 1, 1, GL_RGBA,
-                GL_UNSIGNED_BYTE, pixels);
-   legacy_passes += pixels[0] == 0 && pixels[1] == 0 && pixels[2] == 255;
-   log_line("[ps5-gl46-compat] stage=legacy passes=%u\n", legacy_passes);
+                GL_UNSIGNED_BYTE, flat_last);
+   legacy_passes += flat_last[0] == 0 && flat_last[1] == 0 &&
+                    flat_last[2] == 255;
+   log_line("[ps5-gl46-compat] stage=legacy passes=%u flat=%u/%u/%u:%u/%u/%u\n",
+            legacy_passes, flat_first[0], flat_first[1], flat_first[2],
+            flat_last[0], flat_last[1], flat_last[2]);
 
    glGenTextures(1, &shared_texture);
    glBindTexture(GL_TEXTURE_2D, shared_texture);
@@ -482,7 +488,13 @@ main(void)
    cleanup_ok &= eglMakeCurrent(display, EGL_NO_SURFACE, EGL_NO_SURFACE,
                                 EGL_NO_CONTEXT);
    made_current = 0;
-   thread_created = pthread_create(&thread, NULL, shared_worker, &worker) == 0;
+   thread_attributes_initialized =
+      pthread_attr_init(&thread_attributes) == 0;
+   thread_created = thread_attributes_initialized &&
+      pthread_attr_setstacksize(&thread_attributes, 8u * 1024u * 1024u) == 0 &&
+      pthread_create(&thread, &thread_attributes, shared_worker, &worker) == 0;
+   if (thread_attributes_initialized)
+      pthread_attr_destroy(&thread_attributes);
    if (thread_created)
       pthread_join(thread, NULL);
    sharing_passed = thread_created && worker.result &&
