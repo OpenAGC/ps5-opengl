@@ -3,7 +3,7 @@
 The `gl46-dev` branch is development work, not a stable SDK or Khronos
 conformance claim. Its pinned CTS discovery inventory currently accounts for
 all **19,714** cases. Focused review of the former 325-case capability queue
-raises the current aggregate to **15,208 Pass**, **4,505 NotSupported**, and
+raises the current aggregate to **15,233 Pass**, **4,480 NotSupported**, and
 one compatibility warning.
 
 ## NotSupported audit
@@ -16,7 +16,7 @@ an acceptance waiver.
 | --- | ---: | --- |
 | Optional extension | 4,176 | Outside OpenGL 4.6 Core by itself |
 | Profile/test-inapplicable | 212 | Test does not apply to this context or permutation |
-| Format/sample/limit | 117 | Legal advertised limit or non-required renderability |
+| Format/sample/limit | 92 | Legal advertised limit or non-required renderability |
 | Unresolved capability/review | 0 | No case remains in the review queue |
 
 The large optional-extension count is dominated by sparse textures and
@@ -47,25 +47,31 @@ previously unexecuted cases are retained in
 
 Commits `0cac2d2`, `d657910`, and `79f1e35` add pre-raster image banks,
 preserve images through tessellation linking, and compose missing texel-buffer
-channels consistently for sampled and image access. Of the **66** affected
-cases, **42** now pass and **24** remain NotSupported solely because the driver
-advertises the legal limit `GL_MAX_IMAGE_SAMPLES = 0`; there are no failures.
-The final exact regression and remaining-group receipts are retained in
-`results/gl46-preraster-images-sync-fix-v2` and
-`results/gl46-preraster-images-remaining59`. Advertising a nonzero limit is
-deferred until multisampled image load/store is implemented, rather than
-claiming support based only on `imageSize` coverage.
+channels consistently for sampled and image access. Commits `0d7dc75` and
+`b9f7d1d` then add native four-sample storage-image allocation, descriptors and
+compiler lowering. `GL_MAX_IMAGE_SAMPLES` is now **4**. All **66/66** affected
+cases pass; the earlier 24 multisampled-image NotSupported results are closed.
+The exact receipts are retained under
+`results/gl46-preraster-images-sync-fix-v2`,
+`results/gl46-preraster-images-remaining59`, and
+`results/gl46-ms-image-operations-native-v3`.
+
+The focused native proof covers `image2DMS` and `image2DMSArray` size queries
+in every shader stage and float, signed-integer and unsigned-integer forms.
+It also passes CTS store, load, atomics, per-sample SSO access and
+`imageSamples`. The final five-case receipt used eboot SHA-256
+`789540d08ac4f357800aa86abc9558db355201eb06040356e237b4c09bfdd6c1`
+and completed with clean title teardown and healthy console services.
 
 The final **325-case** capability/review queue was then executed as one exact
 native-title batch. **66 passed** and **259 returned NotSupported**, with no
 failures or incomplete cases. A second three-case run used the 256x256 surface
-required by the texture-query-LOD tests; all three passed. The resulting
-69-pass overlay leaves **256** reviewed NotSupported cases:
+required by the texture-query-LOD tests; all three passed. That 69-pass overlay
+plus the multisampled-image implementation leaves **231** reviewed
+NotSupported cases:
 
 - 192 texture-swizzle permutations rejected by the CTS's own target/format or
   target/access guards;
-- 25 multisampled-image cases covered by the legal
-  `GL_MAX_IMAGE_SAMPLES = 0` limit;
 - 16 cull-distance permutations explicitly excluded by the CTS test design;
 - 15 optional-extension cases;
 - four 8-sample cases above the advertised four-sample limit;
