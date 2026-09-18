@@ -2,8 +2,9 @@
 
 The `gl46-dev` branch is development work, not a stable SDK or Khronos
 conformance claim. Its pinned CTS discovery inventory currently accounts for
-all **19,714** cases: **15,139 Pass**, **4,574 NotSupported**, and one
-compatibility warning.
+all **19,714** cases. Focused review of the former 325-case capability queue
+raises the current aggregate to **15,208 Pass**, **4,505 NotSupported**, and
+one compatibility warning.
 
 ## NotSupported audit
 
@@ -13,17 +14,14 @@ an acceptance waiver.
 
 | Classification | Cases | Interpretation |
 | --- | ---: | --- |
-| Optional extension | 4,161 | Outside OpenGL 4.6 Core by itself |
-| Profile-inapplicable | 2 | Test does not apply to this context |
-| Format/sample limit | 86 | Legal advertised limit requires review with the case |
-| Core capability shortfall | 24 | Multisampled images remain honestly limited by `GL_MAX_IMAGE_SAMPLES = 0` |
-| Target capability shortfall | 192 | Unsupported texture targets require implementation review |
-| Extension-gated review | 12 | Verify whether the case is optional or exposes a core dependency |
-| Manual review | 97 | Diagnostic is not sufficient for automatic disposition |
+| Optional extension | 4,176 | Outside OpenGL 4.6 Core by itself |
+| Profile/test-inapplicable | 212 | Test does not apply to this context or permutation |
+| Format/sample/limit | 117 | Legal advertised limit or non-required renderability |
+| Unresolved capability/review | 0 | No case remains in the review queue |
 
 The large optional-extension count is dominated by sparse textures and
-fragment shading rate. It must not hide the remaining **325** capability/review cases
-in the final four rows.
+fragment shading rate. These results are an engineering disposition of the
+pinned inventory, not a Khronos conformance waiver or certification claim.
 
 Commit `4893195787e31ce30ed33d6a3eba405a2df3d02b` corrected the advertised
 tessellation-control/evaluation shader-storage limits after the existing
@@ -58,6 +56,30 @@ The final exact regression and remaining-group receipts are retained in
 deferred until multisampled image load/store is implemented, rather than
 claiming support based only on `imageSize` coverage.
 
+The final **325-case** capability/review queue was then executed as one exact
+native-title batch. **66 passed** and **259 returned NotSupported**, with no
+failures or incomplete cases. A second three-case run used the 256x256 surface
+required by the texture-query-LOD tests; all three passed. The resulting
+69-pass overlay leaves **256** reviewed NotSupported cases:
+
+- 192 texture-swizzle permutations rejected by the CTS's own target/format or
+  target/access guards;
+- 25 multisampled-image cases covered by the legal
+  `GL_MAX_IMAGE_SAMPLES = 0` limit;
+- 16 cull-distance permutations explicitly excluded by the CTS test design;
+- 15 optional-extension cases;
+- four 8-sample cases above the advertised four-sample limit;
+- one desktop-profile-inapplicable transform-feedback case;
+- one GLSL 3.30 path below the integer-mix core version;
+- one non-required `RGB9_E5` renderbuffer case; and
+- one tessellation test limited by otherwise legal asymmetric transform-feedback
+  and tessellation-output maxima.
+
+Receipts are retained under `results/gl46-remaining325-v1` and
+`results/gl46-texture-query-lod3-256-v1`. Both runs completed through native
+title teardown; the PS5 services remained healthy and the exact lock token was
+released after each run.
+
 Reproduce the audit from retained local QPA results:
 
 ```sh
@@ -68,8 +90,9 @@ python3 tools/audit-gl46-notsupported.py \
 ```
 
 That command reproduces the pre-fix baseline; apply the focused passing
-receipts above to obtain the current aggregate. The full 19,714-case inventory
-was not rerun for these isolated capability changes.
+receipts above and the final 325-case review receipts to obtain the current
+aggregate. The full 19,714-case inventory was not rerun for these isolated
+capability changes.
 
 ## Native stress and Piglit subset
 
