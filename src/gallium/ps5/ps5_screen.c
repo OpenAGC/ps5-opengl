@@ -365,6 +365,7 @@ struct ps5_shader_variant {
 struct ps5_stream_output_target {
    struct pipe_stream_output_target base;
    unsigned offset;
+   unsigned vertex_count;
 };
 
 struct ps5_streamout_control {
@@ -9815,9 +9816,12 @@ ps5_draw_vbo_locked(struct pipe_context *base,
             vertex_output->metadata.streamout_enabled_stream_buffers_mask,
             index);
 
-         if (target && (streamout_mask & BITFIELD_BIT(index)))
+         if (target && (streamout_mask & BITFIELD_BIT(index))) {
             target->offset += (unsigned)(streamout_written_vertices[stream] *
-                              streamout_stride[index] * 4u);
+                                         streamout_stride[index] * 4u);
+            target->vertex_count +=
+               (unsigned)streamout_written_vertices[stream];
+         }
       }
       if (context->queries_enabled &&
           context->active_primitives_emitted_query &&
@@ -10465,9 +10469,23 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
    }
 
    if (indirect) {
-      if (!PS5_ENABLE_DRAW_INDIRECT_CANDIDATE || !info ||
-          indirect->count_from_stream_output) {
+      if (!PS5_ENABLE_DRAW_INDIRECT_CANDIDATE || !info) {
          context->last_draw_status = -2;
+         return;
+      }
+      if (indirect->count_from_stream_output) {
+         struct ps5_stream_output_target *target =
+            (struct ps5_stream_output_target *)
+               indirect->count_from_stream_output;
+         struct pipe_draw_start_count_bias draw = {
+            .count = target->vertex_count,
+         };
+
+         if (target->base.context != base) {
+            context->last_draw_status = -2;
+            return;
+         }
+         ps5_draw_vbo(base, info, drawid_offset, NULL, &draw, 1);
          return;
       }
       util_draw_indirect(base, info, drawid_offset, indirect);
@@ -14303,9 +14321,12 @@ ps5_set_stream_output_targets(struct pipe_context *base,
    for (index = 0; index < count; ++index) {
       pipe_so_target_reference(&context->stream_output_targets[index],
                                targets[index]);
-      if (targets[index] && !(append_mask & BITFIELD_BIT(index)))
-         ((struct ps5_stream_output_target *)targets[index])->offset =
-            offsets[index];
+      if (targets[index] && !(append_mask & BITFIELD_BIT(index))) {
+         struct ps5_stream_output_target *target =
+            (struct ps5_stream_output_target *)targets[index];
+         target->offset = offsets[index];
+         target->vertex_count = 0;
+      }
    }
    for (; index < context->stream_output_target_count; ++index)
       pipe_so_target_reference(&context->stream_output_targets[index], NULL);
