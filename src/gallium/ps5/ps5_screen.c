@@ -3143,8 +3143,12 @@ ps5_prepare_tessellation_buffers(struct ps5_context *context,
    const unsigned slots[] = {0, PS5_TESS_CTRL_CONSTANT_SLOT,
       PS5_TESS_EVAL_CONSTANT_SLOT, PS5_GEOMETRY_CONSTANT_SLOT};
    if (!ps5_tessellation_buffer_layout(context, &expected) ||
-       metadata->descriptor_binding_count != expected.descriptor_binding_count)
+       metadata->descriptor_binding_count != expected.descriptor_binding_count) {
+      printf("[ps5-gallium] tess-buffer reject=layout actual=%u expected=%u\n",
+             metadata->descriptor_binding_count,
+             expected.descriptor_binding_count);
       return false;
+   }
    if (!expected.descriptor_binding_count)
       return true;
    if (!table || !table->data || table->base.target != PIPE_BUFFER ||
@@ -3159,8 +3163,13 @@ ps5_prepare_tessellation_buffers(struct ps5_context *context,
       const PsbcDescriptorBinding *actual = &metadata->descriptor_bindings[b];
       if (actual->set != bank->set || actual->binding != bank->binding ||
           actual->type != bank->type || actual->array_size != bank->array_size ||
-          actual->offset != bank->offset || actual->stride != bank->stride)
+          actual->offset != bank->offset || actual->stride != bank->stride) {
+         printf("[ps5-gallium] tess-buffer reject=bank index=%u binding=%u/%u type=%u/%u array=%u/%u offset=%u/%u stride=%u/%u\n",
+                b, actual->binding, bank->binding, actual->type, bank->type,
+                actual->array_size, bank->array_size, actual->offset,
+                bank->offset, actual->stride, bank->stride);
          return false;
+      }
       if (bank->type == PSBC_DESCRIPTOR_COMBINED_IMAGE_SAMPLER)
          continue; /* Encoded by the shared texture preparation path below. */
       const unsigned stage = (bank->binding - 1u) / 4u;
@@ -3197,8 +3206,13 @@ ps5_prepare_tessellation_buffers(struct ps5_context *context,
             size = bound->buffer_size;
             if (!resource || !resource->data || resource->base.target != PIPE_BUFFER ||
                 resource->base.screen != context->base.screen || !size ||
-                bound->buffer_offset > resource->size || size > resource->size - bound->buffer_offset)
+                bound->buffer_offset > resource->size || size > resource->size - bound->buffer_offset) {
+               printf("[ps5-gallium] tess-buffer reject=resource stage=%u index=%u bound=%u size=%u invalid=%u\n",
+                      stage, i, resource != NULL, size,
+                      stage == 3 ? context->geometry_bindings_invalid :
+                                   context->preraster_bindings_invalid[stage]);
                return false;
+            }
             address = (uintptr_t)resource->data + bound->buffer_offset;
          }
          uint32_t *srd = (uint32_t *)(table->data + bank->offset + i * 16u);
@@ -13520,9 +13534,11 @@ ps5_create_shader_state(struct pipe_screen *screen,
     * PSBC consumes descriptor-backed load_ubo, with the same vec4 layout. */
    ps5_lower_default_uniforms(templ->ir.nir);
 
-   printf("[ps5-gallium] create-shader stage=%u nir-stage=%d io-lowered=%u ubos=%u textures=%u default-ubo=%u uniforms=%u face=%u/%u\n",
+   printf("[ps5-gallium] create-shader stage=%u nir-stage=%d io-lowered=%u ubos=%u ssbos=%u images=%u textures=%u default-ubo=%u uniforms=%u face=%u/%u\n",
           stage, templ->ir.nir->info.stage, templ->ir.nir->info.io_lowered,
           templ->ir.nir->info.num_ubos,
+          templ->ir.nir->info.num_ssbos,
+          templ->ir.nir->info.num_images,
           templ->ir.nir->info.num_textures,
           templ->ir.nir->info.first_ubo_is_default_ubo,
           templ->ir.nir->num_uniforms,
