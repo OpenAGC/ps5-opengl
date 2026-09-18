@@ -20,6 +20,9 @@ The `gl46-dev` branch contains the local 0.3.0 release candidate. Build it from
 [0.2.0 download](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/sdk-0.2.0)
 remains the known-good OpenGL 3.3 release.
 
+The frozen local candidate, exact hashes and qualification scope are recorded
+in the [OpenGL 4.6 release-candidate report](docs/release-gl46-rc1.md).
+
 The downloadable SDK includes GL/EGL and SDL2 static libraries, headers,
 Make/pkg-config/CMake integration, complete sources, examples, licenses and
 checksums. Choose one complete profile; do not mix its libraries with another SDK.
