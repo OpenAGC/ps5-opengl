@@ -9158,7 +9158,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
                  (uint32_t)((uintptr_t)descriptor_resource->data >> 32),
                   &vertex_layout, primitive_type,
                   context->rasterizer &&
-                     !context->rasterizer->flatshade_first,
+                     context->rasterizer->flatshade_first,
                  false, false,
                  !context->gs &&
                     !(context->fs->nir->info.inputs_read &
@@ -9178,7 +9178,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
    fragment_primitive_type =
       ps5_fragment_primitive_type(context, primitive_type);
    provoking_vtx_last = context->rasterizer &&
-                         !context->rasterizer->flatshade_first;
+                         context->rasterizer->flatshade_first;
    poly_line_smooth = sample_count == 1 && context->rasterizer &&
       (((fragment_primitive_type == 2 || fragment_primitive_type == 3) &&
         context->rasterizer->line_smooth) ||
@@ -10792,6 +10792,7 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
               BITFIELD_BIT(MESA_PRIM_QUAD_STRIP) |
               BITFIELD_BIT(MESA_PRIM_POLYGON)),
          .restart_primtypes_mask = 0,
+         .split_legacy_triangles = true,
       };
       struct primconvert_context *converter =
          util_primconvert_create_config(base, &cfg);
@@ -12792,7 +12793,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
    uint32_t streamout_ring_itemsize;
    PsbcResult result;
    bool provoking_vtx_last = context->rasterizer &&
-                              !context->rasterizer->flatshade_first;
+                              context->rasterizer->flatshade_first;
 
    if (!context->gs)
       return true;

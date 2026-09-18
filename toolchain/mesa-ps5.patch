@@ -188,6 +188,41 @@ diff --git a/src/gallium/auxiliary/indices/u_primconvert.c b/src/gallium/auxilia
  }
  
  static void
+@@ -302,8 +330,25 @@ util_primconvert_draw_single_vbo(struct primconvert_context *pc,
+    if (!primconvert_init_draw(pc, info, draw, &new_info, &new_draw, &releasebuf))
+       return;
+ 
+-   pc->pipe->draw_vbo(pc->pipe, &new_info, drawid_offset, NULL, &new_draw, 1);
++   /* PS5 flat-input transport needs one primitive per converted legacy draw. */
++   if (pc->cfg.split_legacy_triangles &&
++       new_info.mode == MESA_PRIM_TRIANGLES &&
++       (info->mode == MESA_PRIM_QUADS ||
++        info->mode == MESA_PRIM_QUAD_STRIP ||
++        info->mode == MESA_PRIM_POLYGON)) {
++      for (unsigned first = 0; first < new_draw.count; first += 3) {
++         struct pipe_draw_start_count_bias triangle = new_draw;
++         triangle.start += first;
++         triangle.count = MIN2(3, new_draw.count - first);
++         pc->pipe->draw_vbo(pc->pipe, &new_info, drawid_offset, NULL,
++                            &triangle, 1);
++      }
++   } else {
++      pc->pipe->draw_vbo(pc->pipe, &new_info, drawid_offset, NULL,
++                         &new_draw, 1);
++   }
+    pipe_resource_release(pc->pipe, releasebuf);
+ }
+ 
+diff --git a/src/gallium/auxiliary/indices/u_primconvert.h b/src/gallium/auxiliary/indices/u_primconvert.h
+--- a/src/gallium/auxiliary/indices/u_primconvert.h
++++ b/src/gallium/auxiliary/indices/u_primconvert.h
+@@ -39,6 +39,7 @@ struct primconvert_config {
+    uint32_t restart_primtypes_mask;
+    bool fixed_prim_restart;
++   bool split_legacy_triangles;
+ };
+ 
+ struct primconvert_context *util_primconvert_create(struct pipe_context *pipe,
 diff --git a/src/mesa/state_tracker/st_format.c b/src/mesa/state_tracker/st_format.c
 --- a/src/mesa/state_tracker/st_format.c
 +++ b/src/mesa/state_tracker/st_format.c
