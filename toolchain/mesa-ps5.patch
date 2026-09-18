@@ -86,15 +86,15 @@ diff --git a/src/gallium/auxiliary/indices/u_primconvert.c b/src/gallium/auxilia
  };
  
 +static void
-+rotate_leading_triangles(void *indices, unsigned count, unsigned index_size)
++rotate_even_triangles_left(void *indices, unsigned count, unsigned index_size)
 +{
 +   uint8_t *bytes = indices, tmp[4];
 +
 +   for (unsigned triangle = 0; triangle < count / 3; triangle += 2) {
 +      uint8_t *first = bytes + triangle * 3 * index_size;
-+      memcpy(tmp, first + 2 * index_size, index_size);
-+      memmove(first + index_size, first, 2 * index_size);
-+      memcpy(first, tmp, index_size);
++      memcpy(tmp, first, index_size);
++      memmove(first, first + index_size, 2 * index_size);
++      memcpy(first + 2 * index_size, tmp, index_size);
 +   }
 +}
 +
@@ -194,20 +194,20 @@ diff --git a/src/gallium/auxiliary/indices/u_primconvert.c b/src/gallium/auxilia
        } else
           trans_func(src, draw.start, draw.count, new_draw->count, info->restart_index, dst);
  
-@@ -269,6 +290,12 @@ primconvert_init_draw(struct primconvert_context *pc,
+@@ -269,6 +269,12 @@ primconvert_init_draw(struct primconvert_context *pc,
     else {
        gen_func(draw.start, new_draw->count, dst);
     }
-+   if (pc->cfg.rotate_legacy_triangles &&
++   if (pc->cfg.rotate_legacy_triangles_left &&
 +       new_info->mode == MESA_PRIM_TRIANGLES &&
 +       (info->mode == MESA_PRIM_QUADS ||
 +        info->mode == MESA_PRIM_QUAD_STRIP ||
 +        info->mode == MESA_PRIM_POLYGON))
-+      rotate_leading_triangles(dst, new_draw->count, new_info->index_size);
++      rotate_even_triangles_left(dst, new_draw->count, new_info->index_size);
     new_info->was_line_loop = info->mode == MESA_PRIM_LINE_LOOP;
  
     if (src_transfer)
-@@ -279,6 +306,13 @@ primconvert_init_draw(struct primconvert_context *pc,
+@@ -279,6 +285,13 @@ primconvert_init_draw(struct primconvert_context *pc,
     free(direct_draws);
     free(rewrite_buffer);
     return true;
@@ -225,13 +225,13 @@ diff --git a/src/gallium/auxiliary/indices/u_primconvert.h b/src/gallium/auxilia
 --- a/src/gallium/auxiliary/indices/u_primconvert.h
 +++ b/src/gallium/auxiliary/indices/u_primconvert.h
 @@ -39,6 +39,7 @@ struct primconvert_config {
+    uint32_t primtypes_mask;
     uint32_t restart_primtypes_mask;
     bool fixed_prim_restart;
-+   bool rotate_legacy_triangles;
++   bool rotate_legacy_triangles_left;
  };
  
  struct primconvert_context *util_primconvert_create(struct pipe_context *pipe,
-                                                     uint32_t primtypes_mask);
 diff --git a/src/gallium/auxiliary/util/u_vbuf.c b/src/gallium/auxiliary/util/u_vbuf.c
 --- a/src/gallium/auxiliary/util/u_vbuf.c
 +++ b/src/gallium/auxiliary/util/u_vbuf.c
@@ -244,7 +244,7 @@ diff --git a/src/gallium/auxiliary/util/u_vbuf.c b/src/gallium/auxiliary/util/u_
        cfg.fixed_prim_restart = caps->rewrite_restart_index;
        cfg.primtypes_mask = caps->supported_prim_modes;
        cfg.restart_primtypes_mask = caps->supported_restart_modes;
-+      cfg.rotate_legacy_triangles = true;
++      cfg.rotate_legacy_triangles_left = true;
        mgr->pc = util_primconvert_create_config(pipe, &cfg);
     }
     mgr->translate_cache = translate_cache_create();
