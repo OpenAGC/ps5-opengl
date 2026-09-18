@@ -938,8 +938,8 @@ index bacbc6a..c72d287 100644
 +    const PsbcCompileOptions* options = data;
 +    /* The Gallium flag carries GL's flatshade_first state despite its legacy
 +     * name. Select the corresponding lane explicitly on PS5. */
-+    const unsigned vertex_id = options->provoking_vtx_last
-+        ? 0 : ps5_last_provoking_vertex(options->primitive_type);
++    const unsigned vertex_id = options->provoking_vtx_last ?
++        ps5_last_provoking_vertex(options->primitive_type) : 1;
 +    if (intrinsic->intrinsic != nir_intrinsic_load_input)
 +        return false;
 +    /* An implicit NGG PrimitiveID has one value per primitive, not P0/P1/P2.
