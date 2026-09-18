@@ -46,6 +46,17 @@ static int ps5_resource_sampled_image_descriptor(struct pipe_resource *r,unsigne
     if(!rc && sampled_msaa) { d[3]=0xe1b20204; d[4]=0; d[5]=0x400020; }
     return rc;
 }
+static int ps5_resource_sampled_image_descriptor_owned(struct pipe_resource *r,const uint32_t d[8]) {
+    uint32_t expected[8];
+    if(!d) return -1;
+    for(unsigned channel=0;channel<4;++channel) {
+        unsigned selector=(d[3]>>(channel*3))&7u;
+        if(selector==2 || selector==3) return -1;
+    }
+    if(ps5_resource_sampled_image_descriptor(r,0,0,expected)) return -1;
+    expected[3]=(expected[3]&~0xfffu)|(d[3]&0xfffu);
+    return memcmp(expected,d,sizeof(expected)) ? -1 : 0;
+}
 static int ps5_resource_texel_buffer_descriptor_owned(struct pipe_resource *r,const uint32_t d[4]) {
     if(!r || r->image || !d) return -1;
     const uint64_t address=d[0]|((uint64_t)(d[1]&0xffffu)<<32);

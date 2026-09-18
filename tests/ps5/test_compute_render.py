@@ -691,7 +691,8 @@ int main(void) {
             }
         }
         unsigned used=0,buffers=0,filtered=0,max_lod[PS5_COMPUTE_TEXTURE_SLOTS],arrays=0;
-        assert(!ps5_compute_texture_usage(nir,&used,&buffers,&filtered,max_lod,&arrays,(uint8_t[16]){0}));
+        bool valid=ps5_compute_texture_usage(nir,&used,&buffers,&filtered,max_lod,&arrays,(uint8_t[16]){0});
+        assert(valid==(fault==3));
         ralloc_free(nir);
     }
     for(unsigned fault=0;fault<7;++fault) {
@@ -869,8 +870,9 @@ swizzle = driver[format_start:driver.index("static bool\nps5_compute_image_array
 code = code.replace("static void compile(",swizzle+"static void compile(",1)
 compiler = (PSBC / "libpsbc/psbc_compile.c").read_text()
 state_at = compiler.index("struct gallium_buffer_state {")
+count_at = compiler.index("static unsigned\ncontiguous_sampler_count(")
 guard_at = compiler.index("static bool lower_gallium_image_index(")
-guard = compiler[state_at:compiler.index("};",state_at)+2] + "\n" + compiler[guard_at:compiler.index("/* === Mesa stage mapping",guard_at)]
+guard = compiler[state_at:compiler.index("};",state_at)+2] + "\n" + compiler[count_at:compiler.index("/* Gallium scalar slots",count_at)] + compiler[guard_at:compiler.index("/* === Mesa stage mapping",guard_at)]
 code = code.replace("static nir_shader *normalized_image(",guard+"static nir_shader *normalized_image(",1)
 prepare_start = driver.index("   unsigned textures = 0", driver.index("ps5_create_compute_state("))
 prepare_end = driver.index("   if (!context->compute_descriptors)", prepare_start)

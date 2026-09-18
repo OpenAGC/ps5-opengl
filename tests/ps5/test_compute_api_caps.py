@@ -27,6 +27,9 @@ def caps_source():
     source = SOURCE.read_text()
     assert "caps->max_label_length = 256;" in source
     assert ".compute_private_buffer = true, .compute_buffer_spills = true" in source
+    assert ("if (PS5_ENABLE_GLSL_430_CANDIDATE)\n"
+            "         tcs_caps->max_shader_buffers = tes_caps->max_shader_buffers =\n"
+            "            PS5_COMPUTE_STORAGE_SLOTS;" in source)
     default = re.search(r"#ifndef PS5_ENABLE_COMPUTE_API_TEST\s*\n"
                         r"#define PS5_ENABLE_COMPUTE_API_TEST 0\s*\n#endif", source)
     assert default, "private compute macro must default to zero"

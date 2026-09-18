@@ -14992,6 +14992,9 @@ ps5_screen_create(void)
        * remove UBOs from the already-qualified VS/FS core profile. */
       tcs_caps->max_const_buffers = tes_caps->max_const_buffers =
          PS5_MAX_CONSTANT_BUFFERS;
+      if (PS5_ENABLE_GLSL_430_CANDIDATE)
+         tcs_caps->max_shader_buffers = tes_caps->max_shader_buffers =
+            PS5_COMPUTE_STORAGE_SLOTS;
    }
 
    fs_caps->max_instructions = 16384;
