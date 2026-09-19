@@ -3053,6 +3053,21 @@ ps5_prepare_geometry_storage(struct ps5_context *context,
 }
 
 static bool
+ps5_metadata_has_indirect_ubo(const PsbcShaderMetadata *metadata,
+                              unsigned stage)
+{
+   for (unsigned index = 0; index < metadata->descriptor_binding_count;
+        ++index) {
+      const PsbcDescriptorBinding *binding =
+         &metadata->descriptor_bindings[index];
+      if (binding->type == PSBC_DESCRIPTOR_UNIFORM_BUFFER &&
+          binding->binding == PSBC_GALLIUM_UBO_ARRAY_BINDING(stage))
+         return true;
+   }
+   return false;
+}
+
+static bool
 ps5_prepare_constant(struct ps5_context *context,
                      const struct ps5_shader *shader, unsigned slot,
                      uint32_t *user_data, unsigned user_data_count,
@@ -3086,14 +3101,9 @@ ps5_prepare_constant(struct ps5_context *context,
    if (merged_geometry)
       resource_bindings += (context->gs->nir->info.num_ssbos != 0) +
                            (context->gs->nir->info.num_images != 0);
-   indirect_ubo = false;
-   if (!storage_fs && !merged_geometry)
-      for (index = 0; index < metadata->descriptor_binding_count; ++index)
-         indirect_ubo |= metadata->descriptor_bindings[index].type ==
-                            PSBC_DESCRIPTOR_UNIFORM_BUFFER &&
-                         metadata->descriptor_bindings[index].binding ==
-                            PSBC_GALLIUM_UBO_ARRAY_BINDING(
-                               slot ? PSBC_STAGE_FRAGMENT : PSBC_STAGE_VERTEX);
+   indirect_ubo = !storage_fs && !merged_geometry &&
+      ps5_metadata_has_indirect_ubo(
+         metadata, slot ? PSBC_STAGE_FRAGMENT : PSBC_STAGE_VERTEX);
    expected_ubo_count = shader->nir->info.num_ubos +
       (merged_geometry ? context->gs->nir->info.num_ubos : 0u);
    expected_ubo_bindings = merged_geometry_storage
@@ -3475,6 +3485,7 @@ ps5_prepare_texture(struct ps5_context *context,
    unsigned expected_texture_count;
    unsigned expected_ubo_count;
    unsigned expected_ubo_bindings;
+   bool indirect_ubo;
    bool merged_geometry;
    bool merged_geometry_storage;
    unsigned resource_bindings;
@@ -3504,10 +3515,12 @@ ps5_prepare_texture(struct ps5_context *context,
       return true;
    expected_ubo_count = shader->nir->info.num_ubos +
       (merged_geometry ? context->gs->nir->info.num_ubos : 0u);
+   indirect_ubo = !storage_fs && !merged_geometry &&
+      ps5_metadata_has_indirect_ubo(metadata, shader->stage);
    expected_ubo_bindings = merged_geometry_storage
       ? (shader->nir->info.num_ubos != 0) +
            (context->gs->nir->info.num_ubos != 0)
-      : expected_ubo_count;
+      : indirect_ubo ? 1u : expected_ubo_count;
    table = (struct ps5_resource *)context->descriptor_storage[slot];
    unsigned expected_binding_count =
       (storage_fs ? 1u + (shader->nir->info.num_images != 0) +

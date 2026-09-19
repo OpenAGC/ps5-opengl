@@ -65,6 +65,8 @@ texture = source[texture_at:source.index("\nint64_t sceKernelGetDirectMemorySize
 assert "(texture_address & 0xffu) || texture_address >> 48" in texture
 assert "(uint32_t)(texture_address >> 32) != metadata->address32_hi" not in texture
 assert "(uint32_t)(texture_address >> 40)" in texture
+assert "ps5_metadata_has_indirect_ubo(metadata, shader->stage)" in texture
+assert ": indirect_ubo ? 1u : expected_ubo_count" in texture
 assert "context->base.memory_barrier = ps5_memory_barrier;" in source
 atomic_source = (MESA / "src/mesa/state_tracker/st_atom_atomicbuf.c").read_text()
 atomic_at = atomic_source.index("static void\nst_binding_to_sb(")
