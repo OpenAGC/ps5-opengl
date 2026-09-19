@@ -12,7 +12,7 @@ source = (root / "third_party/opengnm-psbc/libpsbc/psbc_compile.c").read_text()
 start = source.index("static void psbc_setup_descriptor_sizes(")
 helper = source[start:source.index("\n}", start) + 2]
 assert source.count("psbc_setup_descriptor_sizes(&ci);") == 1
-assert source.count("psbc_setup_descriptor_sizes(&compiler_info);") == 1
+assert source.count("psbc_setup_descriptor_sizes(compiler_info);") == 1
 fields = {
     "sampled_image_desc_size": 32, "combined_image_sampler_desc_size": 48,
     "combined_image_sampler_offset": 32, "sampler_descriptor_size": 16,

@@ -3480,8 +3480,12 @@ ps5_prepare_texture(struct ps5_context *context,
    unsigned resource_bindings;
    const bool storage_fs = slot == 1 && ps5_shader_uses_storage(shader);
 
-   if (!shader || (!shader->active && !metadata_override) || slot >= PS5_DESCRIPTOR_STAGE_COUNT)
+   if (!shader || (!shader->active && !metadata_override) || slot >= PS5_DESCRIPTOR_STAGE_COUNT) {
+      printf("[ps5-gallium] texture-prepare reject=shader slot=%u shader=%u active=%u override=%u\n",
+             slot, shader != NULL, shader && shader->active,
+             metadata_override != NULL);
       return false;
+   }
    metadata = metadata_override ? metadata_override :
                                    &shader->active->output.metadata;
    const bool merged_tessellation = ps5_uses_tessellation_metadata(context, metadata);
@@ -3525,8 +3529,15 @@ ps5_prepare_texture(struct ps5_context *context,
        !metadata->descriptor_set0_valid ||
        metadata->descriptor_set0_user_data_dword >= user_data_count ||
        metadata->descriptor_binding_count != expected_binding_count ||
-       !table)
+       !table) {
+      printf("[ps5-gallium] texture-prepare reject=layout stage=%u slot=%u expected=%u bindings=%u set0=%u dword=%u/%u table=%u merged=%u/%u\n",
+             shader->stage, slot, expected_binding_count,
+             metadata->descriptor_binding_count,
+             metadata->descriptor_set0_valid,
+             metadata->descriptor_set0_user_data_dword, user_data_count,
+             table != NULL, merged_geometry, merged_tessellation);
       return false;
+   }
 
    table_address = (uintptr_t)table->data;
    if ((uint32_t)(table_address >> 32) != metadata->address32_hi)
@@ -3579,8 +3590,15 @@ ps5_prepare_texture(struct ps5_context *context,
              (binding->binding - PS5_TESSELLATION_TEXTURE_BINDING) * PS5_TEXTURE_DESCRIPTOR_STRIDE :
              (storage_fs ? PS5_FRAGMENT_TEXTURE_OFFSET : 0u) + binding->binding * PS5_TEXTURE_DESCRIPTOR_STRIDE) ||
           binding->offset + binding->stride > table->size ||
-          !ps5_texture_used(context, shader, metadata, binding->binding))
+          !ps5_texture_used(context, shader, metadata, binding->binding)) {
+         printf("[ps5-gallium] texture-prepare reject=binding index=%u type=%u set=%u binding=%u array=%u stride=%u offset=%u/%zu used=%u\n",
+                index, binding->type, binding->set, binding->binding,
+                binding->array_size, binding->stride, binding->offset,
+                table->size,
+                ps5_texture_used(context, shader, metadata,
+                                 binding->binding));
          return false;
+      }
       texture_count++;
       if (merged_geometry && binding->binding >= PS5_MAX_TEXTURE_UNITS)
          state_slot = PS5_GEOMETRY_TEXTURE_SLOT;
@@ -3590,8 +3608,12 @@ ps5_prepare_texture(struct ps5_context *context,
          state_slot = slots[(binding->binding - PS5_TESSELLATION_TEXTURE_BINDING) / PS5_MAX_TEXTURE_UNITS];
       }
       view = context->sampler_views[state_slot][unit];
-      if (!view || !view->texture)
+      if (!view || !view->texture) {
+         printf("[ps5-gallium] texture-prepare reject=view slot=%u unit=%u view=%u texture=%u\n",
+                state_slot, unit, view != NULL,
+                view && view->texture);
          return false;
+      }
       texture = (struct ps5_resource *)view->texture;
       descriptor = (uint32_t *)(table->data + binding->offset);
       if (texture->base.target == PIPE_BUFFER) {
@@ -3607,8 +3629,11 @@ ps5_prepare_texture(struct ps5_context *context,
       view_layers = view->u.tex.last_layer - view->u.tex.first_layer + 1;
       sampler_state = context->samplers[state_slot][unit];
       sampler = sampler_state ? &sampler_state->base : NULL;
-      if (!sampler)
+      if (!sampler) {
+         printf("[ps5-gallium] texture-prepare reject=sampler slot=%u unit=%u\n",
+                state_slot, unit);
          return false;
+      }
       format_size = ps5_texture_format_size(texture->base.format);
       depth_texture = texture->base.format == PIPE_FORMAT_Z32_FLOAT ||
                       texture->base.format ==
@@ -3749,8 +3774,24 @@ ps5_prepare_texture(struct ps5_context *context,
           !ps5_texture_descriptor_swizzle(view->swizzle_r, view->format, &swizzle[0]) ||
           !ps5_texture_descriptor_swizzle(view->swizzle_g, view->format, &swizzle[1]) ||
           !ps5_texture_descriptor_swizzle(view->swizzle_b, view->format, &swizzle[2]) ||
-          !ps5_texture_descriptor_swizzle(view->swizzle_a, view->format, &swizzle[3]))
+          !ps5_texture_descriptor_swizzle(view->swizzle_a, view->format, &swizzle[3])) {
+         printf("[ps5-gallium] texture-prepare reject=state slot=%u unit=%u target=%u/%u format=%u/%u size=%ux%ux%u array=%u levels=%u view-levels=%u:%u layers=%u:%u stride=%u alloc=%zu bind=%x samples=%u:%u sampler=%u/%u/%u mip=%u lod=%g:%g bias=%g aniso=%u compare=%u/%u unnormalized=%u\n",
+                state_slot, unit, texture->base.target, view->target,
+                texture->base.format, view->format, texture->base.width0,
+                texture->base.height0, texture->base.depth0,
+                texture->base.array_size, texture->base.last_level,
+                view->u.tex.first_level, view->u.tex.last_level,
+                view->u.tex.first_layer, view->u.tex.last_layer,
+                texture->level_stride[0], texture->allocation_size,
+                texture->base.bind, texture->base.nr_samples,
+                texture->base.nr_storage_samples, sampler->wrap_s,
+                sampler->wrap_t, sampler->wrap_r,
+                sampler->min_mip_filter, sampler->min_lod,
+                sampler->max_lod, sampler->lod_bias,
+                sampler->max_anisotropy, sampler->compare_mode,
+                sampler->compare_func, sampler->unnormalized_coords);
          return false;
+      }
 
       if (staged_stencil) {
          stencil_sample = ps5_stage_packed_stencil_samples(texture);
@@ -3790,8 +3831,13 @@ ps5_prepare_texture(struct ps5_context *context,
                                       : texture->data) +
          (staged_packed_depth ? texture->depth_staging_offset : 0);
       if ((uint32_t)(texture_address >> 32) != metadata->address32_hi ||
-          (texture_address & 0xffu))
+          (texture_address & 0xffu)) {
+         printf("[ps5-gallium] texture-prepare reject=address slot=%u unit=%u address=%" PRIxPTR " high=%08x expected=%08x align=%u\n",
+                state_slot, unit, texture_address,
+                (uint32_t)(texture_address >> 32), metadata->address32_hi,
+                (unsigned)(texture_address & 0xffu));
          return false;
+      }
       memset(descriptor, 0, binding->stride);
       descriptor[0] = (uint32_t)(texture_address >> 8);
       descriptor[1] = format_word |
@@ -3930,8 +3976,12 @@ ps5_prepare_texture(struct ps5_context *context,
             texture->data, texture->size);
       }
    }
-   if (texture_count != expected_texture_count)
+   if (texture_count != expected_texture_count) {
+      printf("[ps5-gallium] texture-prepare reject=count actual=%u expected=%u bindings=%u\n",
+             texture_count, expected_texture_count,
+             metadata->descriptor_binding_count);
       return false;
+   }
    user_data[metadata->descriptor_set0_user_data_dword] =
       (uint32_t)table_address;
    ps5_flush_gpu_data(table->data, flush_size);

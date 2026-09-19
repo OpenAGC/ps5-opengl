@@ -1082,7 +1082,7 @@ require("PS5_ENABLE_MSAA4_CANDIDATE" in SCREEN and
         "GL_EXT_framebuffer_multisample" in UBO and
         "max_samples >= 4" in MSAA4,
         "native 4x-MSAA candidate regressed")
-require("compiler_info.spirv_caps.Geometry = true;" in PSBC_C and
+require("compiler_info->spirv_caps.Geometry = true;" in PSBC_C and
         "ctx->stage == MESA_SHADER_GEOMETRY" in PSBC_C and
         "PSBC_HW_STAGE_UNKNOWN" in PSBC_C and
         "PSBC_UNRESOLVED_AGC_LINKAGE" in PSBC_C,
@@ -1090,7 +1090,7 @@ require("compiler_info.spirv_caps.Geometry = true;" in PSBC_C and
 require("psbc_compile_nir_geometry_pipeline" in PSBC_H and
         "#define PSBC_MAX_DESCRIPTOR_BINDINGS 128" in PSBC_H and
         "shader_count = 2" in PSBC_C and
-        "stage.info.force_indirect_descriptors = false;" in PSBC_C and
+        "stage->info.force_indirect_descriptors = false;" in PSBC_C and
         "S_028B54_ES_EN(has_tessellation ? V_028B54_ES_STAGE_DS :" in PSBC_C and
         "V_028B54_ES_STAGE_REAL) |" in PSBC_C and
         "S_028B54_GS_EN(has_geometry)" in PSBC_C and
@@ -1103,10 +1103,10 @@ require("psbc_compile_nir_geometry_pipeline" in PSBC_H and
         "S_028A6C_OUTPRIM_TYPE(output_primitive)" in PSBC_C and
         "nir_lower_gs_intrinsics_count_primitives" in PSBC_C and
         "const unsigned linked_slots = util_bitcount64(nir->info.inputs_read)" in PSBC_C and
-        "previous.info.vs.num_linked_outputs = linked_slots" in PSBC_C and
-        "previous.info.outputs_linked = true" in PSBC_C and
-        "stage.info.gs.num_linked_inputs = linked_slots" in PSBC_C and
-        "stage.info.inputs_linked = true" in PSBC_C and
+        "previous->info.vs.num_linked_outputs = linked_slots" in PSBC_C and
+        "previous->info.outputs_linked = true" in PSBC_C and
+        "stage->info.gs.num_linked_inputs = linked_slots" in PSBC_C and
+        "stage->info.inputs_linked = true" in PSBC_C and
         "PSBC_SH_OFFSET(R_00B21C_SPI_SHADER_PGM_RSRC3_GS)" in PSBC_C and
         "S_00B21C_CU_EN(0xffff) | S_00B21C_WAVE_LIMIT(0x3f)" in PSBC_C and
         "PSBC_SH_OFFSET(R_00B204_SPI_SHADER_PGM_RSRC4_GS)" in PSBC_C and
@@ -1208,7 +1208,7 @@ require("#define PS5_MAX_RENDER_TARGETS 8u" in SCREEN and
         "UINT32_C(0xff000000)" in EIGHT_MRT,
         "eight-draw-buffer candidate regressed")
 require("BITFIELD64_BIT(FRAG_RESULT_DUAL_SRC_BLEND)" in PSBC_C and
-        "gfx_state.ps.epilog.mrt0_is_dual_src = true" in PSBC_C and
+        "gfx_state->ps.epilog.mrt0_is_dual_src = true" in PSBC_C and
         "spi_shader_col_format = format * 0x11" in PSBC_C and
         "opts->spi_shader_col_format & 0xf : V_028714_SPI_SHADER_FP16_ABGR" in PSBC_C and
         "(opts->color_is_int8 & 1) * 3" in PSBC_C and
@@ -1273,7 +1273,7 @@ require("bool                 streamout_valid;" in PSBC_H and
         "streamout_config_sgpr" in PSBC_H and
         "streamout_write_index_sgpr" in PSBC_H and
         "streamout_offset_sgprs[4]" in PSBC_H and
-        "compiler_info.spirv_caps.TransformFeedback = true;" in PSBC_C,
+        "compiler_info->spirv_caps.TransformFeedback = true;" in PSBC_C,
         "PSBC legacy transform-feedback ABI is incomplete")
 require("PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDATE" in SCREEN and
         "util_upload_index_buffer(base, info, &draws[0]" in SCREEN and
