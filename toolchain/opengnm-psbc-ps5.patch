@@ -527,7 +527,7 @@ index 945737d..b2755c7 100644
  
  	psbc_free_output(&output);
 diff --git a/libpsbc/psbc_compile.c b/libpsbc/psbc_compile.c
-index bacbc6a..f1fd77b 100644
+index bacbc6a..9026125 100644
 --- a/libpsbc/psbc_compile.c
 +++ b/libpsbc/psbc_compile.c
 @@ -12,6 +12,7 @@
@@ -1722,7 +1722,7 @@ index bacbc6a..f1fd77b 100644
          ac_info->has_fma_mix = true;
      } else if (gfxlevel == GFX10) {
          ac_info->max_waves_per_simd = 20;
-@@ -928,26 +1983,1287 @@ static void setup_target(PsbcTarget target,
+@@ -928,26 +1983,1310 @@ static void setup_target(PsbcTarget target,
      }
  }
  
@@ -2949,7 +2949,22 @@ index bacbc6a..f1fd77b 100644
 +    return true;
 +}
 +
-+static PsbcResult psbc_compile_impl(
++struct psbc_compile_scratch {
++    struct ac_compiler_info ac_info;
++    struct radv_compiler_info compiler_info;
++    struct radv_shader_stage stage;
++    struct radv_shader_stage previous;
++    struct radv_shader_stage stages[MESA_VULKAN_SHADER_STAGES];
++    struct radv_shader_layout layout;
++    _Alignas(struct radv_descriptor_set_layout)
++        uint8_t descriptor_set0_storage[
++            sizeof(struct radv_descriptor_set_layout) +
++            PSBC_MAX_DESCRIPTOR_BINDINGS *
++                sizeof(struct radv_descriptor_set_binding_layout)];
++    struct radv_graphics_state_key gfx_state;
++};
++
++static PsbcResult psbc_compile_impl_inner(
      const uint32_t*       spirv,
      size_t                spirv_size,
 +    const nir_shader*     input_nir,
@@ -2957,9 +2972,18 @@ index bacbc6a..f1fd77b 100644
 +    size_t                previous_spirv_size,
 +    const nir_shader*     previous_input_nir,
      const PsbcCompileOptions* opts,
-     PsbcShaderOutput*     out
+-    PsbcShaderOutput*     out
++    PsbcShaderOutput*     out,
++    struct psbc_compile_scratch* scratch
  ) {
 -    if (!spirv || !opts || !out)
++    struct ac_compiler_info *ac_info = &scratch->ac_info;
++    struct radv_compiler_info *compiler_info = &scratch->compiler_info;
++    struct radv_shader_stage *stage = &scratch->stage;
++    struct radv_shader_stage *previous = &scratch->previous;
++    struct radv_shader_layout *layout = &scratch->layout;
++    uint8_t *descriptor_set0_storage = scratch->descriptor_set0_storage;
++    struct radv_graphics_state_key *gfx_state = &scratch->gfx_state;
 +    if ((!spirv && !input_nir) || !opts || !out)
          return PSBC_RESULT_INTERNAL_ERROR;
  
@@ -3014,57 +3038,76 @@ index bacbc6a..f1fd77b 100644
  
      /* Ensure library is initialized */
      psbc_init();
-@@ -961,17 +3277,37 @@ PsbcResult psbc_compile_shader(
+@@ -959,79 +3298,329 @@ PsbcResult psbc_compile_shader(
+     setup_target(opts->target, &gfxlevel, &chipfamily, &neo);
+ 
      /* Construct ac_compiler_info for the target GPU */
-     struct ac_compiler_info ac_info = {0};
-     setup_ac_info(&ac_info, gfxlevel);
+-    struct ac_compiler_info ac_info = {0};
+-    setup_ac_info(&ac_info, gfxlevel);
++    setup_ac_info(ac_info, gfxlevel);
 +    if (opts->force_accelerated_dot)
-+        ac_info.has_accelerated_dot_product = true;
++        ac_info->has_accelerated_dot_product = true;
  
      /* Construct radv_compiler_info */
-     struct radv_compiler_info compiler_info = {0};
-     compiler_info.ac = &ac_info;
+-    struct radv_compiler_info compiler_info = {0};
+-    compiler_info.ac = &ac_info;
 -    compiler_info.hw.address32_hi = 0;
-+    compiler_info.spirv_caps.Shader = true;
-+    compiler_info.spirv_caps.Geometry = true;
-+    compiler_info.spirv_caps.TransformFeedback = true;
-+    compiler_info.spirv_caps.DotProduct = true;
-+    compiler_info.spirv_caps.DotProductInput4x8BitPacked = true;
+-    compiler_info.key.ge_wave_size = 64;
+-    compiler_info.key.ps_wave_size = (gfxlevel >= GFX10_3) ? 32 : 64;
+-    compiler_info.key.cs_wave_size = (gfxlevel >= GFX10_3) ? 32 : 64;
+-    compiler_info.key.rt_wave_size = 64;
+-    compiler_info.key.family = chipfamily;
+-    compiler_info.key.load_grid_size_from_user_sgpr = (gfxlevel >= GFX10_3);
++    compiler_info->ac = ac_info;
++    compiler_info->spirv_caps.Shader = true;
++    compiler_info->spirv_caps.Geometry = true;
++    compiler_info->spirv_caps.TransformFeedback = true;
++    compiler_info->spirv_caps.DotProduct = true;
++    compiler_info->spirv_caps.DotProductInput4x8BitPacked = true;
 +    if (opts->force_accelerated_dot) {
-+        compiler_info.spirv_caps.Int16 = true;
-+        compiler_info.spirv_caps.DotProductInputAll = true;
++        compiler_info->spirv_caps.Int16 = true;
++        compiler_info->spirv_caps.DotProductInputAll = true;
 +    }
-+    compiler_info.hw.address32_hi = opts->address32_hi;
++    compiler_info->hw.address32_hi = opts->address32_hi;
 +    /* The native CS owner supplies three grid dimensions directly, not a
 +     * Vulkan dispatch-parameter pointer with a separate lifetime. */
-+    compiler_info.key.load_grid_size_from_user_sgpr = mesa_stage == MESA_SHADER_COMPUTE;
-+    psbc_setup_descriptor_sizes(&compiler_info);
-     compiler_info.key.ge_wave_size = 64;
-     compiler_info.key.ps_wave_size = (gfxlevel >= GFX10_3) ? 32 : 64;
-     compiler_info.key.cs_wave_size = (gfxlevel >= GFX10_3) ? 32 : 64;
-     compiler_info.key.rt_wave_size = 64;
-     compiler_info.key.family = chipfamily;
-     compiler_info.key.load_grid_size_from_user_sgpr = (gfxlevel >= GFX10_3);
-+    compiler_info.key.use_ngg = opts->ngg;
-+    compiler_info.key.ps5_global_streamout = opts->ps5_global_streamout;
-+    compiler_info.key.ps5_global_primitive_query = opts->ps5_global_primitive_query;
-+    compiler_info.key.primitives_generated_query = opts->ps5_global_primitive_query;
-+    compiler_info.key.ps5_buffer_scratch = opts->compute_buffer_spills;
++    compiler_info->key.load_grid_size_from_user_sgpr = mesa_stage == MESA_SHADER_COMPUTE;
++    psbc_setup_descriptor_sizes(compiler_info);
++    compiler_info->key.ge_wave_size = 64;
++    compiler_info->key.ps_wave_size = (gfxlevel >= GFX10_3) ? 32 : 64;
++    compiler_info->key.cs_wave_size = (gfxlevel >= GFX10_3) ? 32 : 64;
++    compiler_info->key.rt_wave_size = 64;
++    compiler_info->key.family = chipfamily;
++    compiler_info->key.load_grid_size_from_user_sgpr = (gfxlevel >= GFX10_3);
++    compiler_info->key.use_ngg = opts->ngg;
++    compiler_info->key.ps5_global_streamout = opts->ps5_global_streamout;
++    compiler_info->key.ps5_global_primitive_query = opts->ps5_global_primitive_query;
++    compiler_info->key.primitives_generated_query = opts->ps5_global_primitive_query;
++    compiler_info->key.ps5_buffer_scratch = opts->compute_buffer_spills;
      /* ACO uses debug.family for disassembly and init_program assertion */
-     compiler_info.debug.family = chipfamily;
+-    compiler_info.debug.family = chipfamily;
++    compiler_info->debug.family = chipfamily;
  
-@@ -981,6 +3317,7 @@ PsbcResult psbc_compile_shader(
+     /* Initialize NIR options for all stages */
+-    radv_get_nir_options(&compiler_info);
++    radv_get_nir_options(compiler_info);
+ 
      /* Construct radv_shader_stage */
-     struct radv_shader_stage stage = {0};
-     stage.stage = mesa_stage;
-+    stage.key.keep_executable_info = getenv("PSBC_DEBUG_DISASM") != NULL;
+-    struct radv_shader_stage stage = {0};
+-    stage.stage = mesa_stage;
++    stage->stage = mesa_stage;
++    stage->key.keep_executable_info = getenv("PSBC_DEBUG_DISASM") != NULL;
      /* Set next_stage based on the pipeline graph.
       * For standalone compilation we assume the simplest pipeline:
       *   VS → FS, VS → HS → DS → FS, VS → GS → FS
-@@ -992,46 +3329,295 @@ PsbcResult psbc_compile_shader(
-     case MESA_SHADER_GEOMETRY:  stage.next_stage = MESA_SHADER_FRAGMENT;     break;
-     default:                    stage.next_stage = MESA_SHADER_NONE;         break;
-     }
+      */
+     switch (mesa_stage) {
+-    case MESA_SHADER_VERTEX:    stage.next_stage = MESA_SHADER_FRAGMENT;     break;
+-    case MESA_SHADER_TESS_CTRL: stage.next_stage = MESA_SHADER_TESS_EVAL;    break;
+-    case MESA_SHADER_TESS_EVAL: stage.next_stage = MESA_SHADER_FRAGMENT;     break;
+-    case MESA_SHADER_GEOMETRY:  stage.next_stage = MESA_SHADER_FRAGMENT;     break;
+-    default:                    stage.next_stage = MESA_SHADER_NONE;         break;
+-    }
 -    stage.spirv.data = (const char*)spirv;
 -    stage.spirv.size = spirv_size;
 -    stage.entrypoint = opts->entrypoint ? opts->entrypoint : "main";
@@ -3078,27 +3121,26 @@ index bacbc6a..f1fd77b 100644
 -
 -    nir_shader* nir = radv_shader_spirv_to_nir(
 -        &compiler_info, &stage, &spirv_options, false
++    case MESA_SHADER_VERTEX:    stage->next_stage = MESA_SHADER_FRAGMENT;     break;
++    case MESA_SHADER_TESS_CTRL: stage->next_stage = MESA_SHADER_TESS_EVAL;    break;
++    case MESA_SHADER_TESS_EVAL: stage->next_stage = MESA_SHADER_FRAGMENT;     break;
++    case MESA_SHADER_GEOMETRY:  stage->next_stage = MESA_SHADER_FRAGMENT;     break;
++    default:                    stage->next_stage = MESA_SHADER_NONE;         break;
++    }
 +    if (input_nir && input_nir->info.stage != mesa_stage) {
 +        psbc_shutdown();
 +        return PSBC_RESULT_UNSUPPORTED_STAGE;
 +    }
 +    debug_stage(input_nir ? "import-nir-begin" : "import-spirv-begin");
 +    nir_shader* nir = prepare_stage_nir(
-+        &compiler_info, &stage, spirv, spirv_size, input_nir, opts
++        compiler_info, stage, spirv, spirv_size, input_nir, opts
      );
 -
      if (!nir) {
 +        fprintf(stderr, "PSBC NIR failure: prepare-stage\n");
-         psbc_shutdown();
-         return PSBC_RESULT_COMPILE_NIR;
-     }
--
--    /* Optimize NIR */
--    radv_optimize_nir(nir, !opts->optimise);
--
--    /* Gather info again — outputs_read can be out-of-date */
--    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
--    radv_nir_lower_io(nir);
++        psbc_shutdown();
++        return PSBC_RESULT_COMPILE_NIR;
++    }
 +    debug_stage(input_nir ? "import-nir-end" : "import-spirv-end");
 +    debug_shader_io(input_nir ? "input-NIR" : "SPIR-V", nir, NULL);
 +    debug_shader_io("lowered-io", nir, NULL);
@@ -3143,20 +3185,19 @@ index bacbc6a..f1fd77b 100644
 +    if (opts->compute_buffer_spills && nir->scratch_size) {
 +        fprintf(stderr, "PSBC NIR failure: residual-scratch\n");
 +        ralloc_free(nir);
-+        psbc_shutdown();
-+        return PSBC_RESULT_COMPILE_NIR;
-+    }
+         psbc_shutdown();
+         return PSBC_RESULT_COMPILE_NIR;
+     }
 +    const bool dual_source_blend =
 +        mesa_stage == MESA_SHADER_FRAGMENT &&
 +        (nir->info.outputs_written &
 +         BITFIELD64_BIT(FRAG_RESULT_DUAL_SRC_BLEND));
-+    struct radv_shader_stage previous = {0};
 +    nir_shader* previous_nir = NULL;
 +    if (paired_geometry) {
-+        previous.stage = MESA_SHADER_VERTEX;
-+        previous.next_stage = MESA_SHADER_GEOMETRY;
++        previous->stage = MESA_SHADER_VERTEX;
++        previous->next_stage = MESA_SHADER_GEOMETRY;
 +        previous_nir = prepare_stage_nir(
-+            &compiler_info, &previous, previous_spirv, previous_spirv_size,
++            compiler_info, previous, previous_spirv, previous_spirv_size,
 +            previous_input_nir, opts
 +        );
 +        if (!previous_nir) {
@@ -3170,45 +3211,43 @@ index bacbc6a..f1fd77b 100644
 +                        previous_nir, NULL);
 +    }
  
-     /* Shader info + args + postprocess */
-+    stage.nir = nir;
-     radv_nir_shader_info_init(stage.stage, stage.next_stage, &stage.info);
-+    stage.info.is_ngg = opts->ngg;
+-    /* Optimize NIR */
+-    radv_optimize_nir(nir, !opts->optimise);
++    /* Shader info + args + postprocess */
++    stage->nir = nir;
++    radv_nir_shader_info_init(stage->stage, stage->next_stage, &stage->info);
++    stage->info.is_ngg = opts->ngg;
 +    if (paired_geometry) {
-+        radv_nir_shader_info_init(previous.stage, previous.next_stage,
-+                                  &previous.info);
-+        previous.info.is_ngg = true;
++        radv_nir_shader_info_init(previous->stage, previous->next_stage,
++                                  &previous->info);
++        previous->info.is_ngg = true;
 +        NIR_PASS(_, nir, nir_lower_gs_intrinsics,
 +                 nir_lower_gs_intrinsics_per_stream |
 +                 nir_lower_gs_intrinsics_count_primitives |
 +                 nir_lower_gs_intrinsics_count_vertices_per_primitive |
 +                 nir_lower_gs_intrinsics_overwrite_incomplete);
 +        NIR_PASS(_, nir, nir_lower_vars_to_ssa);
-+
+ 
+-    /* Gather info again — outputs_read can be out-of-date */
+-    nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+-    radv_nir_lower_io(nir);
 +        /* Both shaders are passed to ACO as one merged program.  Mark their
 +         * existing shared driver-location interface accordingly; otherwise
 +         * RADV selects the ABI for independently compiled merged halves. */
 +        const unsigned linked_slots = util_bitcount64(nir->info.inputs_read);
-+        previous.info.vs.num_linked_outputs = linked_slots;
-+        previous.info.outputs_linked = true;
-+        stage.info.gs.num_linked_inputs = linked_slots;
-+        stage.info.inputs_linked = true;
++        previous->info.vs.num_linked_outputs = linked_slots;
++        previous->info.outputs_linked = true;
++        stage->info.gs.num_linked_inputs = linked_slots;
++        stage->info.inputs_linked = true;
 +    }
  
-     struct radv_shader_layout layout = {0};
-+    _Alignas(struct radv_descriptor_set_layout)
-+        uint8_t descriptor_set0_storage[
-+            sizeof(struct radv_descriptor_set_layout) +
-+            PSBC_MAX_DESCRIPTOR_BINDINGS *
-+                sizeof(struct radv_descriptor_set_binding_layout)] = {0};
-+    psbc_descriptor_layout(opts, descriptor_set0_storage, &layout);
-+    stage.layout = layout;
+-    /* Shader info + args + postprocess */
+-    radv_nir_shader_info_init(stage.stage, stage.next_stage, &stage.info);
++    psbc_descriptor_layout(opts, descriptor_set0_storage, layout);
++    stage->layout = *layout;
 +    if (paired_geometry)
-+        previous.layout = layout;
-     struct radv_graphics_state_key gfx_state = {0};
--    gfx_state.ps.epilog.spi_shader_col_format = V_028714_SPI_SHADER_FP16_ABGR;
--    gfx_state.ps.epilog.color_is_int8 = 0xff;
-+    gfx_state.rs.provoking_vtx_last = opts->provoking_vtx_last;
++        previous->layout = *layout;
++    gfx_state->rs.provoking_vtx_last = opts->provoking_vtx_last;
 +    if (opts->rasterization_samples != 0 &&
 +        opts->rasterization_samples != 1 &&
 +        opts->rasterization_samples != 2 &&
@@ -3220,39 +3259,39 @@ index bacbc6a..f1fd77b 100644
 +        psbc_shutdown();
 +        return PSBC_RESULT_INTERNAL_ERROR;
 +    }
-+    gfx_state.ms.rasterization_samples = opts->rasterization_samples;
++    gfx_state->ms.rasterization_samples = opts->rasterization_samples;
 +    switch (opts->primitive_type) {
 +    case 0:
 +        break;
 +    case 1:
-+        gfx_state.ia.topology = V_008958_DI_PT_POINTLIST;
++        gfx_state->ia.topology = V_008958_DI_PT_POINTLIST;
 +        break;
 +    case 2:
-+        gfx_state.ia.topology = V_008958_DI_PT_LINELIST;
++        gfx_state->ia.topology = V_008958_DI_PT_LINELIST;
 +        break;
 +    case 3:
-+        gfx_state.ia.topology = V_008958_DI_PT_LINESTRIP;
++        gfx_state->ia.topology = V_008958_DI_PT_LINESTRIP;
 +        break;
 +    case 4:
-+        gfx_state.ia.topology = V_008958_DI_PT_TRILIST;
++        gfx_state->ia.topology = V_008958_DI_PT_TRILIST;
 +        break;
 +    case 5:
-+        gfx_state.ia.topology = V_008958_DI_PT_TRIFAN;
++        gfx_state->ia.topology = V_008958_DI_PT_TRIFAN;
 +        break;
 +    case 6:
-+        gfx_state.ia.topology = V_008958_DI_PT_TRISTRIP;
++        gfx_state->ia.topology = V_008958_DI_PT_TRISTRIP;
 +        break;
 +    case 10:
-+        gfx_state.ia.topology = V_008958_DI_PT_LINELIST_ADJ;
++        gfx_state->ia.topology = V_008958_DI_PT_LINELIST_ADJ;
 +        break;
 +    case 11:
-+        gfx_state.ia.topology = V_008958_DI_PT_LINESTRIP_ADJ;
++        gfx_state->ia.topology = V_008958_DI_PT_LINESTRIP_ADJ;
 +        break;
 +    case 12:
-+        gfx_state.ia.topology = V_008958_DI_PT_TRILIST_ADJ;
++        gfx_state->ia.topology = V_008958_DI_PT_TRILIST_ADJ;
 +        break;
 +    case 13:
-+        gfx_state.ia.topology = V_008958_DI_PT_TRISTRIP_ADJ;
++        gfx_state->ia.topology = V_008958_DI_PT_TRISTRIP_ADJ;
 +        break;
 +    default:
 +        if (previous_nir)
@@ -3263,110 +3302,107 @@ index bacbc6a..f1fd77b 100644
 +    }
 +    /* The frontend keys these exports by framebuffer format. Keep the legacy
 +     * defaults for standalone callers that do not provide framebuffer state. */
-+    gfx_state.ps.epilog.spi_shader_col_format = opts->spi_shader_col_format
++    gfx_state->ps.epilog.spi_shader_col_format = opts->spi_shader_col_format
 +        ? opts->spi_shader_col_format : UINT32_C(0x99999999);
-+    gfx_state.ps.epilog.color_is_int8 = opts->spi_shader_col_format
++    gfx_state->ps.epilog.color_is_int8 = opts->spi_shader_col_format
 +        ? opts->color_is_int8 : 0xff;
-+    gfx_state.ps.epilog.color_is_int10 = opts->spi_shader_col_format
++    gfx_state->ps.epilog.color_is_int10 = opts->spi_shader_col_format
 +        ? opts->color_is_int10 : 0;
-     gfx_state.ps.has_epilog = false;
++    gfx_state->ps.has_epilog = false;
 +    if (dual_source_blend) {
-+        gfx_state.ps.epilog.mrt0_is_dual_src = true;
++        gfx_state->ps.epilog.mrt0_is_dual_src = true;
 +        /* Both sources feed MRT0, including its precision and clamp rules. */
 +        unsigned format = opts->spi_shader_col_format
 +            ? opts->spi_shader_col_format & 0xf : V_028714_SPI_SHADER_FP16_ABGR;
-+        gfx_state.ps.epilog.spi_shader_col_format = format * 0x11;
-+        gfx_state.ps.epilog.color_is_int8 = opts->spi_shader_col_format
++        gfx_state->ps.epilog.spi_shader_col_format = format * 0x11;
++        gfx_state->ps.epilog.color_is_int8 = opts->spi_shader_col_format
 +            ? (opts->color_is_int8 & 1) * 3 : 0;
-+        gfx_state.ps.epilog.color_is_int10 = opts->spi_shader_col_format
++        gfx_state->ps.epilog.color_is_int10 = opts->spi_shader_col_format
 +            ? (opts->color_is_int10 & 1) * 3 : 0;
 +    }
-+    if (!psbc_apply_vertex_input_state(opts, &gfx_state)) {
++    if (!psbc_apply_vertex_input_state(opts, gfx_state)) {
 +        if (previous_nir)
 +            ralloc_free(previous_nir);
 +        ralloc_free(nir);
 +        psbc_shutdown();
 +        return PSBC_RESULT_INTERNAL_ERROR;
 +    }
-+
+ 
+-    struct radv_shader_layout layout = {0};
+-    struct radv_graphics_state_key gfx_state = {0};
+-    gfx_state.ps.epilog.spi_shader_col_format = V_028714_SPI_SHADER_FP16_ABGR;
+-    gfx_state.ps.epilog.color_is_int8 = 0xff;
+-    gfx_state.ps.has_epilog = false;
 +    /* RADV normally lowers fragment coordinates before collecting shader
 +     * info.  Keep standalone compilation in that order so the PS argument
 +     * map enables POS_FIXED_PT when the optimization selects it. */
 +    if (mesa_stage == MESA_SHADER_FRAGMENT)
 +        NIR_PASS(_, nir, radv_nir_lower_opt_fs_frag_pos,
-+                 gfx_state.vrs_may_be_enabled,
-+                 gfx_state.ms.sample_shading_enable ||
++                 gfx_state->vrs_may_be_enabled,
++                 gfx_state->ms.sample_shading_enable ||
 +                    nir->info.fs.uses_sample_shading);
  
      radv_nir_shader_info_pass(
-         &compiler_info, nir, &layout, &stage.key, &gfx_state,
+-        &compiler_info, nir, &layout, &stage.key, &gfx_state,
 -        RADV_PIPELINE_GRAPHICS, false, &stage.info
++        compiler_info, nir, layout, &stage->key, gfx_state,
 +        mesa_stage == MESA_SHADER_COMPUTE ? RADV_PIPELINE_COMPUTE : RADV_PIPELINE_GRAPHICS,
-+        false, &stage.info
++        false, &stage->info
      );
 +    if (paired_geometry) {
 +        radv_nir_shader_info_pass(
-+            &compiler_info, previous_nir, &layout, &previous.key, &gfx_state,
-+            RADV_PIPELINE_GRAPHICS, false, &previous.info
++            compiler_info, previous_nir, layout, &previous->key, gfx_state,
++            RADV_PIPELINE_GRAPHICS, false, &previous->info
 +        );
 +    }
 +    /* Legacy Gallium texture indices carry no Vulkan deref for RADV's info
 +     * pass to discover. The explicit PSBC layout still requires set 0. */
 +    if (opts->descriptor_binding_count)
-+        stage.info.desc_set_used_mask |= 1u;
++        stage->info.desc_set_used_mask |= 1u;
 +    if (paired_geometry && opts->descriptor_binding_count)
-+        previous.info.desc_set_used_mask |= 1u;
++        previous->info.desc_set_used_mask |= 1u;
 +    debug_stage("shader-info-end");
-+    debug_shader_io("info", nir, &stage.info);
++    debug_shader_io("info", nir, &stage->info);
 +    if (paired_geometry)
-+        debug_shader_io("previous-info", previous_nir, &previous.info);
++        debug_shader_io("previous-info", previous_nir, &previous->info);
 +
 +    if (opts->ngg) {
-+        struct radv_shader_stage *stages =
-+            calloc(MESA_VULKAN_SHADER_STAGES, sizeof(*stages));
-+        if (!stages) {
-+            if (previous_nir)
-+                ralloc_free(previous_nir);
-+            ralloc_free(nir);
-+            psbc_shutdown();
-+            return PSBC_RESULT_OUT_OF_MEMORY;
-+        }
-+        stages[mesa_stage] = stage;
++        struct radv_shader_stage *stages = scratch->stages;
++        stages[mesa_stage] = *stage;
 +        if (paired_geometry)
-+            stages[MESA_SHADER_VERTEX] = previous;
-+        radv_nir_shader_info_link(&compiler_info, &gfx_state, stages);
-+        stage.info = stages[mesa_stage].info;
++            stages[MESA_SHADER_VERTEX] = *previous;
++        radv_nir_shader_info_link(compiler_info, gfx_state, stages);
++        stage->info = stages[mesa_stage].info;
 +        if (paired_geometry)
-+            previous.info = stages[MESA_SHADER_VERTEX].info;
-+        free(stages);
++            previous->info = stages[MESA_SHADER_VERTEX].info;
 +        /* Standalone linking conservatively adds PrimitiveID without an FS.
 +         * Drop only the implicit, final per-primitive parameter when the
 +         * caller has proved it dead. Keep explicit outputs and unknown
 +         * consumers unchanged, and update both code lowering and metadata. */
 +        if (mesa_stage == MESA_SHADER_VERTEX &&
 +            !(nir->info.outputs_written & VARYING_BIT_PRIMITIVE_ID) &&
-+            stage.info.outinfo.export_prim_id_per_primitive &&
-+            stage.info.outinfo.prim_param_exports == 1 &&
-+            stage.info.outinfo.vs_output_param_offset[VARYING_SLOT_PRIMITIVE_ID] ==
-+                stage.info.outinfo.param_exports) {
++            stage->info.outinfo.export_prim_id_per_primitive &&
++            stage->info.outinfo.prim_param_exports == 1 &&
++            stage->info.outinfo.vs_output_param_offset[VARYING_SLOT_PRIMITIVE_ID] ==
++                stage->info.outinfo.param_exports) {
 +            if (opts->omit_implicit_primitive_id) {
-+                stage.info.outinfo.export_prim_id_per_primitive = false;
-+                stage.info.outinfo.prim_param_exports = 0;
-+                stage.info.outinfo.vs_output_param_offset[VARYING_SLOT_PRIMITIVE_ID] =
++                stage->info.outinfo.export_prim_id_per_primitive = false;
++                stage->info.outinfo.prim_param_exports = 0;
++                stage->info.outinfo.vs_output_param_offset[VARYING_SLOT_PRIMITIVE_ID] =
 +                    AC_EXP_PARAM_UNDEFINED;
 +            } else if (opts->target == PSBC_TARGET_PS5) {
 +                /* Native traces have correct counts/offsets but undefined
 +                 * per-primitive ID values. Use Mesa's per-vertex LDS route:
 +                 * retain the export slot, disable passthrough, and let the
 +                 * existing NGG pass size LDS and insert its barrier. */
-+                stage.info.outinfo.export_prim_id_per_primitive = false;
-+                stage.info.outinfo.prim_param_exports = 0;
-+                stage.info.outinfo.export_prim_id = true;
-+                ++stage.info.outinfo.param_exports;
-+                stage.info.is_ngg_passthrough = false;
++                stage->info.outinfo.export_prim_id_per_primitive = false;
++                stage->info.outinfo.prim_param_exports = 0;
++                stage->info.outinfo.export_prim_id = true;
++                ++stage->info.outinfo.param_exports;
++                stage->info.is_ngg_passthrough = false;
 +            }
 +        }
-+        debug_shader_io("linked", nir, &stage.info);
++        debug_shader_io("linked", nir, &stage->info);
 +    }
 +
 +    /* PSBC exposes one explicit set-0 table to its standalone caller.  Do not
@@ -3374,14 +3410,14 @@ index bacbc6a..f1fd77b 100644
 +     * direct set pointer fits the PS5 merged user-SGPR budget and matches the
 +     * public metadata/runtime ABI. */
 +    if (opts->descriptor_binding_count) {
-+        stage.info.force_indirect_descriptors = false;
++        stage->info.force_indirect_descriptors = false;
 +        if (paired_geometry)
-+            previous.info.force_indirect_descriptors = false;
++            previous->info.force_indirect_descriptors = false;
 +    }
  
      /* Determine previous stage for shader args declaration.
       * HS/GS need previous_stage=VERTEX so that the merged-pipeline args
-@@ -1046,13 +3632,34 @@ PsbcResult psbc_compile_shader(
+@@ -1046,19 +3635,40 @@ PsbcResult psbc_compile_shader(
      default:                    previous_stage = MESA_SHADER_NONE;      break;
      }
  
@@ -3392,13 +3428,14 @@ index bacbc6a..f1fd77b 100644
 +        psbc_shutdown();
 +        return PSBC_RESULT_COMPILE_NIR;
 +    }
-+    stage.info.vs.needs_instance_id_bias = opts->split_vertex_instances;
++    stage->info.vs.needs_instance_id_bias = opts->split_vertex_instances;
      radv_declare_shader_args(
-         &compiler_info, &gfx_state, &stage, previous_stage, NULL
+-        &compiler_info, &gfx_state, &stage, previous_stage, NULL
++        compiler_info, gfx_state, stage, previous_stage, NULL
      );
 +    debug_stage("declare-args-end");
-+    if (compute_private_stride && (!stage.args.ac.ring_offsets.used ||
-+        stage.args.ac.ring_offsets.arg_index != 0 || stage.args.ac.args[0].size != 2)) {
++    if (compute_private_stride && (!stage->args.ac.ring_offsets.used ||
++        stage->args.ac.ring_offsets.arg_index != 0 || stage->args.ac.args[0].size != 2)) {
 +        fprintf(stderr, "PSBC NIR failure: private-ring-abi\n");
 +        ralloc_free(nir);
 +        psbc_shutdown();
@@ -3406,18 +3443,36 @@ index bacbc6a..f1fd77b 100644
 +    }
  
 -    stage.nir = nir;
-     stage.info.user_sgprs_locs = stage.args.user_sgprs_locs;
-     stage.info.inline_push_constant_mask = stage.args.ac.inline_push_const_mask;
+-    stage.info.user_sgprs_locs = stage.args.user_sgprs_locs;
+-    stage.info.inline_push_constant_mask = stage.args.ac.inline_push_const_mask;
++    stage->info.user_sgprs_locs = stage->args.user_sgprs_locs;
++    stage->info.inline_push_constant_mask = stage->args.ac.inline_push_const_mask;
 +    if (paired_geometry) {
-+        previous.args = stage.args;
-+        previous.info.user_sgprs_locs = stage.info.user_sgprs_locs;
-+        previous.info.inline_push_constant_mask =
-+            stage.info.inline_push_constant_mask;
++        previous->args = stage->args;
++        previous->info.user_sgprs_locs = stage->info.user_sgprs_locs;
++        previous->info.inline_push_constant_mask =
++            stage->info.inline_push_constant_mask;
 +    }
  
      /* For geometry shaders, run the legacy GS lowering pass.
       * On GFX10.3 (PS5), NGG GS requires merging with the previous stage,
-@@ -1080,16 +3687,70 @@ PsbcResult psbc_compile_shader(
+      * which is not possible for standalone compilation. We use the legacy
+      * GS path instead, which ACO supports on all GFX levels. */
+-    if (mesa_stage == MESA_SHADER_GEOMETRY && !stage.info.is_ngg) {
++    if (mesa_stage == MESA_SHADER_GEOMETRY && !stage->info.is_ngg) {
+         /* Convert emit_vertex to emit_vertex_with_counter */
+         NIR_PASS(_, nir, nir_lower_gs_intrinsics,
+                  nir_lower_gs_intrinsics_per_stream);
+@@ -1068,7 +3678,7 @@ PsbcResult psbc_compile_shader(
+             .gfx_level = gfxlevel,
+             .export_clipdist_mask = 0xff,
+             .write_pos_to_clipvertex = true,
+-            .has_param_exports = stage.info.outinfo.param_exports > 0,
++            .has_param_exports = stage->info.outinfo.param_exports > 0,
+             .disable_streamout = true,
+         };
+         nir_shader* gs_copy = NULL;
+@@ -1080,16 +3690,70 @@ PsbcResult psbc_compile_shader(
              ralloc_free(gs_copy);
      }
  
@@ -3425,18 +3480,18 @@ index bacbc6a..f1fd77b 100644
 -        &compiler_info, &gfx_state, &stage
 -    );
 +    if (paired_geometry)
-+        radv_postprocess_nir(&compiler_info, &gfx_state, &previous);
-+    radv_postprocess_nir(&compiler_info, &gfx_state, &stage);
++        radv_postprocess_nir(compiler_info, gfx_state, previous);
++    radv_postprocess_nir(compiler_info, gfx_state, stage);
 +    if (opts->split_vertex_instances)
 +        nir_shader_intrinsics_pass(nir, lower_instance_id_bias,
-+                                   nir_metadata_control_flow, &stage.args);
++                                   nir_metadata_control_flow, &stage->args);
 +    if (mesa_stage == MESA_SHADER_FRAGMENT &&
 +        opts->target == PSBC_TARGET_PS5)
 +        nir_shader_intrinsics_pass(nir, lower_flat_input_vertex,
 +                                   nir_metadata_control_flow, (void*)opts);
 +    if (mesa_stage == MESA_SHADER_FRAGMENT &&
 +        opts->target == PSBC_TARGET_PS5 &&
-+        !split_ps5_mixed_inputs(nir, &stage.info, opts->primitive_id_per_primitive)) {
++        !split_ps5_mixed_inputs(nir, &stage->info, opts->primitive_id_per_primitive)) {
 +        if (previous_nir)
 +            ralloc_free(previous_nir);
 +        ralloc_free(nir);
@@ -3445,7 +3500,7 @@ index bacbc6a..f1fd77b 100644
 +    }
 +    NIR_PASS(_, nir, nir_opt_licm, psbc_licm_speculatable);
 +    debug_stage("postprocess-end");
-+    debug_shader_io("postprocess", nir, &stage.info);
++    debug_shader_io("postprocess", nir, &stage->info);
 +    if (getenv("PSBC_DEBUG_NIR"))
 +        nir_print_shader(nir, stderr);
 +
@@ -3453,8 +3508,8 @@ index bacbc6a..f1fd77b 100644
 +     * and may rewrite the NIR. */
 +    PsbcInputSemantics input_semantics = {.valid = true};
 +    if (mesa_stage == MESA_SHADER_FRAGMENT &&
-+        !build_input_semantics(nir, &stage.info, opts->primitive_id_per_primitive,
-+                               &input_semantics) && (stage.info.ps.prim_id_input || stage.info.ps.has_pcoord)) {
++        !build_input_semantics(nir, &stage->info, opts->primitive_id_per_primitive,
++                               &input_semantics) && (stage->info.ps.prim_id_input || stage->info.ps.has_pcoord)) {
 +        /* Never package a live built-in consumer with incomplete linkage. */
 +        ralloc_free(nir);
 +        psbc_shutdown();
@@ -3462,11 +3517,11 @@ index bacbc6a..f1fd77b 100644
 +    }
 +
 +    if (opts->ngg) {
-+        gfx10_get_ngg_info(&compiler_info,
-+                           paired_geometry ? &previous.info : &stage.info,
-+                           paired_geometry ? &stage.info : NULL,
-+                           &stage.info.ngg_info);
-+        stage.info.nir_shared_size = stage.info.ngg_info.lds_size;
++        gfx10_get_ngg_info(compiler_info,
++                           paired_geometry ? &previous->info : &stage->info,
++                           paired_geometry ? &stage->info : NULL,
++                           &stage->info.ngg_info);
++        stage->info.nir_shared_size = stage->info.ngg_info.lds_size;
 +    }
  
      /* Compile NIR to GCN ISA via ACO */
@@ -3478,10 +3533,10 @@ index bacbc6a..f1fd77b 100644
 +        shader_count = 2;
 +    }
 +    if (getenv("PSBC_DEBUG_DISASM"))
-+        stage.key.keep_executable_info = true;
++        stage->key.keep_executable_info = true;
      struct radv_shader_binary* binary = radv_shader_nir_to_asm(
 -        &compiler_info, &stage, &nir, 1, &gfx_state
-+        &compiler_info, &stage, shaders, shader_count, &gfx_state
++        compiler_info, stage, shaders, shader_count, gfx_state
      );
 +    debug_stage("aco-end");
  
@@ -3492,7 +3547,7 @@ index bacbc6a..f1fd77b 100644
          psbc_shutdown();
          return PSBC_RESULT_COMPILE_ACO;
      }
-@@ -1098,6 +3759,22 @@ PsbcResult psbc_compile_shader(
+@@ -1098,6 +3762,22 @@ PsbcResult psbc_compile_shader(
      struct radv_shader_binary_legacy* legacy =
          (struct radv_shader_binary_legacy*)binary;
  
@@ -3515,7 +3570,16 @@ index bacbc6a..f1fd77b 100644
      /* The data layout in radv_shader_binary_legacy is:
       * [stats | code | ir | disasm | debug_info]
       * Code starts at offset stats_size. */
-@@ -1116,28 +3793,104 @@ PsbcResult psbc_compile_shader(
+@@ -1107,7 +3787,7 @@ PsbcResult psbc_compile_shader(
+     /* Build the PS4/PS5 shader binary */
+     const BuildContext buildctx = {
+         .rinfo = &binary->info,
+-        .rargs = &stage.args,
++        .rargs = &stage->args,
+         .config = &binary->config,
+         .nir = nir,
+         .gfx_level = gfxlevel,
+@@ -1116,28 +3796,130 @@ PsbcResult psbc_compile_shader(
          .psbc_stage = opts->stage,
          .spirv_data = spirv,
          .spirv_size = spirv_size,
@@ -3568,6 +3632,32 @@ index bacbc6a..f1fd77b 100644
      return result;
  }
  
++static PsbcResult psbc_compile_impl(
++    const uint32_t*       spirv,
++    size_t                spirv_size,
++    const nir_shader*     input_nir,
++    const uint32_t*       previous_spirv,
++    size_t                previous_spirv_size,
++    const nir_shader*     previous_input_nir,
++    const PsbcCompileOptions* opts,
++    PsbcShaderOutput*     out
++) {
++    if ((!spirv && !input_nir) || !opts || !out)
++        return PSBC_RESULT_INTERNAL_ERROR;
++
++    struct psbc_compile_scratch *scratch = calloc(1, sizeof(*scratch));
++    if (!scratch) {
++        memset(out, 0, sizeof(*out));
++        return PSBC_RESULT_OUT_OF_MEMORY;
++    }
++    PsbcResult result = psbc_compile_impl_inner(
++        spirv, spirv_size, input_nir, previous_spirv, previous_spirv_size,
++        previous_input_nir, opts, out, scratch
++    );
++    free(scratch);
++    return result;
++}
++
 +PsbcResult psbc_compile_shader(
 +    const uint32_t* spirv,
 +    size_t spirv_size,
@@ -3624,7 +3714,7 @@ index bacbc6a..f1fd77b 100644
  }
  
  const char* psbc_result_string(PsbcResult result) {
-@@ -1149,6 +3902,7 @@ const char* psbc_result_string(PsbcResult result) {
+@@ -1149,6 +3931,7 @@ const char* psbc_result_string(PsbcResult result) {
      case PSBC_RESULT_COMPILE_ACO:      return "ACO shader compilation failed";
      case PSBC_RESULT_OUT_OF_MEMORY:    return "out of memory";
      case PSBC_RESULT_INTERNAL_ERROR:   return "internal error";
