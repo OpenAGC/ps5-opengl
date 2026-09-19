@@ -60,6 +60,11 @@ fragment_at = source.index("static unsigned\nps5_shader_storage_count(")
 fragment = source[fragment_at:source.index("static bool\nps5_prepare_constant(", fragment_at)]
 constant_at = source.index("static bool\nps5_prepare_constant(")
 constant = source[constant_at:source.index("static bool\nps5_prepare_texture(", constant_at)]
+texture_at = source.index("static bool\nps5_prepare_texture(")
+texture = source[texture_at:source.index("\nint64_t sceKernelGetDirectMemorySize", texture_at)]
+assert "(texture_address & 0xffu) || texture_address >> 48" in texture
+assert "(uint32_t)(texture_address >> 32) != metadata->address32_hi" not in texture
+assert "(uint32_t)(texture_address >> 40)" in texture
 assert "context->base.memory_barrier = ps5_memory_barrier;" in source
 atomic_source = (MESA / "src/mesa/state_tracker/st_atom_atomicbuf.c").read_text()
 atomic_at = atomic_source.index("static void\nst_binding_to_sb(")

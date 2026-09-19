@@ -3830,12 +3830,12 @@ ps5_prepare_texture(struct ps5_context *context,
       texture_address = (uintptr_t)(staged_stencil ? stencil_sample->data
                                       : texture->data) +
          (staged_packed_depth ? texture->depth_staging_offset : 0);
-      if ((uint32_t)(texture_address >> 32) != metadata->address32_hi ||
-          (texture_address & 0xffu)) {
-         printf("[ps5-gallium] texture-prepare reject=address slot=%u unit=%u address=%" PRIxPTR " high=%08x expected=%08x align=%u\n",
+      if ((texture_address & 0xffu) || texture_address >> 48) {
+         printf("[ps5-gallium] texture-prepare reject=address slot=%u unit=%u address=%" PRIxPTR " high=%08x align=%u overflow=%u\n",
                 state_slot, unit, texture_address,
-                (uint32_t)(texture_address >> 32), metadata->address32_hi,
-                (unsigned)(texture_address & 0xffu));
+                (uint32_t)(texture_address >> 32),
+                (unsigned)(texture_address & 0xffu),
+                (unsigned)(texture_address >> 48 != 0));
          return false;
       }
       memset(descriptor, 0, binding->stride);
