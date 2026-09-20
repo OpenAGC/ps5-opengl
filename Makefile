@@ -31,6 +31,7 @@ sdk-gl46:
 	bash toolchain/build-opengnm-psbc-ps5.sh
 	PS5_MESA_CROSS_FILE="$(PS5_PAYLOAD_SDK)/toolchain/prospero.ini" bash toolchain/build-mesa-ps5.sh
 	bash toolchain/install-ps5-opengl-gl46.sh $(PS5_OPENGL_SDK_PREFIX)
+	python3 tests/ps5/verify_gl46_link_surface.py
 	python3 tests/ps5/verify_gl33_capability_audit.py
 imgui-demo:
 	bash tools/build-native-test-app.sh egl_public_core33_imgui_tv
@@ -112,7 +113,6 @@ test-imgui:
 	python3 tests/ps5/test_imgui_egl_cleanup.py
 test-compiler:
 	python3 tools/fetch-sources.py --verify-psbc
-	python3 tests/ps5/verify_gl46_link_surface.py
 	python3 tests/ps5/test_fragment_exports.py
 	python3 tests/ps5/test_meta_vertex_inputs.py
 	python3 tests/ps5/test_unused_primitive_export.py

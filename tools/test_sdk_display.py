@@ -20,6 +20,9 @@ class DisplayProfileTests(unittest.TestCase):
         verifier = (ROOT / 'tools/verify-installed-sdk.sh').read_text()
         self.assertIn('sdk: sdk-gl46', makefile)
         self.assertIn('build/sdk/ps5-opengl-gl46', makefile)
+        sdk = makefile.split('sdk-gl46:', 1)[1].split('\nimgui-demo:', 1)[0]
+        self.assertLess(sdk.index('install-ps5-opengl-gl46.sh'),
+                        sdk.index('verify_gl46_link_surface.py'))
         self.assertIn('run: make sdk-gl46', workflow)
         self.assertIn('build/sdk/ps5-opengl-gl46', workflow)
         self.assertIn('name: ps5-opengl-4.6-sdk', workflow)
