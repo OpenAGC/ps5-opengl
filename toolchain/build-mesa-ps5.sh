@@ -14,6 +14,12 @@ keyring="$project_dir/third_party/mesa-release-keyring.gpg"
 build_dir="$project_dir/build/mesa-ps5-probe"
 cross_file=${PS5_MESA_CROSS_FILE:-/opt/ps5-payload-sdk/toolchain/prospero.ini}
 expected_sha=efd4bb08cdb7c365a812cd4e6c9202ab55b2f22cdcd13c7d6c4f9647b799a4ef
+diagnostic=${PS5_OPENGL_DIAGNOSTIC:-0}
+case "$diagnostic" in
+    0) buildtype=release; ndebug=true ;;
+    1) buildtype=debugoptimized; ndebug=false ;;
+    *) echo 'PS5_OPENGL_DIAGNOSTIC must be 0 or 1' >&2; exit 2 ;;
+esac
 
 if [ ! -f "$source_dir/VERSION" ] || [ "$(cat "$source_dir/VERSION")" != 26.2.0 ]; then
     echo "expected extracted Mesa 26.2.0 at $source_dir" >&2
@@ -35,6 +41,8 @@ bash "$project_dir/toolchain/apply-mesa-ps5-patch.sh" "$source_dir" "$archive" "
 
 meson_args="
 --cross-file=$cross_file
+--buildtype=$buildtype
+-Db_ndebug=$ndebug
 -Dplatforms=
 -Dc_args=-Wno-thread-safety-analysis
 -Dcpp_args=-Wno-thread-safety-analysis

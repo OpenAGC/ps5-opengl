@@ -16,13 +16,19 @@ helper = code[start:end]
 assert 'bool hazard = !base || base->target != PIPE_BUFFER;' in code
 assert 'memset(&ps5_deferred, 0, sizeof(ps5_deferred));' in code
 assert 'slot == 1 && !merged_geometry ? flush_cache : NULL, 2 + unit' in code
+assert 'flush_cache, 2 + PS5_MAX_TEXTURE_UNITS + binding' in code
+assert 'flush_cache, 2 + PS5_MAX_TEXTURE_UNITS + PIPE_MAX_ATTRIBS' in code
 assert 'user_data_count, vertex_metadata, NULL)' in code
 assert 'context->sampler_views[1][unit]->texture);' in code
+assert code.count('#ifdef AGC_RUNTIME_DIAGNOSTICS') >= 3
+assert '#ifdef AGC_RUNTIME_DIAGNOSTICS\n      if (sampler->compare_mode)' in code
+assert '#ifdef AGC_RUNTIME_DIAGNOSTICS\n      if (info->index_size == 2' in code
 harness = r'''
 #include <assert.h>
 #include <stddef.h>
 #include <string.h>
 #define PS5_MAX_TEXTURE_UNITS 16
+#define PIPE_MAX_ATTRIBS 16
 static unsigned flushes;
 static void ps5_flush_gpu_data(const void *data, size_t bytes) {
     (void)data; (void)bytes; ++flushes;
@@ -45,11 +51,14 @@ int main(void) {
     ps5_flush_batch_backing(&cache, 2, textures[1], 32);
     ps5_flush_batch_backing(&cache, 0, textures[0], 64);
     ps5_flush_batch_backing(&cache, 1, textures[0], 64);
+    ps5_flush_batch_backing(&cache, 2 + PS5_MAX_TEXTURE_UNITS, textures[0], 64);
+    ps5_flush_batch_backing(&cache,
+        2 + PS5_MAX_TEXTURE_UNITS + PIPE_MAX_ATTRIBS, textures[0], 64);
     memset(&cache, 0, sizeof(cache));
     ps5_flush_batch_backing(&cache, 2, textures[1], 32);
     ps5_flush_batch_backing(NULL, 2, textures[1], 32);
     ps5_flush_batch_backing(NULL, 2, textures[1], 32);
-    assert(flushes == before + 7);
+    assert(flushes == before + 9);
     /* Missing backing/empty flush cannot consume a remembered entry. */
     before = flushes;
     ps5_flush_batch_backing(&cache, 2, NULL, 32);

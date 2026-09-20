@@ -8,6 +8,8 @@ PS5_PAYLOAD_SDK ?= /opt/ps5-payload-sdk/
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
 PS5_OPENGL_BUILD := $(abspath ../../build/core33-native-runtime)
 PS5_DEFERRED_DRAW_BATCH ?= 1
+PS5_GPU_PRESENT_BATCH ?= 1
+PS5_DRAW_PROFILE ?= 1
 PS5_OPENGL_RUNTIME_DEFINES := -DPS5_NATIVE_TITLE_RUNTIME=1
 ifeq ($(PS5_COMPUTE_API_TEST),1)
 PS5_OPENGL_BUILD := $(abspath ../../build/compute-api-native-runtime)

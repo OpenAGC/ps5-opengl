@@ -26,8 +26,8 @@ class ScanoutConfigTest(unittest.TestCase):
                         "SCREEN": source, "require": self.assertTrue})
 
         check()
-        for old, new in (("PS5_RENDER_ARENA_BYTES=0x2c00000u", "PS5_RENDER_ARENA_BYTES=0"),
-                         ("-DPS5_RENDER_ARENA_BYTES=0x2c00000u", ""),
+        for old, new in (("PS5_RENDER_ARENA_BYTES=0x10000000u", "PS5_RENDER_ARENA_BYTES=0"),
+                         ("-DPS5_RENDER_ARENA_BYTES=0x10000000u", ""),
                          ("PS5_ENABLE_MSAA4_CANDIDATE=1", "PS5_ENABLE_MSAA4_CANDIDATE=0"),
                          ("$(ps5_opengl_mk_self)", "")):
             with self.subTest(old=old), self.assertRaises(AssertionError):
@@ -49,16 +49,16 @@ int main(void) {
     assert(PS5_SCANOUT_BYTES % PS5_SCANOUT_ALIGNMENT == 0);
     assert(PS5_SCANOUT_BYTES - PS5_SCANOUT_TILED_BYTES < PS5_SCANOUT_ALIGNMENT);
     assert(PS5_SCANOUT_POOL_BYTES == 2u * PS5_SCANOUT_BYTES);
-    assert(PS5_SCANOUT_POOL_BYTES + 0x2c00000u == EXPECT_POOL);
+    assert(PS5_SCANOUT_POOL_BYTES + 0x10000000u == EXPECT_POOL);
 }
 '''
         with tempfile.TemporaryDirectory() as tmp:
             executable = str(Path(tmp) / "layout")
             common = ["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-x", "c", "-",
                       "-I" + str(ROOT / "src/gallium/ps5"), "-o", executable]
-            for height, width, size, pool in ((1080, 1920, 0xa00000, 0x4000000),
-                                             (1440, 2560, 0x1000000, 0x4c00000),
-                                             (2160, 3840, 0x2000000, 0x6c00000)):
+            for height, width, size, pool in ((1080, 1920, 0xa00000, 0x11400000),
+                                             (1440, 2560, 0x1000000, 0x12000000),
+                                             (2160, 3840, 0x2000000, 0x14000000)):
                 flags = [f"-DEXPECT_WIDTH={width}", f"-DEXPECT_HEIGHT={height}",
                          f"-DEXPECT_BYTES={size}", f"-DEXPECT_POOL={pool}"]
                 variants = [[f"-DPS5_SCANOUT_HEIGHT={height}"]]
@@ -82,7 +82,7 @@ int main(void) {
             self.assertIn(marker, (ROOT / file).read_text())
         make = (ROOT / "toolchain/ps5-opengl-core33.mk").read_text()
         self.assertIn("$(PS5_OPENGL_PLATFORM)/ps5_scanout.h", make)
-        self.assertIn("-DPS5_RENDER_ARENA_BYTES=0x2c00000u", make)
+        self.assertIn("-DPS5_RENDER_ARENA_BYTES=0x10000000u", make)
 
     def test_status_reporter(self):
         source = (ROOT / "src/platform/ps5_agc_native_runtime.c").read_text()

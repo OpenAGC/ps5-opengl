@@ -21,10 +21,11 @@ code = r'''
 #include <assert.h>
 #include <stdint.h>
 #include <stdbool.h>
+#include <stdlib.h>
 #include <string.h>
 #define PS5_ENABLE_MRT_CANDIDATE 1
 #define PS5_ENABLE_UBO_CANDIDATE 1
-#define PS5_MAX_CONSTANT_BUFFER_SIZE 16384
+#define PS5_MAX_CONSTANT_BUFFER_SIZE 65536
 #define PS5_GPU_CLEAR_MIN_PIXELS 16384u
 #define PIPE_CLEAR_COLOR 0x3fc
 #define PIPE_CLEAR_COLOR0 4

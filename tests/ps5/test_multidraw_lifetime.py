@@ -319,8 +319,8 @@ print(f"PASS: staged ownership, 1..{capacity} draws, all-marker retirement, shar
 source = (root / "src/gallium/ps5/ps5_screen.c").read_text()
 cache_start = source.index("struct ps5_batch_flush_cache {")
 flush_cache_type = source[cache_start:source.index("\n};", cache_start) + 3]
-start = source.index("static bool\nps5_multidraw_eligible(")
-body = source[start:source.index("\n#endif", start)]
+start = source.index("enum ps5_batch_eligibility {")
+body = source[start:source.index("\n#endif\n\n#ifdef PS5_DEFERRED_DRAW_BATCH", start)]
 code = r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -331,11 +331,13 @@ code = r'''
 #include <setjmp.h>
 #include "ps5_screen.h"
 #define MIN2(a,b) ((a)<(b)?(a):(b))
+#define BITFIELD_BIT(b) (1u << (b))
 #define PS5_RENDER_ARENA_OFFSET (2u * 0xa00000u)
-enum { PIPE_MAX_ATTRIBS=16, PS5_MAX_CONSTANT_BUFFERS=13, PS5_MAX_TEXTURE_UNITS=16, PIPE_BUFFER=1,
-       PIPE_TEXTURE_2D=2, PIPE_FORMAT_R8G8B8A8_UNORM=1, MESA_PRIM_TRIANGLES=4, MESA_PRIM_TRIANGLE_FAN=5, PIPE_BIND_DISPLAY_TARGET=1,
-       PIPE_FORMAT_Z32_FLOAT=77, PIPE_FORMAT_Z32_FLOAT_S8X24_UINT=78, PIPE_BIND_RENDER_TARGET=2 };
-struct pipe_resource { unsigned target, format, nr_samples, nr_storage_samples, refs, last_level, bind; };
+enum { PIPE_MAX_ATTRIBS=16, PS5_MAX_CONSTANT_BUFFERS=13, PS5_MAX_TEXTURE_UNITS=16, PS5_MAX_RENDER_TARGETS=8, PIPE_BUFFER=1,
+       PIPE_TEXTURE_2D=2, PIPE_TEXTURE_2D_ARRAY=3, PIPE_FORMAT_R8G8B8A8_UNORM=1, MESA_PRIM_TRIANGLES=4, MESA_PRIM_TRIANGLE_FAN=5, PIPE_BIND_DISPLAY_TARGET=1,
+       PIPE_FORMAT_Z32_FLOAT=77, PIPE_FORMAT_Z32_FLOAT_S8X24_UINT=78, PIPE_MAX_VERTEX_STREAMS=4,
+       PIPE_FORMAT_X32_S8X24_UINT=79, PIPE_BIND_RENDER_TARGET=2, PIPE_BIND_DEPTH_STENCIL=4 };
+struct pipe_resource { unsigned target, format, nr_samples, nr_storage_samples, refs, last_level, bind, array_size; };
 struct pipe_sampler_view { struct pipe_resource *texture; unsigned target, format;
     union { struct { unsigned first_level, last_level, first_layer, last_layer; } tex; } u; };
 struct ps5_resource { struct pipe_resource base; unsigned render_staging_size, depth_staging_size;
@@ -349,32 +351,39 @@ struct pipe_draw_info { unsigned mode, instance_count, start_instance, index_siz
 struct pipe_draw_indirect_info { int unused; };
 struct pipe_draw_start_count_bias { unsigned start, count; int index_bias; };
 struct pipe_depth_stencil_alpha_state { bool depth_enabled; struct { bool enabled; } stencil[2]; };
+struct ps5_query { uint64_t value; struct pipe_resource *buffer; };
 struct ps5_context {
     struct pipe_context base;
     struct { bool running; } *blitter;
     bool deferred_color_clear;
-    struct { struct pipe_surface cbufs[1], zsbuf; unsigned nr_cbufs; } framebuffer;
+    struct { struct pipe_surface cbufs[PS5_MAX_RENDER_TARGETS], zsbuf; unsigned nr_cbufs; } framebuffer;
     bool framebuffer_valid; unsigned *vs, *fs, *gs;
-    unsigned stream_output_target_count, render_condition_query, active_occlusion_query,
-        active_primitives_generated_query, active_primitives_emitted_query, vertex_buffer_count;
+    unsigned stream_output_target_count, render_condition_query, vertex_buffer_count;
+    bool queries_enabled;
+    struct ps5_query *active_occlusion_query;
+    struct ps5_query *active_primitives_generated_query[PIPE_MAX_VERTEX_STREAMS];
+    struct ps5_query *active_primitives_emitted_query[PIPE_MAX_VERTEX_STREAMS];
     struct { bool is_user_buffer; struct { struct pipe_resource *resource; } buffer; } vertex_buffers[PIPE_MAX_ATTRIBS];
     struct { struct pipe_resource *buffer; } constants[2][PS5_MAX_CONSTANT_BUFFERS];
     struct pipe_resource *vertex_descriptor_table, *descriptor_storage[2], *border_color_storage;
     struct pipe_sampler_view *sampler_views[2][PS5_MAX_TEXTURE_UNITS];
     const struct pipe_depth_stencil_alpha_state *depth_stencil_alpha;
     int last_draw_status;
+    uint64_t batch_eligible, batch_reject[7];
 };
 static bool ps5_any_primitive_query(const struct ps5_context *c)
-{ return c->active_primitives_generated_query || c->active_primitives_emitted_query; }
+{ for (unsigned i=0;i<PIPE_MAX_VERTEX_STREAMS;++i) {
+      if (c->active_primitives_generated_query[i] || c->active_primitives_emitted_query[i]) return true;
+  } return false; }
 enum { TEST_DRAWS = 2 * PS5_MULTIDRAW_BATCH_CAPACITY + 3,
        TEST_COPIES = 3 * TEST_DRAWS, SNAPSHOTS = 3 * PS5_MULTIDRAW_BATCH_CAPACITY };
-static struct ps5_resource original[3], copies[TEST_COPIES], borrowed, depth_buffer;
+static struct ps5_resource original[3], copies[TEST_COPIES], borrowed, depth_buffer, query_backing;
 static uint8_t original_bytes[3][64], copy_bytes[TEST_COPIES][64];
 static uint8_t borrowed_bytes[64], depth_bytes[64];
 static struct ps5_context context;
 static struct ps5_screen screen;
 static unsigned shader_textures, allocated, freed, begun, ended, staged, calls, locked;
-static int fail_alloc, fail_begin, fail_end, fail_draw;
+static int fail_alloc, fail_begin, fail_end, fail_draw, bad_high_alloc;
 static struct ps5_resource *pending[PS5_MULTIDRAW_BATCH_CAPACITY][3];
 static unsigned expected_start[PS5_MULTIDRAW_BATCH_CAPACITY], expected_id[PS5_MULTIDRAW_BATCH_CAPACITY];
 static bool deferred_mode;
@@ -387,23 +396,47 @@ static unsigned ps5_shader_uses_storage(const unsigned *s) { (void)s; return sha
 static bool ps5_texture_used(const struct ps5_context *c, const unsigned *s, const void *metadata, unsigned unit) {
     (void)c; (void)metadata; return (*s & (1u << unit)) != 0;
 }
-static bool ps5_linear_sampled_layout(const struct pipe_resource *r) { return !(r->bind & 2); }
+static unsigned ps5_linear_color_pitch(const struct pipe_surface *s) {
+    return s && s->texture && ((struct ps5_resource *)s->texture)->render_staging_size ? 256 : 0;
+}
+static bool ps5_depth_render_target(unsigned target) {
+    return target == PIPE_TEXTURE_2D || target == PIPE_TEXTURE_2D_ARRAY;
+}
+static unsigned ps5_texture_level_layers(const struct pipe_resource *r, unsigned level) {
+    (void)level; return r->array_size ? r->array_size : 1;
+}
 static unsigned fragment_textures;
 static struct ps5_resource textures[PS5_MAX_TEXTURE_UNITS];
 static struct pipe_sampler_view views[PS5_MAX_TEXTURE_UNITS];
 static uint8_t texels[PS5_MAX_TEXTURE_UNITS][64];
+static bool __attribute__((unused)) ps5_collect_occlusion_query_resource(
+    struct ps5_query *query, struct pipe_resource *base) {
+    uint64_t value;
+    assert(query && base && base != &query_backing.base);
+    memcpy(&value, ((struct ps5_resource *)base)->data, sizeof(value));
+    query->value += value;
+    return true;
+}
 static struct pipe_resource *create(struct pipe_screen *s, const struct pipe_resource *r) {
     assert(s == &screen.base && r->target == PIPE_BUFFER && (deferred_mode || !locked));
     if ((int)allocated == fail_alloc) return NULL;
     unsigned i = allocated++;
     assert(i < TEST_COPIES);
     copies[i] = (struct ps5_resource){.base=*r, .data=copy_bytes[i], .size=64, .allocation_size=64};
+    if ((int)i == bad_high_alloc)
+        copies[i].data=(uint8_t *)((uintptr_t)copies[i].data ^ (UINT64_C(1)<<32));
     copies[i].base.refs=1;
     return &copies[i].base;
 }
 static void pipe_resource_reference(struct pipe_resource **dst, struct pipe_resource *src) {
     if (src) ++src->refs;
-    if (*dst) { assert((*dst)->refs && !staged); if (!--(*dst)->refs) ++freed; }
+    if (*dst) {
+        bool pending_resource=false;
+        for (unsigned i=0;i<staged;++i) for (unsigned stage=0;stage<3;++stage)
+            pending_resource |= *dst==&pending[i][stage]->base;
+        assert((*dst)->refs);
+        if (!--(*dst)->refs) { assert(!pending_resource); ++freed; }
+    }
     *dst=src;
 }
 void ps5_screen_submit_lock(struct pipe_screen *s) { assert(s == &screen.base && !locked); locked=1; }
@@ -440,17 +473,36 @@ static int (*ps5_agc_gate2_batch_end)(void)=end;
 ''' + flush_cache_type + r'''
 static void ps5_draw_vbo_locked(struct pipe_context *b, const struct pipe_draw_info *info, unsigned id,
     const struct pipe_draw_indirect_info *indirect, const struct pipe_draw_start_count_bias *draw, unsigned n,
-    struct ps5_batch_flush_cache *flush_cache) {
+    struct ps5_batch_flush_cache *flush_cache, bool *submitted) {
     struct ps5_context *drawing=(struct ps5_context *)b;
+    if (submitted) *submitted=false;
     assert((b == &context.base || deferred_mode) && info && !indirect && n==1 && draw->count && locked);
     assert(id == 20 + (info->increment_draw_id ? draw->start : 0));
+    if ((int)calls++ == fail_draw) { drawing->last_draw_status=-15; return; }
+    if (submitted) *submitted=true;
+    if (drawing->queries_enabled && drawing->active_occlusion_query) {
+        struct ps5_query *query=drawing->active_occlusion_query;
+        uint64_t value=draw->start+1;
+        assert(query->buffer);
+        if (flush_cache) {
+            assert(query->buffer != &query_backing.base);
+            memcpy(((struct ps5_resource *)query->buffer)->data,&value,sizeof(value));
+        } else query->value += value;
+    }
+    if (drawing->queries_enabled && drawing->active_primitives_generated_query[0])
+        drawing->active_primitives_generated_query[0]->value += draw->count/3;
+    if (!flush_cache) {
+        assert(drawing->vertex_descriptor_table == &original[0].base &&
+            drawing->descriptor_storage[0] == &original[1].base &&
+            drawing->descriptor_storage[1] == &original[2].base);
+        return;
+    }
     ++retained_draws;
     if (!info->index_size) ++unindexed_draws;
-    if ((int)calls++ == fail_draw) { drawing->last_draw_status=-9; return; }
     assert(staged < PS5_MULTIDRAW_BATCH_CAPACITY);
     /* Model a backing flush: cache ownership ends at EVERY batch boundary. */
     assert(flush_cache);
-    for (unsigned unit = 0; unit < 2 + PS5_MAX_TEXTURE_UNITS; ++unit) {
+    for (unsigned unit = 0; unit < 3 + PS5_MAX_TEXTURE_UNITS + PIPE_MAX_ATTRIBS; ++unit) {
         if (!staged) assert(!flush_cache->data[unit] && !flush_cache->size[unit]);
         else assert(flush_cache->data[unit] == &borrowed && flush_cache->size[unit] == begun);
         flush_cache->data[unit] = &borrowed;
@@ -471,10 +523,12 @@ static void ps5_draw_vbo_locked(struct pipe_context *b, const struct pipe_draw_i
 ''' + body + r'''
 static void reset(void) {
     allocated=freed=begun=ended=staged=calls=locked=shader_textures=fragment_textures=retained_draws=unindexed_draws=0;
-    fail_alloc=fail_draw=-1; fail_begin=fail_end=0;
+    fail_alloc=fail_draw=bad_high_alloc=-1; fail_begin=fail_end=0;
     borrowed=(struct ps5_resource){.base={.target=PIPE_TEXTURE_2D, .format=1, .refs=1},
         .data=borrowed_bytes, .size=64, .allocation_size=64};
     depth_buffer=(struct ps5_resource){.base={.target=PIPE_TEXTURE_2D, .format=PIPE_FORMAT_Z32_FLOAT, .refs=1},
+        .data=depth_bytes, .size=64, .allocation_size=64};
+    query_backing=(struct ps5_resource){.base={.target=PIPE_BUFFER, .refs=1},
         .data=depth_bytes, .size=64, .allocation_size=64};
     screen=(struct ps5_screen){.base={create}, .render_pool=&borrowed.base};
     context=(struct ps5_context){.base={&screen.base}, .framebuffer={.cbufs={{.texture=&borrowed.base, .format=1}},
@@ -512,24 +566,36 @@ int main(void) {
         assert(!ps5_try_multi_draw_batch(&context.base, &info, 20, NULL, draws, TEST_DRAWS));
         assert(freed==allocated && !begun && borrowed.base.refs==1);
     }
-    for (int failure=0; failure<3; ++failure) {
-        reset(); fail_begin=failure==0 ? -1:0; fail_draw=failure==1 ? 4:-1; fail_end=failure==2;
+    for (int failure=0; failure<2; ++failure) {
+        reset(); fail_begin=failure==0 ? -1:0; fail_end=failure==1;
         assert(ps5_try_multi_draw_batch(&context.base, &info, 20, NULL, draws, TEST_DRAWS));
         assert(context.last_draw_status && !locked && begun==1);
-        if (failure==1) assert(calls==5 && ended==1); /* No replay after partial preparation. */
-        assert(freed==(failure==2 ? 0:SNAPSHOTS));
-        assert((borrowed.base.refs==1)==(failure!=2));
+        assert(freed==(failure ? 0:SNAPSHOTS));
+        assert((borrowed.base.refs==1)==!failure);
     }
+    reset(); fail_draw=4;
+    assert(ps5_try_multi_draw_batch(&context.base, &info, 20, NULL, draws, TEST_DRAWS));
+    assert(!context.last_draw_status && !locked && begun==3 && ended==3 &&
+           calls==TEST_DRAWS && freed==SNAPSHOTS && borrowed.base.refs==1);
     reset();
 #define REJECT(field,value) do { struct ps5_context c=context; c.field=value; \
     assert(!ps5_multidraw_eligible(&c,&info,NULL,draws,TEST_DRAWS)); } while(0)
-    REJECT(gs,&shader_textures); REJECT(active_occlusion_query,1); REJECT(render_condition_query,1);
-    REJECT(active_primitives_generated_query,1); REJECT(active_primitives_emitted_query,1);
+    REJECT(gs,&shader_textures); REJECT(render_condition_query,1);
     REJECT(stream_output_target_count,1); REJECT(framebuffer.zsbuf.texture,&borrowed.base);
-    REJECT(framebuffer.cbufs[0].format,2); REJECT(framebuffer.cbufs[0].level,1);
-    REJECT(framebuffer.cbufs[0].first_layer,1); REJECT(framebuffer.cbufs[0].last_layer,1);
-    REJECT(framebuffer.nr_cbufs,2); REJECT(framebuffer_valid,false);
+    REJECT(framebuffer.nr_cbufs,PS5_MAX_RENDER_TARGETS+1); REJECT(framebuffer_valid,false);
     REJECT(vertex_buffers[0].is_user_buffer,true); REJECT(vertex_buffer_count,PIPE_MAX_ATTRIBS+1);
+    context.framebuffer.cbufs[0].format=2;
+    context.framebuffer.cbufs[0].level=1;
+    context.framebuffer.cbufs[0].first_layer=2;
+    context.framebuffer.cbufs[0].last_layer=3;
+    context.framebuffer.cbufs[1]=(struct pipe_surface){.texture=&textures[0].base,
+        .format=2, .level=1, .first_layer=1, .last_layer=2};
+    textures[0].render_staging_size=0;
+    context.framebuffer.nr_cbufs=2;
+    assert(ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
+    borrowed.render_staging_size=64;
+    assert(!ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
+    reset();
     shader_textures=1; assert(!ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
     reset();
     shader_storage=16; assert(!ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
@@ -543,16 +609,21 @@ int main(void) {
         assert(ps5_try_multi_draw_batch(&context.base,&info,20,NULL,draws,TEST_DRAWS));
         assert(borrowed.base.refs==1 && depth_buffer.base.refs==1 && freed==SNAPSHOTS && !context.last_draw_status);
     }
-    for (unsigned face=0; face<2; ++face) {
-        dsa.stencil[face].enabled=true; assert(!ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
-        dsa.stencil[face].enabled=false;
-    }
+    depth_buffer.base.target=PIPE_TEXTURE_2D_ARRAY;
+    depth_buffer.base.array_size=4;
+    depth_buffer.base.last_level=1;
+    depth_buffer.base.format=PIPE_FORMAT_Z32_FLOAT_S8X24_UINT;
+    context.framebuffer.zsbuf=(struct pipe_surface){.texture=&depth_buffer.base,
+        .format=PIPE_FORMAT_Z32_FLOAT_S8X24_UINT, .level=1, .first_layer=1, .last_layer=2};
+    dsa.stencil[0].enabled=true;
+    assert(ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
+    dsa.stencil[0].enabled=false;
 #define REJECT_DEPTH(field,value) do { struct ps5_resource saved=depth_buffer; depth_buffer.field=value; \
     assert(!ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS)); depth_buffer=saved; } while(0)
     REJECT_DEPTH(depth_staging_size,1); REJECT_DEPTH(base.target,PIPE_BUFFER);
-    REJECT_DEPTH(base.format,1); REJECT_DEPTH(base.nr_samples,4); REJECT_DEPTH(base.nr_storage_samples,4);
-    REJECT(framebuffer.zsbuf.format,1); REJECT(framebuffer.zsbuf.level,1);
-    REJECT(framebuffer.zsbuf.first_layer,1); REJECT(framebuffer.zsbuf.last_layer,1);
+    REJECT_DEPTH(base.format,1); REJECT(framebuffer.zsbuf.format,1);
+    REJECT(framebuffer.zsbuf.level,2); REJECT(framebuffer.zsbuf.first_layer,3);
+    REJECT(framebuffer.zsbuf.last_layer,4);
     for (unsigned failure=0; failure<2; ++failure) {
         reset(); fragment_textures=0xffff; context.fs=&fragment_textures; fail_end=failure;
         for (unsigned unit=0; unit<PS5_MAX_TEXTURE_UNITS; ++unit) context.sampler_views[1][unit]=&views[unit];
@@ -566,33 +637,69 @@ int main(void) {
     REJECT(sampler_views[1][7],NULL);
 #define REJECT_TEX(field,value) do { struct ps5_resource saved=textures[7]; textures[7].field=value; \
     assert(!ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS)); textures[7]=saved; } while(0)
-    REJECT_TEX(base.target,PIPE_BUFFER); REJECT_TEX(base.format,2); REJECT_TEX(base.nr_samples,4);
-    REJECT_TEX(base.nr_storage_samples,4); REJECT_TEX(base.last_level,1); REJECT_TEX(base.bind,1);
     REJECT_TEX(depth_staging_size,1); REJECT_TEX(data,NULL); REJECT_TEX(size,0);
+    textures[7].base.target=views[7].target=PIPE_TEXTURE_2D_ARRAY;
+    textures[7].base.format=views[7].format=2;
+    textures[7].base.nr_samples=textures[7].base.nr_storage_samples=4;
+    textures[7].base.last_level=3;
+    views[7].u.tex.first_level=1; views[7].u.tex.last_level=3;
+    views[7].u.tex.first_layer=2; views[7].u.tex.last_layer=5;
+    assert(ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
+    memset(&views[7].u,0,sizeof(views[7].u));
+    textures[7].base.target=views[7].target=PIPE_TEXTURE_2D;
+    textures[7].base.nr_samples=textures[7].base.nr_storage_samples=0;
+    textures[7].base.last_level=0;
     textures[7].base.bind=PIPE_BIND_RENDER_TARGET;
     textures[7].render_staging_size=0;
     assert(ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
     textures[7].base.bind=0;
+    textures[7].base.format=views[7].format=PIPE_FORMAT_Z32_FLOAT;
+    textures[7].base.bind=PIPE_BIND_DEPTH_STENCIL;
+    assert(ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
+    textures[7].depth_staging_size=1;
+    assert(!ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
+    textures[7].depth_staging_size=0;
+    textures[7].base.bind=0;
+    assert(ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
+    textures[7].base.format=views[7].format=1;
 #define REJECT_VIEW(field,value) do { struct pipe_sampler_view saved=views[7]; views[7].field=value; \
     assert(!ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS)); views[7]=saved; } while(0)
-    REJECT_VIEW(texture,&borrowed.base); REJECT_VIEW(texture,NULL); REJECT_VIEW(target,PIPE_BUFFER);
-    REJECT_VIEW(format,2); REJECT_VIEW(u.tex.first_level,1); REJECT_VIEW(u.tex.last_level,1);
-    REJECT_VIEW(u.tex.first_layer,1); REJECT_VIEW(u.tex.last_layer,1);
+    REJECT_VIEW(texture,&borrowed.base); REJECT_VIEW(texture,NULL);
+    textures[7].base.format=PIPE_FORMAT_Z32_FLOAT_S8X24_UINT;
+    views[7].format=PIPE_FORMAT_X32_S8X24_UINT;
+    assert(!ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
+    textures[7].base.format=views[7].format=1;
     views[0].format=2; context.sampler_views[1][0]=&views[0]; /* Unused state cannot veto a batch. */
     assert(ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
+    struct ps5_query query={.buffer=&query_backing.base};
+    context.active_occlusion_query=&query;
+    assert(ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
+    assert(!ps5_try_multi_draw_batch(&context.base,&info,20,NULL,draws,TEST_DRAWS));
+    context.active_occlusion_query=NULL;
+    context.active_primitives_generated_query[0]=&query;
+    assert(ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
+    assert(!ps5_try_multi_draw_batch(&context.base,&info,20,NULL,draws,TEST_DRAWS));
+    uint64_t shader_rejects=context.batch_reject[PS5_BATCH_REJECT_SHADER-1];
+    uint64_t framebuffer_rejects=context.batch_reject[PS5_BATCH_REJECT_FRAMEBUFFER-1];
+    context.gs=&shader_textures; context.framebuffer_valid=false;
+    assert(!ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
+    assert(context.batch_reject[PS5_BATCH_REJECT_SHADER-1]==shader_rejects+1 &&
+           context.batch_reject[PS5_BATCH_REJECT_FRAMEBUFFER-1]==framebuffer_rejects+1);
+    assert(context.batch_eligible && context.batch_reject[PS5_BATCH_REJECT_TEXTURE-1]);
 }
 '''
 with tempfile.TemporaryDirectory() as tmp:
     exe = Path(tmp) / "ownership"
-    subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+    subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-DPS5_DRAW_PROFILE=1",
                     "-I" + str(root / "src/gallium/ps5"), "-x", "c", "-o", str(exe), "-"],
                    input=code, text=True, check=True)
     subprocess.run([str(exe)], check=True, stdout=subprocess.DEVNULL)
     mutations = (
         ("   for (unsigned first = 0; first < num_draws;) {\n      struct ps5_batch_flush_cache flush_cache = {0};",
          "   struct ps5_batch_flush_cache flush_cache = {0};\n   for (unsigned first = 0; first < num_draws;) {"),
-        ("ps5_shader_texture_count(context->vs) ||",
-         "ps5_shader_texture_count(context->vs) || ps5_shader_texture_count(context->fs) ||"),
+        ("(context->vs && ps5_shader_texture_count(context->vs)))",
+         "((context->vs && ps5_shader_texture_count(context->vs)) ||\n"
+         "        (context->fs && ps5_shader_texture_count(context->fs))))"),
         ("pipe_resource_reference(&retained[retained_count++], context->sampler_views[1][unit]->texture);",
          "(void)0;"),
         ("pipe_resource_reference(&retained[retained_count++], context->framebuffer.zsbuf.texture);",
@@ -600,15 +707,15 @@ with tempfile.TemporaryDirectory() as tmp:
     )
     for before, after in mutations:
         assert code.count(before) == 1
-        subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+        subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror", "-DPS5_DRAW_PROFILE=1",
                         "-I" + str(root / "src/gallium/ps5"), "-x", "c", "-o", str(exe), "-"],
                        input=code.replace(before, after), text=True, check=True)
         failed = subprocess.run([str(exe)], cwd=tmp, text=True, capture_output=True)
         assert failed.returncode != 0 and "Assertion" in failed.stderr
-print("PASS: descriptors/uniforms, chunk retirement, draw IDs, rollback, all 16 fragment texture refs and narrow eligibility")
+print("PASS: descriptors/uniforms, chunk retirement, draw IDs, rollback, all 16 fragment texture refs and native batching eligibility")
 
 # Reuse the same Gallium mocks, but exercise the actual cross-call queue too.
-start = source.index("static struct {\n   struct ps5_context *owner;")
+start = source.index("struct ps5_deferred_slot {")
 deferred = source[start:source.index(
     "\n#endif\n\nstatic bool\nps5_lower_default_tess_levels(", start)]
 deferred_code = code[:code.index("int main(void) {")] + r'''
@@ -754,14 +861,26 @@ int main(void) {
     assert(ps5_try_deferred_draw(&other.base,&info,20,NULL,&draw,1));
     assert(ended==1 && ps5_deferred.owner==&other); /* Owner switches retire first. */
     drain(); idle(); assert(ended==2);
-    for (unsigned boundary=0;boundary<3;++boundary) {
+    for (unsigned boundary=0;boundary<2;++boundary) {
         reset();
         assert(ps5_try_deferred_draw(&context.base,&info,20,NULL,&draw,1));
-        if (!boundary) context.active_occlusion_query=1;
-        if (boundary==1) context.gs=&shader_textures;
-        assert(!ps5_try_deferred_draw(&context.base,&info,20,NULL,&draw,boundary==2?2:1));
+        if (!boundary) context.gs=&shader_textures;
+        assert(!ps5_try_deferred_draw(&context.base,&info,20,NULL,&draw,boundary?2:1));
         idle(); assert(ended==1 && calls==1);
     }
+    reset();
+    struct ps5_query occlusion={.buffer=&query_backing.base}, primitives={0};
+    context.queries_enabled=true;
+    context.active_occlusion_query=&occlusion;
+    context.active_primitives_generated_query[0]=&primitives;
+    draw.start=2;
+    assert(ps5_try_deferred_draw(&context.base,&info,20,NULL,&draw,1));
+    assert(occlusion.buffer==&query_backing.base && !occlusion.value && primitives.value==2);
+    draw.start=7;
+    assert(ps5_try_deferred_draw(&context.base,&info,20,NULL,&draw,1));
+    assert(occlusion.buffer==&query_backing.base && !occlusion.value && primitives.value==4);
+    drain(); idle();
+    assert(occlusion.value==11 && query_backing.base.refs==1);
     for (int fail=0;fail<3;++fail) {
         reset();
         assert(ps5_try_deferred_draw(&context.base,&info,20,NULL,&draw,1));
@@ -769,14 +888,33 @@ int main(void) {
         assert(!ps5_try_deferred_draw(&context.base,&info,20,NULL,&draw,1));
         idle(); assert(ended==1 && calls==1); /* No staged draw replay on OOM. */
     }
+    reset();
+    assert(ps5_try_deferred_draw(&context.base,&info,20,NULL,&draw,1));
+    bad_high_alloc=allocated;
+    assert(!ps5_try_deferred_draw(&context.base,&info,20,NULL,&draw,1));
+    idle(); assert(ended==1 && calls==1); /* Unusable direct fallback drains before retry. */
     reset(); fail_begin=-1;
     assert(ps5_try_deferred_draw(&context.base,&info,20,NULL,&draw,1));
     idle(); assert(context.last_draw_status==-30 && !calls && !ended);
     reset();
+    occlusion=(struct ps5_query){.buffer=&query_backing.base};
+    primitives=(struct ps5_query){0};
+    context.queries_enabled=true;
+    context.active_occlusion_query=&occlusion;
+    context.active_primitives_generated_query[0]=&primitives;
+    draw.start=2;
     assert(ps5_try_deferred_draw(&context.base,&info,20,NULL,&draw,1));
     fail_draw=1;
-    assert(ps5_try_deferred_draw(&context.base,&info,20,NULL,&draw,1));
-    idle(); assert(context.last_draw_status==-9 && calls==2 && ended==1);
+    draw.start=7;
+    assert(!ps5_try_deferred_draw(&context.base,&info,20,NULL,&draw,1));
+    assert(!context.last_draw_status && calls==2 && ended==1 &&
+           occlusion.value==3 && primitives.value==2);
+    bool submitted=false;
+    ps5_screen_submit_lock(&screen.base);
+    ps5_draw_vbo_locked(&context.base,&info,20,NULL,&draw,1,NULL,&submitted);
+    ps5_screen_submit_unlock(&screen.base);
+    idle(); assert(submitted && !context.last_draw_status && calls==3 &&
+                   occlusion.value==11 && primitives.value==4);
     reset(); draw.count=0;
     assert(ps5_try_deferred_draw(&context.base,&info,20,NULL,&draw,1));
     idle(); assert(!begun && !allocated);
@@ -813,7 +951,10 @@ with tempfile.TemporaryDirectory() as tmp:
 
 # The queue test alone cannot prove that CPU access / lifecycle entry points drain.
 for name in ("ps5_resource_info", "ps5_resource_stencil_info", "ps5_blit",
-             "ps5_generate_mipmap", "ps5_get_timestamp", "ps5_begin_query", "ps5_end_query",
+             "ps5_generate_mipmap", "ps5_get_timestamp", "ps5_destroy_query",
+             "ps5_begin_query", "ps5_end_query", "ps5_get_query_result",
+             "ps5_get_query_result_resource",
+             "ps5_set_active_query_state", "ps5_render_condition",
              "ps5_flush", "ps5_clear", "ps5_context_last_draw_status",
              "ps5_context_destroy", "ps5_screen_destroy"):
     start = source.index("\n" + name + "(")

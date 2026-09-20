@@ -287,6 +287,7 @@ code = r'''
 #include <stddef.h>
 #include <stdint.h>
 #define PS5_MAX_TEXTURE_UNITS 16
+#define PIPE_MAX_ATTRIBS 16
 static unsigned flushes;
 static void ps5_flush_gpu_data(const void *p, size_t n) { assert(p && n); ++flushes; }
 ''' + flush_cache + r'''

@@ -12,8 +12,11 @@ mode=${1:-}
 case "$mode" in ''|--if-needed) ;; *) echo 'usage: build-opengnm-psbc-ps5.sh [--if-needed]' >&2; exit 2;; esac
 python3 "$project_dir/tools/fetch-sources.py" --verify-psbc
 sdk=${PS5_PAYLOAD_SDK:-/opt/ps5-payload-sdk}
+diagnostic=${PS5_OPENGL_DIAGNOSTIC:-0}
+case "$diagnostic" in 0|1) ;; *) echo 'PS5_OPENGL_DIAGNOSTIC must be 0 or 1' >&2; exit 2;; esac
 stamp="$source_dir/libpsbc.ps5.identity"
 fingerprint() {
+    printf 'PS5_OPENGL_DIAGNOSTIC=%s\n' "$diagnostic"
     git -C "$source_dir" write-tree || return
     "$sdk/bin/prospero-clang" --version || return
     sha256sum "$project_dir/dependencies.json" "$makefile" \
@@ -32,6 +35,7 @@ fi
 # This standalone Makefile has no generated-header dependency graph.  Force the
 # target objects so the PS5 archive cannot silently retain an older NIR/ACO ABI
 # or lowering after compiler sources change.
-make -C "$source_dir" -f "$makefile" -B -j"${PSBC_JOBS:-8}" libpsbc
+make -C "$source_dir" -f "$makefile" -B -j"${PSBC_JOBS:-8}" \
+    PSBC_DIAGNOSTIC="$diagnostic" libpsbc
 fingerprint > "$stamp.tmp"
 mv "$stamp.tmp" "$stamp"

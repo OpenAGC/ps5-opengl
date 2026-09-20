@@ -574,9 +574,14 @@ class HFRBundleTests(unittest.TestCase):
     def test_ci_profiles_and_runtime_defines_must_match(self):
         fixture = importlib.import_module("test_sdl_sdk")
         sdk = self.root / "profile-sdk"
+        (sdk / "lib").mkdir(parents=True)
+        (sdk / "lib/libps5_opengl_core33.a").write_bytes(
+            b"[ps5-batch-summary] config gpu-present=1 multidraw=1 deferred=1")
         for name, profile in BUNDLE.DISPLAY_PROFILES.items():
             fixture.profile_header(sdk, **profile)
-            flags = f'-DPS5_SCANOUT_HEIGHT={profile["height"]} -DPS5_SCANOUT_FPS={profile["fps"]}\n'
+            flags = (f'-DPS5_SCANOUT_HEIGHT={profile["height"]} -DPS5_SCANOUT_FPS={profile["fps"]} '
+                     '-DPS5_GPU_PRESENT_BATCH=1 -DPS5_DRAW_PROFILE=1 '
+                     '-DPS5_MULTIDRAW_BATCH=1 -DPS5_DEFERRED_DRAW_BATCH=1\n')
             self.assertEqual(BUNDLE.require_ci_profile(sdk, flags, name), profile)
             for bad in ("", flags + flags, flags.replace("FPS=", "FPS=bad"), flags.replace("HEIGHT=", "HEIGHT=0")):
                 with self.assertRaises(ValueError):

@@ -73,6 +73,7 @@ PSBC_PS5_BUILD = (
 PSBC_PS5_CONFIG = (
     ROOT / "toolchain/opengnm-psbc-ps5.mak"
 ).read_text()
+MESA_PS5_BUILD = (ROOT / "toolchain/build-mesa-ps5.sh").read_text()
 ACO_ISEL_HELPERS = (
     ROOT / "third_party/opengnm-psbc/src/amd/compiler/"
            "instruction_selection/aco_isel_helpers.cpp"
@@ -382,7 +383,7 @@ core33_runtime_flags = {
 # reserves the same arena after two resolution-sized buffers; test_scanout_config
 # compiles all three layouts. Compare every other define, including its value.
 require(core33_test_flags - {"-DPS5_RENDER_POOL_BYTES=0x4000000u"} ==
-        core33_runtime_flags - {"-DPS5_RENDER_ARENA_BYTES=0x2c00000u"},
+        core33_runtime_flags - {"-DPS5_RENDER_ARENA_BYTES=0x10000000u"},
         "standalone Core 3.3 driver flags differ from reusable runtime: "
         f"test-only={sorted(core33_test_flags - core33_runtime_flags)} "
         f"runtime-only={sorted(core33_runtime_flags - core33_test_flags)}")
@@ -390,7 +391,7 @@ require("PS5_ENABLE_MSAA4_CANDIDATE" in core33_runtime_defines and
         "PS5_ENABLE_POINT_LINE_SIZE_CANDIDATE" in core33_runtime_defines and
         "PS5_ENABLE_POINT_COORD_CANDIDATE" in core33_runtime_defines and
         "-DPS5_RENDER_POOL_BYTES=0x4000000u" in core33_test_flags and
-        "-DPS5_RENDER_ARENA_BYTES=0x2c00000u" in core33_runtime_flags and
+        "-DPS5_RENDER_ARENA_BYTES=0x10000000u" in core33_runtime_flags and
         "#define PS5_RENDER_POOL_BYTES (PS5_SCANOUT_POOL_BYTES + PS5_RENDER_ARENA_BYTES)" in SCREEN and
         "PS5_ENABLE_FAKE_SW_MSAA_CANDIDATE" not in core33_runtime_defines and
         "$(ps5_opengl_mk_self)" in CORE33_MK,
@@ -1032,7 +1033,7 @@ require("PS5_ENABLE_BORDER_COLOR_CANDIDATE=1" in CORE33_MK and
 require("PS5_ENABLE_UBO_CANDIDATE" in SCREEN and
         "#define PS5_ENABLE_UBO_CANDIDATE 1" in SCREEN and
         "PS5_MAX_CONSTANT_BUFFERS 15u" in SCREEN and
-        "PS5_MAX_CONSTANT_BUFFER_SIZE 0x4000u" in SCREEN and
+        "PS5_MAX_CONSTANT_BUFFER_SIZE 0x10000u" in SCREEN and
         "PS5_MAX_DEFAULT_CONSTANT_BUFFER_SIZE 0x1080u" in SCREEN and
         "vs_caps->max_const_buffer0_size =" in SCREEN and
         "fs_caps->max_const_buffer0_size =" in SCREEN and
@@ -1164,10 +1165,26 @@ require("-DOPENGNM_PSBC_ORBIS=1" in PSBC_PS5_CONFIG and
         "defined(OPENGNM_PSBC_ORBIS)" in ACO_ISEL_HELPERS and
         "nir_print_instr(instr, stderr);" in ACO_ISEL_HELPERS,
         "PS5 ACO diagnostics can regress to the unsafe memstream route")
-require("CXXFLAGS =" in PSBC_PS5_CONFIG and
-        "CXXFLAGS = -std=c++17 -O2 -g -Wall -fPIC -DNDEBUG" in
-        PSBC_PS5_CONFIG,
-        "target PSBC archive can regress to per-compile ACO validation")
+require("PSBC_MODE_FLAGS = -DNDEBUG" in PSBC_PS5_CONFIG and
+        "CFLAGS = -std=gnu11 -O2 -g -Wall -fPIC $(PSBC_MODE_FLAGS)" in
+        PSBC_PS5_CONFIG and
+        "CXXFLAGS = -std=c++17 -O2 -g -Wall -fPIC $(PSBC_MODE_FLAGS)" in
+        PSBC_PS5_CONFIG and
+        'PSBC_DIAGNOSTIC must be 0 or 1' in PSBC_PS5_CONFIG and
+        'PS5_OPENGL_DIAGNOSTIC must be 0 or 1' in PSBC_PS5_BUILD,
+        "target PSBC C/C++ release validation mode can diverge")
+require("0) buildtype=release; ndebug=true" in MESA_PS5_BUILD and
+        "1) buildtype=debugoptimized; ndebug=false" in MESA_PS5_BUILD and
+        "--buildtype=$buildtype" in MESA_PS5_BUILD and
+        "-Db_ndebug=$ndebug" in MESA_PS5_BUILD,
+        "Mesa release/diagnostic validation mode can diverge from PSBC")
+require('_Static_assert(sizeof(nir_instr_type) == 1' in PSBC_C and
+        '_Static_assert(offsetof(nir_intrinsic_instr, intrinsic) == 56' in
+        PSBC_C and
+        'return PSBC_RESULT_OUT_OF_MEMORY;' in PSBC_C and
+        'return PSBC_RESULT_COMPILE_NIR;' in PSBC_C and
+        'return PSBC_RESULT_COMPILE_ACO;' in PSBC_C,
+        "release mode lost structural ABI or explicit compiler error checks")
 require("NIR_PASS(_, nir, nir_normalize_sin_cos);" in PSBC_C and
         "nir_fcos(&b, vertex_float)" in
         (ROOT / "tests/ps5/psbc_nir_runtime.c").read_text() and

@@ -52,10 +52,18 @@ CXX = $(PS5_PAYLOAD_SDK)/bin/prospero-clang++
 AR = $(PS5_PAYLOAD_SDK)/bin/prospero-ar
 PYTHON = python3
 
-CFLAGS = -std=gnu11 -O2 -g -Wall -fPIC -DOPENGNM_PSBC_ORBIS=1 $(SHARED_FLAGS) \
+PSBC_DIAGNOSTIC ?= 0
+ifneq ($(filter $(PSBC_DIAGNOSTIC),0 1),$(PSBC_DIAGNOSTIC))
+$(error PSBC_DIAGNOSTIC must be 0 or 1)
+endif
+ifeq ($(PSBC_DIAGNOSTIC),0)
+PSBC_MODE_FLAGS = -DNDEBUG
+endif
+
+CFLAGS = -std=gnu11 -O2 -g -Wall -fPIC $(PSBC_MODE_FLAGS) -DOPENGNM_PSBC_ORBIS=1 $(SHARED_FLAGS) \
 	-Dstatic_assert=_Static_assert \
 	-Wno-unused-function -Wno-unused-variable \
 	-Wno-unreachable-code-generic-assoc
-CXXFLAGS = -std=c++17 -O2 -g -Wall -fPIC -DNDEBUG -DOPENGNM_PSBC_ORBIS=1 $(SHARED_FLAGS) \
+CXXFLAGS = -std=c++17 -O2 -g -Wall -fPIC $(PSBC_MODE_FLAGS) -DOPENGNM_PSBC_ORBIS=1 $(SHARED_FLAGS) \
 	-Wno-unused-function -Wno-unused-variable \
 	-Wno-unreachable-code-generic-assoc

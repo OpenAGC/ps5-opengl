@@ -14,9 +14,9 @@ class NativeLogTest(unittest.TestCase):
     def test_routine_trace_policy(self):
         source = (Path(__file__).resolve().parents[1] / "src/gallium/ps5/ps5_screen.c").read_text()
         blocks = re.findall(r"#ifdef AGC_RUNTIME_DIAGNOSTICS\n.*?#endif", source, re.S)
-        self.assertEqual(len(blocks), 3)
+        self.assertEqual(len(blocks), 5)
         for block in blocks:
-            self.assertEqual(block.count("printf("), 1)
+            self.assertGreaterEqual(block.count("printf("), 1)
             self.assertNotIn("ps5_flush_gpu_data", block)
             self.assertNotIn("last_draw_status", block)
             source = source.replace(block, "")
@@ -27,7 +27,9 @@ class NativeLogTest(unittest.TestCase):
             flags = ["-DAGC_RUNTIME_DIAGNOSTICS=1"] if diagnostics else []
             result = subprocess.run(["cc", "-E", "-P", "-x", "c", *flags, "-"],
                                     input="\n".join(blocks), text=True, capture_output=True, check=True)
-            for marker in ("shared-resource offset=", "depth-state format=", "stencil-state format="):
+            for marker in ("shadow-sample format=", "shared-resource offset=",
+                           "native-index-u16", "native-index-u32",
+                           "depth-state format=", "stencil-state format="):
                 self.assertEqual(marker in result.stdout, diagnostics)
 
     def test_interleaved_streams(self):

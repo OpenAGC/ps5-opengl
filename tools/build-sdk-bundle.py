@@ -232,6 +232,13 @@ def require_ci_profile(sdk, config, name):
     for key in ("height", "fps"):
         values = re.findall(r"(?:^|\s)-DPS5_SCANOUT_" + key.upper() + r"=([^\s]+)", config)
         require(values == [str(profile[key])], "CI runtime configuration profile mismatch")
+    for flag in ("PS5_GPU_PRESENT_BATCH", "PS5_DRAW_PROFILE",
+                 "PS5_MULTIDRAW_BATCH", "PS5_DEFERRED_DRAW_BATCH"):
+        require(re.findall(r"(?:^|\s)-D" + flag + r"=([^\s]+)", config) == ["1"],
+                "CI runtime configuration is missing " + flag)
+    require(b"[ps5-batch-summary] config gpu-present=1 multidraw=1 deferred=1" in
+            (sdk / "lib/libps5_opengl_core33.a").read_bytes(),
+            "runtime archive lacks compiled batch configuration receipt")
     return profile
 
 

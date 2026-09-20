@@ -159,7 +159,7 @@ code = r'''
 #define PS5_MAX_TEXTURE_3D_SIZE 2048
 #define PS5_MAX_TEXTURE_ARRAY_LAYERS 2048u
 #define PS5_MAX_TEXEL_BUFFER_ELEMENTS (1u << 20)
-#define PS5_MAX_CONSTANT_BUFFER_SIZE 0x4000u
+#define PS5_MAX_CONSTANT_BUFFER_SIZE 0x10000u
 struct ps5_resource {
     struct pipe_resource base; uint8_t *data;
     size_t size, allocation_size, render_staging_offset, render_staging_size, depth_staging_offset, depth_staging_size, layer_stride;
@@ -811,6 +811,10 @@ static void preraster_binding_contract(void) {
     struct ps5_context c={.base={.screen=&screen}};
     struct ps5_resource resource={.base={.screen=&screen,.target=PIPE_BUFFER,.width0=64},.size=64};
     struct pipe_resource *data=&resource.base;
+    static uint8_t large_data[2 * PS5_MAX_CONSTANT_BUFFER_SIZE + 16];
+    struct ps5_resource large_resource={.base={.screen=&screen,.target=PIPE_BUFFER,
+        .width0=sizeof(large_data)},.data=large_data,.size=sizeof(large_data)};
+    pipe_reference_init(&large_resource.base.reference,1);
     pipe_reference_init(&data->reference,1);
     const mesa_shader_stage stages[]={MESA_SHADER_VERTEX,MESA_SHADER_TESS_CTRL,MESA_SHADER_TESS_EVAL};
     struct pipe_shader_buffer binding={.buffer=data,.buffer_offset=16,.buffer_size=32};
@@ -834,6 +838,8 @@ static void preraster_binding_contract(void) {
     struct ps5_resource storage={.base={.screen=&screen},.data=bytes,.size=sizeof(bytes)};
     c.descriptor_storage[0]=&storage.base;
     const mesa_shader_stage uniform_stages[]={MESA_SHADER_GEOMETRY,MESA_SHADER_TESS_CTRL,MESA_SHADER_TESS_EVAL};
+    static uint8_t large_user[PS5_MAX_CONSTANT_BUFFER_SIZE];
+    large_user[0]=0x5a; large_user[sizeof(large_user)-1]=0xa5;
     for (unsigned s=0;s<3;++s) {
         uint32_t value=100+s;
         struct pipe_constant_buffer cb={.buffer_size=sizeof(value),.user_buffer=&value};
@@ -849,10 +855,25 @@ static void preraster_binding_contract(void) {
         assert(data->reference.count==(int)s+2);
     }
     for (unsigned s=0;s<3;++s) {
+        struct pipe_constant_buffer cb={.buffer_size=sizeof(large_user),.user_buffer=large_user};
+        ps5_set_constant_buffer(&c.base,uniform_stages[s],0,&cb);
+        size_t copied=ps5_copied_constant_offset(s+2);
+        assert(bytes[copied]==0x5a && bytes[copied+sizeof(large_user)-1]==0xa5);
+        struct pipe_constant_buffer bound={.buffer=&large_resource.base,.buffer_offset=16,
+            .buffer_size=PS5_MAX_CONSTANT_BUFFER_SIZE};
+        ps5_set_constant_buffer(&c.base,uniform_stages[s],1,&bound);
+        bound.buffer_offset=16+PS5_MAX_CONSTANT_BUFFER_SIZE;
+        ps5_set_constant_buffer(&c.base,uniform_stages[s],2,&bound);
+        assert(c.constants[s+2][1].valid && c.constants[s+2][1].size==PS5_MAX_CONSTANT_BUFFER_SIZE);
+        assert(c.constants[s+2][2].valid && c.constants[s+2][2].offset==bound.buffer_offset);
+    }
+    for (unsigned s=0;s<3;++s) {
         ps5_set_constant_buffer(&c.base,uniform_stages[s],0,NULL);
         ps5_set_constant_buffer(&c.base,uniform_stages[s],1,NULL);
+        ps5_set_constant_buffer(&c.base,uniform_stages[s],2,NULL);
     }
     assert(data->reference.count==1);
+    assert(large_resource.base.reference.count==1);
 }
 static void test_tessellation_buffers(void) {
     struct pipe_screen screen={0}, foreign={0};
@@ -1034,8 +1055,50 @@ static void test_stage_samplers(void) {
     }
 }
 
+static void constant_buffer_64k_contract(void) {
+    struct pipe_screen screen={.resource_destroy=destroy};
+    static uint8_t bytes[2 * PS5_MAX_CONSTANT_BUFFER_SIZE + 16];
+    struct ps5_resource resource={.base={.screen=&screen,.target=PIPE_BUFFER,
+        .width0=sizeof(bytes)},.data=bytes,.size=sizeof(bytes)};
+    struct ps5_context context={.base={.screen=&screen}};
+    pipe_reference_init(&resource.base.reference,1);
+    const mesa_shader_stage stages[]={MESA_SHADER_VERTEX,MESA_SHADER_FRAGMENT,
+        MESA_SHADER_GEOMETRY,MESA_SHADER_TESS_CTRL,MESA_SHADER_TESS_EVAL};
+    const unsigned slots[]={0,1,2,3,4};
+    for(unsigned stage=0;stage<5;++stage) {
+        struct pipe_constant_buffer first={.buffer=&resource.base,.buffer_offset=16,
+            .buffer_size=PS5_MAX_CONSTANT_BUFFER_SIZE};
+        struct pipe_constant_buffer second=first;
+        second.buffer_offset+=PS5_MAX_CONSTANT_BUFFER_SIZE;
+        ps5_set_constant_buffer(&context.base,stages[stage],8,&first);
+        ps5_set_constant_buffer(&context.base,stages[stage],9,&second);
+        assert(context.constants[slots[stage]][8].valid &&
+               context.constants[slots[stage]][8].size==PS5_MAX_CONSTANT_BUFFER_SIZE);
+        assert(context.constants[slots[stage]][9].valid &&
+               context.constants[slots[stage]][9].offset==second.buffer_offset);
+    }
+    struct pipe_constant_buffer first={.buffer=&resource.base,.buffer_offset=16,
+        .buffer_size=PS5_MAX_CONSTANT_BUFFER_SIZE};
+    struct pipe_constant_buffer second=first;
+    second.buffer_offset+=PS5_MAX_CONSTANT_BUFFER_SIZE;
+    ps5_set_compute_constant_buffer(&context.base,8,&first);
+    ps5_set_compute_constant_buffer(&context.base,9,&second);
+    assert(context.compute_buffers[PS5_COMPUTE_STORAGE_SLOTS+8].buffer_size==
+           PS5_MAX_CONSTANT_BUFFER_SIZE);
+    assert(context.compute_buffers[PS5_COMPUTE_STORAGE_SLOTS+9].buffer_offset==
+           second.buffer_offset);
+    for(unsigned stage=0;stage<5;++stage) {
+        ps5_set_constant_buffer(&context.base,stages[stage],8,NULL);
+        ps5_set_constant_buffer(&context.base,stages[stage],9,NULL);
+    }
+    ps5_set_compute_constant_buffer(&context.base,8,NULL);
+    ps5_set_compute_constant_buffer(&context.base,9,NULL);
+    assert(resource.base.reference.count==1);
+}
+
 int main(void) {
     test_stage_samplers();
+    constant_buffer_64k_contract();
     vertex_storage_contract();
     test_tessellation_buffers();
     preraster_binding_contract();
