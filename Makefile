@@ -27,9 +27,9 @@ cts-fetch:
 sdk: sdk-gl46
 sdk-gl46:
 	bash toolchain/build-opengnm-psbc.sh
-	$(MAKE) test-compiler
 	bash toolchain/build-opengnm-psbc-ps5.sh
 	PS5_MESA_CROSS_FILE="$(PS5_PAYLOAD_SDK)/toolchain/prospero.ini" bash toolchain/build-mesa-ps5.sh
+	$(MAKE) test-compiler
 	bash toolchain/install-ps5-opengl-gl46.sh $(PS5_OPENGL_SDK_PREFIX)
 	python3 tests/ps5/verify_gl46_link_surface.py
 	python3 tests/ps5/verify_gl33_capability_audit.py
