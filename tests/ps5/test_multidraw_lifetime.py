@@ -397,7 +397,8 @@ static bool ps5_texture_used(const struct ps5_context *c, const unsigned *s, con
     (void)c; (void)metadata; return (*s & (1u << unit)) != 0;
 }
 static unsigned ps5_linear_color_pitch(const struct pipe_surface *s) {
-    return s && s->texture && ((struct ps5_resource *)s->texture)->render_staging_size ? 256 : 0;
+    return s && s->texture && s->first_layer == s->last_layer &&
+        ((struct ps5_resource *)s->texture)->render_staging_size ? 256 : 0;
 }
 static bool ps5_depth_render_target(unsigned target) {
     return target == PIPE_TEXTURE_2D || target == PIPE_TEXTURE_2D_ARRAY;
@@ -587,13 +588,15 @@ int main(void) {
     context.framebuffer.cbufs[0].format=2;
     context.framebuffer.cbufs[0].level=1;
     context.framebuffer.cbufs[0].first_layer=2;
-    context.framebuffer.cbufs[0].last_layer=3;
+    context.framebuffer.cbufs[0].last_layer=2;
     context.framebuffer.cbufs[1]=(struct pipe_surface){.texture=&textures[0].base,
-        .format=2, .level=1, .first_layer=1, .last_layer=2};
+        .format=2, .level=1, .first_layer=1, .last_layer=1};
     textures[0].render_staging_size=0;
     context.framebuffer.nr_cbufs=2;
     assert(ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
     borrowed.render_staging_size=64;
+    assert(ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
+    context.framebuffer.cbufs[0].last_layer=3;
     assert(!ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));
     reset();
     shader_textures=1; assert(!ps5_multidraw_eligible(&context,&info,NULL,draws,TEST_DRAWS));

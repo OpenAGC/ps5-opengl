@@ -312,8 +312,9 @@ attempt = body[body.index("   util_blitter_blit_generic("):]
 assert "return false" not in attempt and "return true;" in attempt
 assert "context->draw_calls == draws_before" in attempt
 assert "deferred_color_clear =" not in body
-assert 'color_target_count == 1 ? ps5_linear_color_pitch(surface) : 0' in source
-assert '(context->framebuffer.nr_cbufs != 1 || !ps5_linear_color_pitch(surface)) &&\n             !ps5_stage_color_surface(surface, false)' in source
+assert 'target_pitches[i] = ps5_linear_color_pitch(surface);' in source
+assert '!ps5_linear_color_pitch(surface) &&\n             !ps5_stage_color_surface(surface, false)' in source
+assert 'context->framebuffer.nr_cbufs != 1 || !ps5_linear_color_pitch(surface)' not in source
 assert body.index("   if (!view)") < body.index("   util_blitter_save_vertex_buffers(")
 dispatch = source[source.index("static void\nps5_blit("):]
 assert "ps5_draw_batch_drain();\n   if (ps5_blit_gpu_color(ps5, info))\n      return;" in dispatch

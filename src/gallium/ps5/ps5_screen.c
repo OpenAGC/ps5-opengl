@@ -9892,9 +9892,8 @@ ps5_draw_vbo_locked(struct pipe_context *base,
             : fallback;
          size_t layer_offset = 0;
          const unsigned first_layer = ps5_color_surface_first_layer(surface);
-         /* ponytail: qualify single-target mip/layer draws first; MRT retains
-          * existing staging until mixed-layout native coverage is available. */
-         target_pitches[i] = color_target_count == 1 ? ps5_linear_color_pitch(surface) : 0;
+         /* The native layout ABI supports mixed linear/tiled MRTs. */
+         target_pitches[i] = ps5_linear_color_pitch(surface);
          any_linear |= target_pitches[i] != 0;
 
          if (surface->texture) {
@@ -10182,13 +10181,13 @@ ps5_draw_vbo_locked(struct pipe_context *base,
             ? (const struct ps5_resource *)surface->texture : NULL;
 
          if (target && target->render_staging_size &&
-             (context->framebuffer.nr_cbufs != 1 || !ps5_linear_color_pitch(surface)) &&
+             !ps5_linear_color_pitch(surface) &&
              !ps5_stage_color_surface(surface, false)) {
             context->last_draw_status = -29;
             break;
          }
          if (target && target->render_staging_size &&
-             (context->framebuffer.nr_cbufs != 1 || !ps5_linear_color_pitch(surface)) &&
+             !ps5_linear_color_pitch(surface) &&
              context->samplers[1][0] &&
              ((const struct ps5_sampler_state *)
                  context->samplers[1][0])->base.compare_mode)
@@ -10505,11 +10504,9 @@ ps5_multidraw_eligible(struct ps5_context *context,
          const struct ps5_resource *target =
             (const struct ps5_resource *)surface->texture;
 
-         /* Staged MRTs copy on the CPU after every draw. A single target can
-          * batch only when the native linear-target path avoids that copy. */
+         /* Reject only attachments that still require a CPU copy. */
          if (target && target->render_staging_size &&
-             (context->framebuffer.nr_cbufs != 1 ||
-              !ps5_linear_color_pitch(surface))) {
+             !ps5_linear_color_pitch(surface)) {
             rejects |= BITFIELD_BIT(PS5_BATCH_REJECT_FRAMEBUFFER - 1);
             break;
          }
