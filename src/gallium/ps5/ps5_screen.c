@@ -15198,6 +15198,7 @@ ps5_screen_create(void)
       PS5_ENABLE_FRAMEBUFFER_SRGB_CANDIDATE;
    caps->blend_equation_separate = true;
    caps->doubles = PS5_ENABLE_FP64_CANDIDATE;
+   caps->int64 = PS5_ENABLE_GLSL_460_CANDIDATE;
    caps->glsl_feature_level = PS5_ENABLE_GLSL_460_CANDIDATE ? 460 :
                               PS5_ENABLE_GLSL_450_CANDIDATE ? 450 :
                               PS5_ENABLE_GLSL_440_CANDIDATE ? 440 :

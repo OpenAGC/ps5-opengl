@@ -740,6 +740,9 @@ egl_public_gl46_spirv.o: egl_public_gl46_spirv.c \
 egl_public_gl46_piglit.o: egl_public_gl46_piglit.c
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
 
+egl_public_gpu_shader_int64.o: egl_public_gpu_shader_int64.c
+	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
+
 # Reuse the complete public oracles in one native title. Each oracle owns its
 # EGL/Gallium lifecycle, so this also catches stale state across recreation.
 egl_public_gl46_stress.o: gl46_stress_main.o gl46_stress_buffer.o \
