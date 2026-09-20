@@ -12,8 +12,8 @@ root = Path(__file__).resolve().parents[2]
 source = (root / 'src/gallium/ps5/ps5_screen.c').read_text()
 start = source.index('static bool\nps5_msaa4_depth_support(')
 predicate = source[start:source.index('\n}\n', start) + 3]
-start = source.index('      descriptor[3] = (tiled_depth_target && multisampled')
-descriptor = source[start:source.index('      if (texture->base.target == PIPE_TEXTURE_2D &&', start)]
+start = source.index('      descriptor[3] = ((tiled_depth_target && !staged_stencil) && multisampled')
+descriptor = source[start:source.index('      if (view->target == PIPE_TEXTURE_2D &&', start)]
 code = r'''
 #include <assert.h>
 #include <stdbool.h>
@@ -23,6 +23,9 @@ enum pipe_texture_target { PIPE_TEXTURE_2D, PIPE_TEXTURE_2D_ARRAY, PIPE_TEXTURE_
 enum pipe_format { PIPE_FORMAT_Z32_FLOAT, PIPE_FORMAT_Z32_FLOAT_S8X24_UINT, COLOR };
 #define PIPE_BIND_DEPTH_STENCIL 1
 #define PIPE_BIND_SAMPLER_VIEW 2
+static bool ps5_cube_texture_target(unsigned target) {
+    return target == PIPE_TEXTURE_CUBE;
+}
 static unsigned PS5_ENABLE_MSAA4_CANDIDATE,PS5_ENABLE_MSAA_ARRAY_CANDIDATE,
     PS5_ENABLE_TEXTURE_ARRAY_CANDIDATE,PS5_ENABLE_LAYERED_RENDER_TARGET_CANDIDATE,
     PS5_ENABLE_DEPTH_TEXTURE_CANDIDATE,PS5_ENABLE_PACKED_DEPTH_STENCIL;
@@ -31,7 +34,8 @@ static void check_descriptor(unsigned target,unsigned first,unsigned last,unsign
     struct { struct { unsigned target,depth0,format; } base; } storage={{target,1,format}}, *texture=&storage;
     struct { union { struct { unsigned first_level,last_level,first_layer,last_layer; } tex; } u; }
         view_storage={.u.tex={0,0,first,last}},*view=&view_storage;
-    bool tiled_depth_target=true,multisampled=true,tiled_render_target=false;
+    bool tiled_depth_target=true,multisampled=true,tiled_render_target=false,staged_stencil=false;
+    unsigned descriptor_target=target;
     uint32_t descriptor[8]={0},swizzle[4]={0,0,0,5};
 ''' + descriptor + r'''
     assert((descriptor[3] >> 28)==(target==PIPE_TEXTURE_2D_ARRAY ? 15u : 14u));

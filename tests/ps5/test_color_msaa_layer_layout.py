@@ -24,7 +24,7 @@ struct pipe_surface { struct pipe_resource *texture; unsigned first_layer, last_
 '''
 for name in ('ps5_tiled_color_msaa4_tile', 'ps5_tiled_affine_offset', 'ps5_tiled_color_offset',
              'ps5_tiled_color_msaa4_offset', 'ps5_color_surface_first_layer'):
-    start = source.index(name + '(')
+    start = source.index('\n' + name + '(') + 1
     start = source.rfind('static ', 0, start)
     code += source[start:source.index('\n}\n', start) + 3]
 offset = source[source.index('               layer_offset =\n                  (size_t)'):]

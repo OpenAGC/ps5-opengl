@@ -52,7 +52,7 @@ enum pipe_format { PIPE_FORMAT_Z32_FLOAT, PIPE_FORMAT_Z32_FLOAT_S8X24_UINT };
 enum { PIPE_MAP_READ=1, PIPE_MAP_WRITE=2, PIPE_BIND_RENDER_TARGET=4,
        PIPE_BIND_DEPTH_STENCIL=8, PIPE_CLEAR_DEPTH=16, PIPE_CLEAR_STENCIL=32 };
 struct pipe_resource { unsigned bind,target,format,width0,height0,depth0,
-    array_size,last_level,nr_samples; };
+    array_size,last_level,nr_samples,nr_storage_samples; };
 struct pipe_box { int x,y,z,width,height,depth; };
 struct pipe_transfer { struct pipe_resource *resource; unsigned level,usage;
     struct pipe_box box; unsigned stride,layer_stride,offset; };
@@ -67,8 +67,12 @@ static unsigned util_format_get_blockheight(unsigned f) { (void)f; return 1; }
 /* Any unexpected color dispatch fails; this test covers only depth/stencil. */
 static bool ps5_linear_sampled_layout(const struct pipe_resource *r) { (void)r; abort(); }
 static bool ps5_render_target_format(unsigned f) { (void)f; abort(); }
+static bool ps5_msaa4_color_format(unsigned f) { (void)f; return false; }
 static size_t ps5_tiled_color_offset(unsigned f,unsigned x,unsigned y,unsigned w,unsigned layer) {
     (void)f; (void)x; (void)y; (void)w; (void)layer; abort();
+}
+static size_t ps5_tiled_color_msaa4_offset(unsigned f,unsigned x,unsigned y,unsigned s,unsigned w,unsigned layer) {
+    (void)f; (void)x; (void)y; (void)s; (void)w; (void)layer; abort();
 }
 static unsigned drains, flush_count;
 static struct pipe_resource *expected_drain;

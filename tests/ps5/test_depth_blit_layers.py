@@ -36,13 +36,16 @@ code = r'''
 #define MAX2(a,b) ((a)>(b)?(a):(b))
 #define BITFIELD_BIT(i) (1u<<(i))
 #define PS5_ENABLE_TEXTURE_1D_CANDIDATE 1
+#define PS5_ENABLE_TEXTURE_RECTANGLE_CANDIDATE 1
+#define PS5_ENABLE_TEXTURE_CUBE_ARRAY_CANDIDATE 1
 #define PS5_ENABLE_LAYERED_RENDER_TARGET_CANDIDATE 1
 #define PIPE_MASK_Z 1
 #define PIPE_MASK_S 2
 #define PIPE_MASK_ZS 3
 #define PIPE_TEX_FILTER_NEAREST 0
 enum pipe_texture_target { PIPE_TEXTURE_2D, PIPE_TEXTURE_2D_ARRAY, PIPE_TEXTURE_3D,
-                          PIPE_TEXTURE_1D, PIPE_TEXTURE_1D_ARRAY, PIPE_TEXTURE_CUBE };
+                          PIPE_TEXTURE_1D, PIPE_TEXTURE_1D_ARRAY, PIPE_TEXTURE_CUBE,
+                          PIPE_TEXTURE_CUBE_ARRAY, PIPE_TEXTURE_RECT };
 enum { PIPE_FORMAT_Z32_FLOAT, PIPE_FORMAT_Z32_FLOAT_S8X24_UINT };
 struct pipe_resource { unsigned format,target,width0,height0,nr_samples,nr_storage_samples,array_size,last_level; };
 struct ps5_resource { struct pipe_resource base; uint8_t *data,*stencil_data;
@@ -68,7 +71,7 @@ static void ps5_flush_gpu_data(const void *p,size_t n) {
     assert(n && matches==1);
 }
 '''
-for name in ('ps5_depth_render_target', 'ps5_tiled_depth_layer_xor', 'ps5_tiled_surface_size',
+for name in ('ps5_cube_texture_target', 'ps5_depth_render_target', 'ps5_tiled_depth_layer_xor', 'ps5_tiled_surface_size',
              'ps5_tiled_stencil_surface_size', 'ps5_tiled_rgba8_msaa4_surface_size',
              'ps5_tiled_depth_surface_size', 'ps5_tiled_stencil_surface_size_samples',
              'ps5_tiled_affine_offset', 'ps5_tiled_depth_offset',
