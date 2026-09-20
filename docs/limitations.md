@@ -56,7 +56,7 @@ counters exclude process RSS, foreign heaps and module-internal allocations.
 - [SDK 0.2.0](release-g62.md) has a 202-execution sample and 82 focused GPU cases
   on its 4K runtime. Two explicitly identified extreme-axis executions were
   deferred because prior single-case times exceeded the two-minute bound.
-- The 4.6 candidate and lifecycle fix have focused evidence; they do not inherit
+- The 4.6 release and lifecycle fix have focused evidence; fresh release binaries do not inherit
   every check performed against the older 0.2.0 binaries.
 - The current 1440p packages are host-checked, not separately hardware-qualified.
   Fresh CI builds likewise require their own native evidence.

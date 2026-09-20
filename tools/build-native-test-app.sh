@@ -85,7 +85,7 @@ if [[ $gate_object =~ ^egl_public_core33_(imgui(_tv|_lifecycle|_benchmark)?|nano
     renderer=${renderer%_lifecycle}
     renderer=${renderer%_benchmark}
     renderer=${renderer//_/-}
-    prefix=$(realpath -m -- "${PS5_OPENGL_PREFIX:-$root/build/sdk/ps5-opengl-core33}")
+    prefix=$(realpath -m -- "${PS5_OPENGL_PREFIX:-$root/build/sdk/ps5-opengl-gl46}")
     (cd "$prefix" && sha256sum --check --strict manifest.sha256 >/dev/null)
     make -B -C "$root/examples/core33-$renderer" --no-print-directory -j8 \
         PS5_PAYLOAD_SDK="$sdk" PS5_OPENGL_PREFIX="$prefix" \

@@ -15,29 +15,29 @@ console enablement or guarantee that desktop applications run unchanged.
 
 ## Get started
 
-The `gl46-dev` branch contains the local 0.3.0 release candidate. Build it from
-[source](docs/building.md); no public 4.6 SDK has been released yet. The
-[0.2.0 download](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/sdk-0.2.0)
-remains the known-good OpenGL 3.3 release.
-
-The frozen local candidate, exact hashes and qualification scope are recorded
-in the [OpenGL 4.6 release-candidate report](docs/release-gl46-rc1.md).
+[SDK 0.3.0](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/v0.3.0)
+is the first OpenGL 4.6 release. Build it from [source](docs/building.md) with
+`make sdk`; the installed package is written to `build/sdk/ps5-opengl-gl46`.
+Read the [release scope and qualification](docs/release-0.3.0.md) before use.
 
 The downloadable SDK includes GL/EGL and SDL2 static libraries, headers,
 Make/pkg-config/CMake integration, complete sources, examples, licenses and
 checksums. Choose one complete profile; do not mix its libraries with another SDK.
 
-| Profile | Qualification of the OpenGL 3.3 SDK 0.2.0 downloads |
+| 0.3.0 build profile | Qualification |
 | --- | --- |
-| **4K120** — 3840×2160 | 202 sampled CTS passes, 82 focused GPU cases and bounded application/lifecycle checks |
-| **1440p120** — 2560×1440 | Build, export and consumer checks; not separately hardware-qualified |
+| **1080p60** — 1920×1080 | Default CI package; host/compiler/export/consumer checked |
+| **1440p120** — 2560×1440 | Optional CI profile; host checked, with separate recorded hardware evidence |
+| **4K120** — 3840×2160 | Optional CI profile; host checked, with separate recorded hardware evidence |
 
-See the [release guide](docs/release-g62.md) for checksums and scope.
+Fresh CI binaries do not inherit hardware acceptance from earlier exact binaries.
+[SDK 0.2.0](docs/release-g62.md) remains available as the historical OpenGL 3.3
+release.
 [Older releases](https://github.com/blackbearreloaded/ps5-opengl/releases) retain
 their own evidence. Fresh [CI-built archives](docs/ci-releases.md) are
 host-checked, not automatically console-qualified.
 
-The 4.6 candidate includes the [EGL lifecycle safeguard](docs/lifecycle-reopen.md),
+The 4.6 release includes the [EGL lifecycle safeguard](docs/lifecycle-reopen.md),
 which enforces the qualified five-second interval before reopening a closed
 high-refresh presenter. This fix is **not in the existing 0.2.0 downloads**.
 
@@ -82,7 +82,7 @@ After setting up the [build prerequisites](docs/building.md):
 
 ```sh
 make source-fetch
-make sdk
+make sdk-gl46
 make imgui-demo
 ```
 
@@ -126,6 +126,7 @@ Related video-decoding research is separate from OpenGL validation.
 ## Documentation
 
 - [Documentation index](docs/README.md)
+- [SDK 0.3.0 release](docs/release-0.3.0.md)
 - [Building](docs/building.md) and [using the SDK](docs/consumer-build.md)
 - [SDL2 integration](integration/SDL2/README.md)
 - [Architecture](docs/architecture.md), [lifecycle](docs/lifecycle-reopen.md) and [limitations](docs/limitations.md)

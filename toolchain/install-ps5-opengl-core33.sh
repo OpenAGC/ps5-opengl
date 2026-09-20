@@ -3,7 +3,8 @@
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-# Build and install the relocatable PS5 OpenGL developer package.
+# Build and install the relocatable PS5 OpenGL 4.6 developer package.
+# The filename is retained as a compatibility entry point for 3.3 consumers.
 
 set -euo pipefail
 

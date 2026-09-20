@@ -70,7 +70,7 @@ class InstalledVerifierTests(unittest.TestCase):
             for name in ('verify-installed-sdk.sh', 'check-sdk-consumers.py'):
                 shutil.copyfile(Path(__file__).parent / name, root / 'tools' / name)
             # Stand in for compilation: leave an installed package with an unlisted file.
-            (root / 'toolchain/install-ps5-opengl-core33.sh').write_text('exit 0\n')
+            (root / 'toolchain/install-ps5-opengl-gl46.sh').write_text('exit 0\n')
             sdk = root / 'build/sdk'
             sdk.mkdir()
             fixture(sdk)

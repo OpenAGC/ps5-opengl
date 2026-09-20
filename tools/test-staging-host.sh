@@ -4,7 +4,7 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 set -euo pipefail
 root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
-prefix=${PS5_OPENGL_PREFIX:-"$root/build/sdk/ps5-opengl-core33"}
+prefix=${PS5_OPENGL_PREFIX:-"$root/build/sdk/ps5-opengl-gl46"}
 out="$root/build/staging-regressions-host"
 mkdir -p "$out"
 clang-18 -std=c11 -O2 -Wall -Wextra -Werror \

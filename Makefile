@@ -6,11 +6,12 @@ SHELL := /bin/bash
 PS5_NATIVE_APP_TEMPLATE ?= $(abspath ../ps5-native-app-boilerplate)
 PS5_PAYLOAD_SDK ?= $(PS5_NATIVE_APP_TEMPLATE)/.deps/native/ps5-payload-sdk
 export PS5_NATIVE_APP_TEMPLATE PS5_PAYLOAD_SDK
+PS5_OPENGL_SDK_PREFIX ?= build/sdk/ps5-opengl-gl46
 
-.PHONY: help source-fetch cts-fetch sdk imgui-demo nanovg sokol sokol-cube cubes gl46-demo test test-imgui test-sokol-cube test-cubes test-glsl test-compiler test-multidraw test-layered-mip test-depth-targets test-staging
+.PHONY: help source-fetch cts-fetch sdk sdk-gl46 imgui-demo nanovg sokol sokol-cube cubes gl46-demo test test-imgui test-sokol-cube test-cubes test-glsl test-compiler test-multidraw test-layered-mip test-depth-targets test-staging
 help:
 	@printf '%s\n' 'source-fetch: pinned graphics/example sources' \
-	  'sdk: build the compiler, Mesa and installed native OpenGL SDK' \
+	  'sdk / sdk-gl46: build the compiler, Mesa and installed OpenGL 4.6 SDK' \
 	  'imgui-demo / nanovg / sokol: package one example using the installed SDK' \
 	  'sokol-cube: package the upstream 3D sample; see examples/core33-sokol-cube' \
 	  'cubes: package the 3D frame benchmark using the current source runtime' \
@@ -23,12 +24,13 @@ source-fetch:
 	python3 tools/fetch-sources.py
 cts-fetch:
 	python3 tools/fetch-sources.py --cts
-sdk:
+sdk: sdk-gl46
+sdk-gl46:
 	bash toolchain/build-opengnm-psbc.sh
 	$(MAKE) test-compiler
 	bash toolchain/build-opengnm-psbc-ps5.sh
 	PS5_MESA_CROSS_FILE="$(PS5_PAYLOAD_SDK)/toolchain/prospero.ini" bash toolchain/build-mesa-ps5.sh
-	bash toolchain/install-ps5-opengl-core33.sh build/sdk/ps5-opengl-core33
+	bash toolchain/install-ps5-opengl-gl46.sh $(PS5_OPENGL_SDK_PREFIX)
 	python3 tests/ps5/verify_gl33_capability_audit.py
 imgui-demo:
 	bash tools/build-native-test-app.sh egl_public_core33_imgui_tv

@@ -31,7 +31,7 @@ clang++-18 -std=c++11 -O2 -Wall -Wextra -Werror \
     -DPS5_IMGUI_HOST_REFERENCE -DGL_GLEXT_PROTOTYPES=1 \
     -DPS5_IMGUI_HOST_HEIGHT=${PS5_IMGUI_HOST_HEIGHT:-1080} \
     -DIMGUI_IMPL_OPENGL_LOADER_CUSTOM -include GL/gl.h \
-    -I"$root/build/sdk/ps5-opengl-core33/include" \
+    -I"${PS5_OPENGL_PREFIX:-$root/build/sdk/ps5-opengl-gl46}/include" \
     -I"$imgui" -I"$imgui/backends" \
     "$main_source" \
     "$imgui/imgui.cpp" "$imgui/imgui_draw.cpp" "$imgui/imgui_tables.cpp" \

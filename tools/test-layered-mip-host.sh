@@ -9,7 +9,7 @@ root=$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/.." && pwd)
 out="$root/build/layered-mip-host"
 mkdir -p "$out"
 flags=(-std=c11 -O2 -Wall -Wextra -Werror -DPS5_LAYERED_MIP_HOST_REFERENCE
-    -I"$root/build/sdk/ps5-opengl-core33/include")
+    -I"${PS5_OPENGL_PREFIX:-$root/build/sdk/ps5-opengl-gl46}/include")
 export EGL_PLATFORM=surfaceless LIBGL_ALWAYS_SOFTWARE=1
 export MESA_GL_VERSION_OVERRIDE=3.3 MESA_GLSL_VERSION_OVERRIDE=330
 source="$root/tests/ps5/egl_public_core33_layered_mip_fbo.c"

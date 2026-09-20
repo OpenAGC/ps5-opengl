@@ -130,7 +130,7 @@ Host checks run ten measured frames without pacing and retain simulated input.
 Use the usual frozen, locked `imgui_tv` cycle with a 60-second observation cap.
 Require the new harness to reproduce 59–60.5 FPS at 1080p before extending it.
 Separate SDK builds can select `PS5_SCANOUT_HEIGHT=1080`, `1440` or `2160` when
-running `toolchain/install-ps5-opengl-core33.sh SEPARATE_PREFIX`. Select that
+running `toolchain/install-ps5-opengl-gl46.sh SEPARATE_PREFIX`. Select that
 frozen prefix with `PS5_OPENGL_PREFIX` for the app build. All layers use matching
 render dimensions and display-buffer strides. The scene stays logically
 1920x1080 and scales to the queried surface. Host checks select the same size
@@ -149,8 +149,8 @@ separate runtime and native app; do not overwrite a frozen validation SDK:
 ```sh
 PS5_DRAW_PROFILE=1 PS5_GPU_PRESENT_BATCH=1 \
   PS5_SCANOUT_HEIGHT=2160 PS5_SCANOUT_FPS=120 \
-  bash toolchain/install-ps5-opengl-core33.sh build/sdk/ps5-opengl-core33-2160p120
-PS5_OPENGL_PREFIX="$PWD/build/sdk/ps5-opengl-core33-2160p120" \
+  bash toolchain/install-ps5-opengl-gl46.sh build/sdk/ps5-opengl-gl46-2160p120
+PS5_OPENGL_PREFIX="$PWD/build/sdk/ps5-opengl-gl46-2160p120" \
   PS5_IMGUI_PROFILE=1 PS5_IMGUI_WINDOW_BENCHMARK=1 PS5_IMGUI_WINDOW_TARGET=120 \
   bash tools/build-native-test-app.sh egl_public_core33_imgui_tv
 python3 tools/summarize-imgui-profile.py RECEIPT \

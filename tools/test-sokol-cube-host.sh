@@ -16,7 +16,7 @@ case ${1:-} in
 esac
 clang-18 -std=gnu11 -O2 -Wall -Werror=implicit-function-declaration \
     "${flags[@]}" \
-    -DPS5_SOKOL_HOST_REFERENCE -I"$root/build/sdk/ps5-opengl-core33/include" \
+    -DPS5_SOKOL_HOST_REFERENCE -I"${PS5_OPENGL_PREFIX:-$root/build/sdk/ps5-opengl-gl46}/include" \
     -I"$root/examples/core33-sokol-cube" -I"$root/build/sokol-cube-source" \
     -I"$root/third_party/sokol" -I"$root/third_party/sokol-samples/libs/vecmath" \
     "$root/examples/core33-sokol-cube/main.c" -l:libEGL.so.1 -l:libGL.so.1 -lm \

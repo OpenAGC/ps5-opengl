@@ -14,6 +14,17 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class DisplayProfileTests(unittest.TestCase):
+    def test_gl46_is_the_public_build_and_release_surface(self):
+        makefile = (ROOT / 'Makefile').read_text()
+        workflow = (ROOT / '.github/workflows/release.yml').read_text()
+        verifier = (ROOT / 'tools/verify-installed-sdk.sh').read_text()
+        self.assertIn('sdk: sdk-gl46', makefile)
+        self.assertIn('build/sdk/ps5-opengl-gl46', makefile)
+        self.assertIn('run: make sdk-gl46', workflow)
+        self.assertIn('build/sdk/ps5-opengl-gl46', workflow)
+        self.assertIn('name: ps5-opengl-4.6-sdk', workflow)
+        self.assertIn('commands=657', verifier)
+
     def test_native_metadata_uses_sdk_rate_and_preserves_other_fields(self):
         original = dict(titleId="PPSA99005", attribute3=8, attribute2=17)
         high = METADATA.with_display_profile(original, 120)

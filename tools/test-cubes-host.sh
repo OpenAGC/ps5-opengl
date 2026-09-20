@@ -13,7 +13,7 @@ for completion in 0 1; do
     "$out/accounting-$completion" > "$out/accounting-$completion.log"
 done
 echo 'Native accounting mock PASS: both completion modes, CPU/GPU clear, every-frame faults'
-prefix=${PS5_OPENGL_PREFIX:-"$root/build/sdk/ps5-opengl-core33"}
+prefix=${PS5_OPENGL_PREFIX:-"$root/build/sdk/ps5-opengl-gl46"}
 flags=(-std=c11 -O2 -Wall -Wextra -Werror -DPS5_CUBES_HOST_REFERENCE
     -I"$prefix/include" -I"$root/examples/core33-cubes")
 export EGL_PLATFORM=surfaceless LIBGL_ALWAYS_SOFTWARE=1

@@ -9,7 +9,7 @@ OpenGL direct-state-access API.
 Build the native `PPSA99005` folder with the frozen SDK:
 
 ```sh
-PS5_OPENGL_PREFIX=/path/to/ps5-opengl-sdk-0.3.0-gl46-rc1-b4889e5 \
+PS5_OPENGL_PREFIX=/path/to/ps5-opengl-sdk-0.3.0/sdk \
   make gl46-demo
 ```
 

@@ -4,10 +4,10 @@
 
 SHELL := bash
 PS5_PAYLOAD_SDK ?= /opt/ps5-payload-sdk/
-PS5_OPENGL_PREFIX ?= ../../build/sdk/ps5-opengl-core33
+PS5_OPENGL_PREFIX ?= ../../build/sdk/ps5-opengl-gl46
 SOKOL_DIR ?= ../../third_party/sokol
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
-include $(PS5_OPENGL_PREFIX)/share/ps5-opengl-core33/ps5-opengl-core33.mk
+include $(PS5_OPENGL_PREFIX)/share/ps5-opengl/ps5-opengl.mk
 .PHONY: all check-source
 all: check-source egl_public_core33_sokol.o
 check-source:

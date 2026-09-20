@@ -1,6 +1,6 @@
 # OpenGL 4.6 development validation
 
-The `gl46-dev` branch is a local release candidate, not a stable SDK or Khronos
+This is the detailed engineering record behind SDK 0.3.0, not a Khronos
 conformance claim. Its pinned CTS discovery inventory accounts for all
 **19,714** cases: **15,233 Pass**, **4,480 reviewed NotSupported**, and one
 legal compatibility warning.

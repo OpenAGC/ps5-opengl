@@ -5,10 +5,10 @@
 SHELL := bash
 
 PS5_PAYLOAD_SDK ?= /opt/ps5-payload-sdk/
-PS5_OPENGL_PREFIX ?= ../../build/sdk/ps5-opengl-core33
+PS5_OPENGL_PREFIX ?= ../../build/sdk/ps5-opengl-gl46
 IMGUI_DIR ?= ../../third_party/imgui
 include $(PS5_PAYLOAD_SDK)/toolchain/prospero.mk
-include $(PS5_OPENGL_PREFIX)/share/ps5-opengl-core33/ps5-opengl-core33.mk
+include $(PS5_OPENGL_PREFIX)/share/ps5-opengl/ps5-opengl.mk
 
 objects := main.o imgui.o imgui_draw.o imgui_tables.o imgui_widgets.o imgui_impl_opengl3.o
 flags := -std=c++11 -O2 -g -fPIC -ffunction-sections -fdata-sections \

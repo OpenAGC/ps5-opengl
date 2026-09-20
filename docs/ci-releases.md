@@ -1,6 +1,6 @@
 # CI-built SDK archives
 
-The **Build SDK release** GitHub Actions workflow builds a fresh developer SDK
+The **Build OpenGL 4.6 SDK** GitHub Actions workflow builds a fresh developer SDK
 on Ubuntu 24.04. Manual runs offer **1080p60** (default), **1440p120** or
 **2160p120**; `v*` tag builds retain 1080p60. Its binaries are
 **host-checked, not console-validated**.
@@ -11,7 +11,7 @@ their recorded binary identities, not automatically to these downloads.
 
 **Host checks** retains its independent `make test` job and adds a staging job on
 Ubuntu 24.04, bounded to 20 minutes overall and 10 minutes for `make test-staging`.
-**Build SDK release** also requires `make test-staging` to pass, with a 10-minute
+**Build OpenGL 4.6 SDK** also requires `make test-staging` to pass, with a 10-minute
 step limit, after fetching sources and before building the SDK. Both workflows
 retain their existing `make test` checks and read-only test/build permissions.
 
@@ -56,7 +56,7 @@ for the individual checks and native coverage limits.
 ## Download and use
 
 Use the workflow's **Run workflow** button to build any selected project branch.
-Download the `ps5-opengl-sdk` Actions artifact; GitHub wraps the two files below
+Download the `ps5-opengl-4.6-sdk` Actions artifact; GitHub wraps the two files below
 in a ZIP for download. The SDK itself is a `.tar.gz`, matching Linux/WSL builds:
 
 - `ps5-opengl-sdk-<version>.tar.gz`
@@ -88,11 +88,11 @@ console qualification.
 
 ## Maintainer release process
 
-1. Push and manually run **Build SDK release** on the intended source revision.
+1. Push and manually run **Build OpenGL 4.6 SDK** on the intended source revision.
 2. Inspect host/compiler checks, all 344 Core exports, three relocated consumer
    links, archive checksums and the recorded build configuration.
 3. When ready, push a new version tag beginning with `v`. The same workflow builds
-   from that tag and creates a **draft prerelease**, never a latest/stable release.
+   from that tag and creates a draft release for maintainer review.
 4. Review the draft and its validation wording before publishing it. If console
    validation is performed, retain receipts for these exact bytes and identify
    that scope explicitly. Do not attach an older SDK's acceptance to a rebuild.

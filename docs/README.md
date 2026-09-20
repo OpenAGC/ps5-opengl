@@ -5,8 +5,9 @@ GL/EGL interfaces and the platform integration appropriate to your application.
 
 ## Build and integrate
 
-- [OpenGL 4.6 release candidate](release-gl46-rc1.md): frozen local artifact, checksums and qualification summary.
-- [OpenGL 4.6 development validation](gl46-development-validation.md): current release-candidate evidence and boundaries.
+- [SDK 0.3.0](release-0.3.0.md): OpenGL 4.6 release scope, installation and qualification.
+- [OpenGL 4.6 development validation](gl46-development-validation.md): detailed engineering evidence and boundaries.
+- [Historical OpenGL 4.6 release candidate](release-gl46-rc1.md): frozen pre-release identity.
 - [SDK 0.2.0](release-g62.md): historical OpenGL 3.3 downloads, checksums and exact-binary qualification.
 - [Building](building.md): dependencies, source setup and native folder apps.
 - [Using the SDK](consumer-build.md): Make, pkg-config, CMake and ownership rules.

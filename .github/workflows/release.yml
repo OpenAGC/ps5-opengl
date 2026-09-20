@@ -2,7 +2,7 @@
 # Copyright (C) 2026 BlackBearReloaded
 # SPDX-License-Identifier: GPL-3.0-or-later
 
-name: Build SDK release
+name: Build OpenGL 4.6 SDK
 
 on:
   workflow_dispatch:
@@ -82,16 +82,16 @@ jobs:
           echo "SDK_PROFILE=$SDK_PROFILE" >> "$GITHUB_ENV"
           echo "PS5_SCANOUT_HEIGHT=$HEIGHT" >> "$GITHUB_ENV"
           echo "PS5_SCANOUT_FPS=$FPS" >> "$GITHUB_ENV"
-      - name: Build compiler, Mesa and PS5 static SDK
+      - name: Build compiler, Mesa and OpenGL 4.6 static SDK
         env:
           PS5_GPU_PRESENT_BATCH: '1'
           PS5_DRAW_PROFILE: '1'
           PS5_MULTIDRAW_BATCH: '1'
           PS5_DEFERRED_DRAW_BATCH: '1'
-        run: make sdk
-      - name: Verify relocated SDK with three independent consumers
+        run: make sdk-gl46
+      - name: Verify OpenGL 4.6 exports and three relocated consumers
         run: |
-          cp -a build/sdk/ps5-opengl-core33 "$RUNNER_TEMP/relocated-sdk"
+          cp -a build/sdk/ps5-opengl-gl46 "$RUNNER_TEMP/relocated-sdk"
           python3 tools/check-sdk-consumers.py \
             --sdk "$RUNNER_TEMP/relocated-sdk" --payload-sdk "$PS5_PAYLOAD_SDK" \
             --example-dir examples/core33-triangle \
@@ -100,7 +100,7 @@ jobs:
       - name: Package SDK, source, notices and build evidence
         run: |
           VERSION="ci-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
-          if [[ "$GITHUB_REF_TYPE" == tag ]]; then VERSION="$GITHUB_REF_NAME"; fi
+          if [[ "$GITHUB_REF_TYPE" == tag ]]; then VERSION="${GITHUB_REF_NAME#v}"; fi
           if [[ "$SDK_PROFILE" != 1080p60 ]]; then VERSION="$VERSION-$SDK_PROFILE"; fi
           python3 tools/build-sdk-bundle.py --ci-version "$VERSION" --ci-profile "$SDK_PROFILE" \
             --sdk "$RUNNER_TEMP/relocated-sdk" --source-commit "$(git rev-parse HEAD)" \
@@ -115,7 +115,7 @@ jobs:
           sha256sum --check SHA256SUMS
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
-          name: ps5-opengl-sdk
+          name: ps5-opengl-4.6-sdk
           path: |
             ${{ runner.temp }}/release/*.tar.gz
             ${{ runner.temp }}/release/*.tar.gz.sha256
@@ -143,15 +143,15 @@ jobs:
     steps:
       - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
-          name: ps5-opengl-sdk
+          name: ps5-opengl-4.6-sdk
           path: release
-      - name: Create draft prerelease without replacing existing releases
+      - name: Create draft OpenGL 4.6 release without replacing existing releases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd release
           sha256sum --check ./*.tar.gz.sha256
           gh release create "$GITHUB_REF_NAME" ./*.tar.gz ./*.tar.gz.sha256 \
-            --repo "$GITHUB_REPOSITORY" --verify-tag --draft --prerelease --latest=false \
-            --title "PS5 OpenGL SDK $GITHUB_REF_NAME" \
-            --notes 'Experimental 1080p60 SDK, built from this tag. Includes compiled libraries, headers, source examples/dependencies, licenses, checksums and provenance. Host tests and relocated Make/pkg-config/CMake links passed. These binaries have NOT been validated on a PS5; historical CTS and performance results belong to their recorded binary identities. Review the bundled README before publishing.'
+            --repo "$GITHUB_REPOSITORY" --verify-tag --draft --latest=false \
+            --title "PS5 OpenGL 4.6 SDK ${GITHUB_REF_NAME#v}" \
+            --notes 'Experimental OpenGL 4.6 Core / GLSL 4.60 SDK, built from this tag. Includes all 657 OpenGL 4.6 Core entry points, compiled libraries, headers, source examples/dependencies, licenses, checksums and provenance. Host tests and relocated Make/pkg-config/CMake links passed. These freshly built binaries have NOT been validated on a PS5; hardware, CTS and performance results belong to their recorded binary identities. Review the bundled README before publishing.'

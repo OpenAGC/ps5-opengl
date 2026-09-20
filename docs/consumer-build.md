@@ -1,7 +1,7 @@
 # Using the SDK
 
 After `make sdk`, consume the relocatable package under
-`build/sdk/ps5-opengl-core33`. Applications use EGL, GL and KHR headers—not AGC
+`build/sdk/ps5-opengl-gl46`. Applications use EGL, GL and KHR headers—not AGC
 packages, Gallium types or private descriptors. Move the whole package together.
 See [Building](building.md) for dependencies.
 
@@ -78,3 +78,7 @@ This regenerates the SDK, verifies its manifest/metadata, links the triangle
 through Make, pkg-config and CMake, and checks all 657 OpenGL 4.6 Core exports
 plus the 344-command OpenGL 3.3 compatibility surface. It does not execute
 console tests. Do not regenerate a frozen package during a campaign.
+
+The generic Make fragment, `ps5-opengl` pkg-config package and
+`PS5OpenGL::OpenGL` CMake target are canonical. The installed Core33-named
+aliases remain for source compatibility with existing OpenGL 3.3 ports.

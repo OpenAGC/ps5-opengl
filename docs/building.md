@@ -42,7 +42,7 @@ vendor SDKs or firmware modules here.
 
 ```sh
 make source-fetch
-make sdk
+make sdk-gl46
 make imgui-demo
 ```
 
@@ -54,7 +54,8 @@ one patch over public commit `a92a1228`; the resulting Git tree must match
 have focused checks, not inherited full-matrix acceptance. No private research
 commit is a build prerequisite.
 
-The Mesa patch is checked before application. `make sdk` builds host and PS5
+The Mesa patch is checked before application. `make sdk` and its explicit alias
+`make sdk-gl46` build host and PS5
 compiler libraries, Mesa, the native backend and the installed SDK. ImGui,
 NanoVG and Sokol consume that package without rebuilding the graphics stack.
 Rebuild the SDK after runtime changes before testing those consumers.
@@ -73,8 +74,8 @@ A changed compiler patch triggers a rebuild even when upstream Git HEAD is uncha
 
 | Output | Purpose |
 | --- | --- |
-| `build/sdk/ps5-opengl-core33/` | Relocatable headers, archives and build integration |
-| `build/sdk/ps5-opengl-core33/manifest.sha256` | Installed-file identity |
+| `build/sdk/ps5-opengl-gl46/` | Relocatable OpenGL 4.6 headers, archives and build integration |
+| `build/sdk/ps5-opengl-gl46/manifest.sha256` | Installed-file identity |
 | `build/native-app/PPSA99005/dist/PPSA99005/` | Native homebrew folder app |
 | `build/native-app/PPSA99005/selected-test.txt` | Selected example/test identity |
 

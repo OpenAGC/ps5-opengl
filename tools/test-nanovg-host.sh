@@ -11,7 +11,7 @@ test "$(git -C "$nanovg" rev-parse HEAD)" = ce3bf745eb2d2dbc14a50bf2446783f691ac
 test -z "$(git -C "$nanovg" status --porcelain)"
 mkdir -p "$root/build/nanovg-host"
 clang-18 -std=gnu11 -O2 -Wall -Werror=implicit-function-declaration \
-    -DPS5_NANOVG_HOST_REFERENCE -I"$root/build/sdk/ps5-opengl-core33/include" -I"$nanovg/src" \
+    -DPS5_NANOVG_HOST_REFERENCE -I"${PS5_OPENGL_PREFIX:-$root/build/sdk/ps5-opengl-gl46}/include" -I"$nanovg/src" \
     "$root/examples/core33-nanovg/main.c" "$nanovg/src/nanovg.c" \
     -l:libEGL.so.1 -l:libGL.so.1 -lm -o "$root/build/nanovg-host/check"
 EGL_PLATFORM=surfaceless LIBGL_ALWAYS_SOFTWARE=1 MESA_GL_VERSION_OVERRIDE=3.3 \

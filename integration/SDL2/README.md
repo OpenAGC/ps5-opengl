@@ -52,7 +52,7 @@ Run from the repository root; choose a **new** output directory for each build:
 
 ```sh
 sdl=/path/to/cached/SDL
-sdk=/path/to/verified/ps5-opengl-core33-g25-srgb
+sdk=/path/to/verified/ps5-opengl-gl46
 template=/path/to/ps5-native-app-boilerplate
 python3 integration/SDL2/build.py host \
   --sdl-source "$sdl" --sdk-prefix "$sdk" --out build/host-build
