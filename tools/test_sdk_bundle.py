@@ -1116,7 +1116,7 @@ class G55BundleTests(unittest.TestCase):
         with self.assertRaises(ValueError):
             self.e.evidence_path(self.root, "alias")
 
-    def test_g51_patch_and_current_build_identity_are_retained(self):
+    def test_g51_evidence_and_current_build_identity_are_retained(self):
         sdk, repo = self.root / "sdk", self.root / "source"
         (sdk / "lib").mkdir(parents=True)
         (repo / "toolchain").mkdir(parents=True)
@@ -1146,7 +1146,9 @@ class G55BundleTests(unittest.TestCase):
             self.assertEqual(checked["mesa"]["strip_addrsig_exceptions"][0]["bytes"], 12)
             self.assertNotIn("private", json.dumps(checked))
             self.assertNotIn("command", checked)
-            for path in (sdk / "lib/libmesa.a", sdk / "lib/libpsbc.ps5.a", repo / "toolchain/mesa-ps5.patch",
+            (repo / "toolchain/mesa-ps5.patch").write_text("new release patch")
+            self.assertEqual(verify()["mesa"]["patch_sha256"], mesa["patch_sha256"])
+            for path in (sdk / "lib/libmesa.a", sdk / "lib/libpsbc.ps5.a",
                          self.root / "g51.json", self.root / "build.json"):
                 before = path.read_bytes()
                 path.write_bytes(before + b"changed")

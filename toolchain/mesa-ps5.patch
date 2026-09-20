@@ -191,9 +191,10 @@ diff --git a/src/gallium/auxiliary/indices/u_primconvert.c b/src/gallium/auxilia
 diff --git a/src/gallium/auxiliary/indices/u_primconvert.c b/src/gallium/auxiliary/indices/u_primconvert.c
 --- a/src/gallium/auxiliary/indices/u_primconvert.c
 +++ b/src/gallium/auxiliary/indices/u_primconvert.c
-@@ -306,7 +306,22 @@ util_primconvert_draw_single_vbo(struct primconvert_context *pc,
+@@ -306,8 +306,22 @@ util_primconvert_draw_single_vbo(struct primconvert_context *pc,
     if (!primconvert_init_draw(pc, info, draw, &new_info, &new_draw, &releasebuf))
        return;
+-   /* to the translated draw: */
 -   pc->pipe->draw_vbo(pc->pipe, &new_info, drawid_offset, NULL, &new_draw, 1);
 +   if (pc->cfg.split_legacy_triangles &&
 +       new_info.mode == MESA_PRIM_TRIANGLES && new_draw.count > 3 &&

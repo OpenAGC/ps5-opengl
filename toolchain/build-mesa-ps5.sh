@@ -31,12 +31,7 @@ if [ -f "$signature" ] && [ -f "$keyring" ]; then
     gpgv --keyring "$keyring" "$signature" "$archive"
 fi
 
-if patch --dry-run --silent --forward -p1 -d "$source_dir" < "$patch_file"; then
-    patch --batch --forward -p1 -d "$source_dir" < "$patch_file"
-elif ! patch --dry-run --silent --reverse -p1 -d "$source_dir" < "$patch_file"; then
-    echo "Mesa source is neither pristine nor patched as expected" >&2
-    exit 1
-fi
+bash "$project_dir/toolchain/apply-mesa-ps5-patch.sh" "$source_dir" "$archive" "$patch_file"
 
 meson_args="
 --cross-file=$cross_file

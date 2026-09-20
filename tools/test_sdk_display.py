@@ -22,6 +22,8 @@ class DisplayProfileTests(unittest.TestCase):
         self.assertIn('build/sdk/ps5-opengl-gl46', makefile)
         sdk = makefile.split('sdk-gl46:', 1)[1].split('\nimgui-demo:', 1)[0]
         self.assertLess(sdk.index('build-mesa-ps5.sh'), sdk.index('test-compiler'))
+        self.assertIn('apply-mesa-ps5-patch.sh',
+                      (ROOT / 'toolchain/build-mesa-ps5.sh').read_text())
         self.assertLess(sdk.index('install-ps5-opengl-gl46.sh'),
                         sdk.index('verify_gl46_link_surface.py'))
         self.assertIn('run: make sdk-gl46', workflow)

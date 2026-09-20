@@ -31,8 +31,15 @@ trap 'rm -rf -- "$work"' EXIT
 members=()
 for path in "${patched[@]}"; do members+=("mesa-26.2.0/$path"); done
 tar -xJf "$archive" -C "$work" "${members[@]}"
-patch --batch --forward -p1 -d "$work/mesa-26.2.0" < "$patch_file" >/dev/null
+cp -a "$work/mesa-26.2.0" "$work/mixed"
+bash "$root/toolchain/apply-mesa-ps5-patch.sh" "$work/mesa-26.2.0" "$archive" "$patch_file" >/dev/null
+for index in "${!patched[@]}"; do
+    path=${patched[$index]}
+    if (( index % 2 )); then cp "$work/mesa-26.2.0/$path" "$work/mixed/$path"; fi
+done
+bash "$root/toolchain/apply-mesa-ps5-patch.sh" "$work/mixed" "$archive" "$patch_file" >/dev/null
 for path in "${patched[@]}"; do
+    cmp "$work/mesa-26.2.0/$path" "$work/mixed/$path"
     cmp "$work/mesa-26.2.0/$path" "$root/third_party/mesa-26.2.0/$path"
 done
 # Intrinsic numbering must match the separately built shader compiler.
