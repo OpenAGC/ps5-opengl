@@ -917,8 +917,8 @@ require("PS5_ENABLE_TEXTURE_MIPMAP_CANDIDATE" in SCREEN and
         "(view->u.tex.last_level << 16)" in SCREEN and
         "((multisampled ? 2u : descriptor_last_level) << 4)" in SCREEN and
         "(mip_filter << 26)" in SCREEN and
-        "descriptor[9] = min_lod | (max_lod << 12)" in SCREEN and
-        "descriptor[10] = lod_bias |" in SCREEN and
+        "words[1] = min_lod | (max_lod << 12)" in SCREEN and
+        "words[2] = lod_bias |" in SCREEN and
         "PS5_ENABLE_TEXTURE_MIPMAP_CANDIDATE ? 16.0f : 0.0f" in SCREEN and
         "context->base.generate_mipmap = ps5_generate_mipmap" in SCREEN and
         "caps->generate_mipmap = true" in SCREEN and
@@ -1644,8 +1644,10 @@ require("egl_public_core33_vertex_attrib_api.o:" in MAKEFILE and
         "Core 3.3 generic vertex-attribute API matrix regressed")
 
 flush_body = SCREEN.split("static void\nps5_flush(", 1)[1].split("\n}\n", 1)[0]
-require(flush_body.index("ps5_draw_batch_drain();") <
-        flush_body.index("fence = calloc(") and
+require(flush_body.index("fence = calloc(") <
+        flush_body.index("fence->sequence = ps5_draw_batch_fence_submit();") and
+        "ps5_draw_batch_drain();" in flush_body and
+        "ps5_draw_batch_submit();" in flush_body and
         "egl_public_core33_sync.elf" in MAKEFILE and
         "glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0)" in TRIANGLE and
         "glClientWaitSync(sync, GL_SYNC_FLUSH_COMMANDS_BIT, 1)" in TRIANGLE and
@@ -1826,7 +1828,7 @@ require("egl_public_core33_entrypoints.o:" in MAKEFILE and
         "OpenGL 3.3 Core entry-point resolver coverage regressed")
 
 require("util/u_surface.h" in SCREEN and
-        "resource_copy_region = util_resource_copy_region" in SCREEN and
+        "resource_copy_region = ps5_resource_copy_region" in SCREEN and
         "egl_public_core33_buffer_copy.o:" in MAKEFILE and
         "glCopyBufferSubData" in BUFFER_COPY and
         "glGetBufferParameteri64v" in BUFFER_COPY and
@@ -1960,18 +1962,19 @@ require("target == PIPE_TEXTURE_1D_ARRAY" in SCREEN and
         "GL_TEXTURE_3D" not in DEPTH_TARGETS and
         "GL_FRAMEBUFFER_ATTACHMENT_TEXTURE_LAYER" in DEPTH_TARGETS and
         "target == GL_TEXTURE_1D || target == GL_TEXTURE_1D_ARRAY" in DEPTH_TARGETS and
-        "? 1 : SIZE;" in DEPTH_TARGETS and
-        "glViewport(0, 0, SIZE, height)" in DEPTH_TARGETS and
-        "glReadPixels(SIZE / 2, height / 2, 1, 1" in DEPTH_TARGETS and
-        "layers[4] = {0, 2, 0, 2}" in DEPTH_TARGETS and
+        "? 1 : width;" in DEPTH_TARGETS and
+        "glViewport(0, 0, width, height)" in DEPTH_TARGETS and
+        "glReadPixels(width / 2, height / 2, 1, 1" in DEPTH_TARGETS and
+        "layers[5] = {0, 2, 0, 2, 0}" in DEPTH_TARGETS and
         "attached_layer == (GLint)layer" in DEPTH_TARGETS and
         "glGetTexImage(target, 0, GL_DEPTH_COMPONENT, GL_FLOAT, array_pixels)" in DEPTH_TARGETS and
         "index / SIZE == layer ? 0.5f : 0.25f" in DEPTH_TARGETS and
         "routing_ok &= array_pixels[index] == expected" in DEPTH_TARGETS and
-        "routing_ok && fabsf(*depth - 0.5f)" in DEPTH_TARGETS and
+        "routing_ok && fabsf(cleared - 0.75f)" in DEPTH_TARGETS and
+        "fabsf(*depth - 0.5f)" in DEPTH_TARGETS and
         "query_discrepancy=%d" in DEPTH_TARGETS and
-        "matching == 4" in DEPTH_TARGETS and
-        "draw_calls == 4" in DEPTH_TARGETS,
+        "matching == 5" in DEPTH_TARGETS and
+        "draw_calls == expected_draws" in DEPTH_TARGETS,
         "Core depth-target nonzero layers, strict routing, or explicit query limitation regressed")
 
 require("#ifdef PS5_DEPTH_TARGETS_HOST_REFERENCE" in DEPTH_TARGETS and
@@ -2300,7 +2303,7 @@ require("PS5_AGC_BIND_NATIVE_API(agc, sceAgcDcbSetNumInstances)" in
         "sceVideoOutSubmitFlip" in NATIVE_RUNTIME and
         "runtime_video_prepare_draw" in NATIVE_RUNTIME and
         "completion_marker" in NATIVE_RUNTIME and
-        "release_mem(&command, 40, 0x30c" in NATIVE_RUNTIME and
+        "release_mem(command, 40, 0x30c" in NATIVE_RUNTIME and
         "sceSystemServiceHideSplashScreen" in EGL and
         "ps5_display_target_alias" in SCREEN and
         "surface->targets[surface->buffer_index]" in EGL and
