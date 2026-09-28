@@ -276,7 +276,7 @@
   "scope": "parsed GLSL + selected ST passes; not st_link_shader or a stable NIR format",
   "serialization_audited_sha256": "0aecf87e19e14164981710895204b7a64414719a4343c99911a70a6e2789f12e",
   "source_sha256": {
-    "src/gallium/ps5/ps5_screen.c": "5587f8c8e14ae44b7870b16c55534f581f77d1c5522a0fe405a08c2319be1814",
+    "src/gallium/ps5/ps5_screen.c": "9a4e9ec9ecd24250321158b65df038317ef105805c4f9e1b140afb234d560f6a",
     "tests/ps5/glsl_handoff/abi.c": "f97e326a3d612d72dfc7348c46bafc40f5da203c8c97479c9e5762d06bfff4cf",
     "tests/ps5/glsl_handoff/backend.c": "11a0eaed07731552919177c95c66135e33ac54ec293176515943cd5ff38dc93a",
     "tests/ps5/glsl_handoff/check_target_abi.py": "df9d77a410bf3443f3bb752bf36ba69068d4ff1cf3f1cf503172823df8d28e86",
@@ -292,8 +292,8 @@
     "third_party/mesa-26.2.0/src/compiler/shader_info.h": "b7c0ffcdc60db695854fa596171c8bffe7928598fe93d1cb17939114b7f4e74b",
     "third_party/mesa-26.2.0/src/mesa/program/prog_statevars.c": "3c5d09c2d5f5a0747ea77e3c413a2f5661e54d2787bd4183a61c602001537643",
     "third_party/mesa-26.2.0/src/mesa/state_tracker/st_glsl_to_nir.cpp": "f8e1695bd04d4f304be651aa49b9ae1150997aa025cce7a489127a0c718c7d2e",
-    "third_party/opengnm-psbc/libpsbc/psbc_compile.c": "8e029e4b6ca22724b67e30f32484c5234c9ab2833ceec8fe67d5abc80c92d354",
-    "third_party/opengnm-psbc/libpsbc/psbc_compile.h": "732a803c2e29f173ce69c75bc8f23137bec17c02ee4717e4be4ddb89f99f7ac8",
+    "third_party/opengnm-psbc/libpsbc/psbc_compile.c": "65199d89fe45a315c6f34f766db94a7a1e7160e4a8be824cdb93dff82b025813",
+    "third_party/opengnm-psbc/libpsbc/psbc_compile.h": "6f1cdbbeebd4912854730bccca6a948847e9ed730af49932d32213159e86c841",
     "third_party/opengnm-psbc/src/amd/common/nir/ac_nir.c": "bf93d76a158bfbf5fd955be5c3e01e198de20d0782404e7f4eba64a2d29f71bc",
     "third_party/opengnm-psbc/src/compiler/nir/nir_intrinsics.h": "2d6f9e713863ce5a5fa51d4ed684896ce62fd347f289ae7a6c458d4b0069c8ee",
     "third_party/opengnm-psbc/src/compiler/nir/nir_lower_uniforms_to_ubo.c": "0ec181f28aaf832ff12418672619e589f022d13f57307d5737a918d311295c7b",
@@ -309,7 +309,7 @@
   }
 }
 PS5_GLSL_RECEIPT_END */
-#define PS5_GLSL_RECEIPT_SHA256 "b536de3fb607aa4831f79751e5d56c6591c068be8b9ccfc0143643e089bc5431"
+#define PS5_GLSL_RECEIPT_SHA256 "e99f21e6455e6eee0a4115bf0fbc0d038db261b0f768977f580439a6a5542752"
 #define PS5_GLSL_DEFAULT_BYTES 16u
 #define PS5_GLSL_ADDEND_OFFSET 0u
 _Static_assert(PS5_GLSL_DEFAULT_BYTES > 0 && PS5_GLSL_DEFAULT_BYTES <= 64 &&

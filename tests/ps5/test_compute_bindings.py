@@ -23,6 +23,8 @@ sampler_at = source.index("static bool\nps5_texture_descriptor_wrap(")
 bits_at = source.index("static uint32_t\nps5_float_bits(")
 sampler_helpers = source[bits_at:source.index("static size_t\nps5_tiled_depth_layer_xor(", bits_at)]
 sampler_helpers += source[sampler_at:source.index("static uint32_t\nps5_pack_float_12p4(", sampler_at)]
+publish_at = source.index("static void\nps5_publish_descriptor_prefix(")
+publish_prefix = source[publish_at:source.index("\n}\n", publish_at) + 3]
 extent_at = source.index("static unsigned\nps5_linear_mip_storage_extent(")
 extent_helper = source[extent_at:source.index("static bool\nps5_packed_depth_sample_layout(", extent_at)]
 image_at = source.index("static int\nps5_resource_image_descriptor(")
@@ -105,6 +107,7 @@ code = r'''
 #define PS5_ENABLE_RENDER_TO_TEXTURE_CANDIDATE 1
 #define PS5_ENABLE_LAYERED_RENDER_TARGET_CANDIDATE 1
 #define PS5_ENABLE_TEXTURE_CUBE_ARRAY_CANDIDATE 1
+#define PS5_ENABLE_SEAMLESS_CUBE_CANDIDATE 1
 #define PS5_ENABLE_TEXTURE_RECTANGLE_CANDIDATE 1
 #define PS5_ENABLE_TEXTURE_1D_CANDIDATE 0
 #define PS5_ENABLE_DYNAMIC_COLOR_TARGET_CANDIDATE 1
@@ -240,7 +243,8 @@ static void ps5_screen_submit_unlock(struct pipe_screen *s) { (void)s; assert(ma
 static void ps5_draw_batch_submit(void) { ++barrier_submissions; }
 static void ps5_draw_batch_drain(void) { ++fragment_drains; }
 static bool ps5_render_condition_passes(const struct ps5_context *context) { (void)context; return render_condition_pass; }
-static void ps5_flush_gpu_data(const void *address, size_t size) { assert(address && (fragment_mode ? size==32 || size==64 || size==256 || size==512 || size==768 || size==2048 || size==4*PS5_TESSELLATION_BUFFER_STRIDE || size==PS5_DESCRIPTOR_STORAGE_BYTES : size==12)); }
+static void ps5_flush_gpu_data(const void *address, size_t size) { assert(address && (fragment_mode ? size==32 || size==64 || size==256 || size==512 || size==768 || size==2048 || size==4*PS5_TESSELLATION_BUFFER_STRIDE || size==PS5_DESCRIPTOR_STORAGE_BYTES ||
+    (size>=PS5_CONSTANT_DATA_OFFSET && size<PS5_DESCRIPTOR_STORAGE_BYTES && size%16==0) : size==12)); }
 ''' + texel_format + texel_descriptor + r'''
 static bool ps5_uses_merged_geometry_metadata(const struct ps5_context *c, const struct ps5_shader *s, const PsbcShaderMetadata *m) { return false; }
 static unsigned ps5_texture_count(const struct ps5_context *c, const struct ps5_shader *s, const PsbcShaderMetadata *m) { return s->nir->info.num_textures; }
@@ -328,7 +332,7 @@ int ps5_agc_compute_execute(struct pipe_screen *s, const PsbcShaderOutput *shade
     ++submitted; return 0;
 }
 
-''' + barrier + fragment + constant + '\n#define PS5_ENABLE_BORDER_COLOR_CANDIDATE 1\n' + sampler_helpers + functions + r'''
+''' + '\n#define PS5_ENABLE_BORDER_COLOR_CANDIDATE 1\n' + sampler_helpers + publish_prefix + barrier + fragment + constant + functions + r'''
 /* Only fields read by the extracted Mesa handoff/state code are modeled. */
 struct gl_buffer_object { struct pipe_resource *buffer; };
 struct gl_buffer_binding {
@@ -584,7 +588,7 @@ static void fragment_contract(void) {
     c.constants[1][0].copied=true;
     assert(ps5_prepare_fragment_storage(&c,userdata,16));
     uint8_t preserved[512]; memcpy(preserved,mixed_table,512);
-    assert(ps5_prepare_constant(&c,&shader,1,userdata,16,NULL));
+    assert(ps5_prepare_constant(&c,&shader,1,userdata,16,NULL,NULL));
     assert(!memcmp(preserved,mixed_table,512));
     for(unsigned i=0;i<13;++i) {
         const uint32_t *d=(const uint32_t *)(mixed_table+512+i*16);
@@ -592,10 +596,10 @@ static void fragment_contract(void) {
     }
     for(unsigned i=720;i<sizeof(mixed_table);++i) assert(mixed_table[i]==0xab);
     c.constants[1][12].valid=false;
-    assert(!ps5_prepare_constant(&c,&shader,1,userdata,16,NULL));
+    assert(!ps5_prepare_constant(&c,&shader,1,userdata,16,NULL,NULL));
     c.constants[1][12].valid=true;
     m->descriptor_bindings[1].offset=496;
-    assert(!ps5_prepare_constant(&c,&shader,1,userdata,16,NULL));
+    assert(!ps5_prepare_constant(&c,&shader,1,userdata,16,NULL,NULL));
     nir.info.num_ubos=0; m->descriptor_binding_count=1;
     table.data=(void *)descriptors; table.size=sizeof(descriptors);
     m->address32_hi=(uintptr_t)descriptors>>32;
@@ -748,14 +752,14 @@ static void indirect_ubo_contract(void) {
     for(unsigned i=0;i<3;++i) c.constants[0][i]=(struct ps5_constant_state){
         .valid=true,.size=64,.offset=i*16,.buffer=&data.base};
     fragment_mode=true;
-    assert(ps5_prepare_constant(&c,&shader,0,userdata,16,NULL));
+    assert(ps5_prepare_constant(&c,&shader,0,userdata,16,NULL,NULL));
     for(unsigned i=0;i<3;++i) {
         const uint32_t *d=(const uint32_t *)(descriptors+PS5_TEXTURE_DESCRIPTOR_BYTES+i*16);
         assert(d[0]==(uint32_t)(uintptr_t)((uint8_t *)words+i*16) && d[2]==64);
     }
     assert(userdata[0]==(uint32_t)(uintptr_t)descriptors);
     m->descriptor_bindings[0].array_size=2;
-    assert(!ps5_prepare_constant(&c,&shader,0,userdata,16,NULL));
+    assert(!ps5_prepare_constant(&c,&shader,0,userdata,16,NULL,NULL));
     fragment_mode=false;
 }
 static void texel_buffer_descriptor_contract(void) {
@@ -1144,8 +1148,8 @@ int main(void) {
     assert(fragment_drains==barrier_before && barrier_submissions==submits_before);
     for(unsigned mask=1;mask<=PIPE_BARRIER_ALL;++mask) {
         ps5_memory_barrier(&barrier_context,mask);
-        if(mask & PIPE_BARRIER_MAPPED_BUFFER) ++waits_before;
-        else ++submits_before;
+        /* Visibility needs a submission boundary, never a CPU completion wait. */
+        ++submits_before;
         assert(fragment_drains==barrier_before && barrier_submissions==submits_before);
         assert(mapped_waits==waits_before && !mapped_locked);
     }
@@ -2387,7 +2391,7 @@ with tempfile.TemporaryDirectory() as directory:
             str(MESA / "src/util/format/u_format.yaml"),
             str(MESA / "src/amd/registers/gfx10-rsrc.json"),
             str(MESA / "src/amd/registers/gfx11-rsrc.json")], stdout=generated, check=True)
-    subprocess.run(["clang-18", "-std=gnu11", "-O2", "-Wall", "-Werror",
+    subprocess.run(["clang-18", "-std=gnu11", "-O2", "-Wall", "-Werror", "-Wno-unused-function",
         "-DHAVE_ENDIAN_H=1", "-DHAVE_FUNC_ATTRIBUTE_PACKED=1", "-D_GNU_SOURCE",
         "-I", str(MESA / "include"), "-I", str(MESA / "src"),
         "-I", str(MESA / "src/gallium/include"), "-I", str(MESA / "src/gallium/auxiliary"),

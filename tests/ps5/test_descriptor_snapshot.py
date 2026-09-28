@@ -7,7 +7,7 @@ root = Path(__file__).resolve().parents[2]
 s = (root / 'src/gallium/ps5/ps5_screen.c').read_text()
 a = s.index('static bool\nps5_prepare_constant(')
 publish = s[a:s.index('\n}\n', a)]
-assert 'ps5_flush_gpu_data(storage->data, ps5_descriptor_snapshot_size(context, slot));' in publish
+assert 'ps5_publish_descriptor_prefix(storage->data,\n      ps5_descriptor_snapshot_size(context, slot), pending_descriptor_bytes);' in publish
 a = s.index('static size_t\nps5_descriptor_snapshot_size(')
 helper = s[a:s.index('static unsigned\nps5_shader_storage_count(', a)]
 a = s.index('static bool\nps5_batch_copy_descriptors(')
@@ -30,7 +30,11 @@ struct ps5_resource { struct pipe_resource base; unsigned char *data; size_t siz
 struct pipe_screen { struct pipe_resource *(*resource_create)(struct pipe_screen *, const struct pipe_resource *); };
 struct pipe_context { struct pipe_screen *screen; };
 struct ps5_constant_state { bool valid,copied; unsigned size; };
-struct ps5_context { struct pipe_context base; void *gs,*tcs,*tes; struct ps5_constant_state constants[5][13]; };
+struct nir { struct { unsigned num_ubos,num_ssbos,num_images; } info; };
+struct ps5_shader { struct nir *nir; };
+struct ps5_context { struct pipe_context base; void *gs,*tcs,*tes; struct ps5_shader *vs,*fs;
+ unsigned stream_output_target_count; struct ps5_constant_state constants[5][13]; };
+static bool ps5_shader_uses_storage(const struct ps5_shader *s) { return s && (s->nir->info.num_ssbos || s->nir->info.num_images); }
 static unsigned char arena[6 * PS5_DESCRIPTOR_STORAGE_BYTES];
 static struct ps5_resource resources[3];
 static unsigned count;
@@ -52,6 +56,7 @@ int main(void) {
   for(unsigned i=0;i<3;++i) { struct ps5_resource *r=(void*)out[i];
    size_t live=i?ps5_descriptor_snapshot_size(&c,i-1):PS5_DIRECT_ALIGNMENT;
    assert(r->size==MAX2(PS5_DIRECT_ALIGNMENT,live));
+   if(!i) { for(size_t j=0;j<r->size;++j) assert(r->data[j]==0xcc); continue; }
    assert(!memcmp(r->data,src[i].data,live));
    for(size_t j=live;j<=r->size;++j) assert(r->data[j]==0xcc);
   }
@@ -62,6 +67,24 @@ int main(void) {
  assert(ps5_descriptor_snapshot_size(&c,0)==4096);
  void **stages[]={&c.gs,&c.tcs,&c.tes};
  for(unsigned i=0;i<3;++i) { *stages[i]=&c; assert(ps5_descriptor_snapshot_size(&c,0)==PS5_DESCRIPTOR_STORAGE_BYTES); assert(ps5_descriptor_snapshot_size(&c,1)==69632); *stages[i]=NULL; }
+ /* Merged stages and stream output keep the conservative vertex snapshot. */
+ for(unsigned mode=0;mode<2;++mode) {
+  c.gs=mode?NULL:&c; c.stream_output_target_count=mode; count=0;
+  assert(ps5_batch_copy_descriptors(&c.base,saved,out));
+  assert(!memcmp(((struct ps5_resource *)out[0])->data,src[0].data,PS5_DIRECT_ALIGNMENT));
+ }
+ c.gs=NULL; c.stream_output_target_count=0;
+ /* A UBO-only shader clears the constant prefix itself; only inline data is copied. */
+ struct nir un={{1,0,0}}; struct ps5_shader us={&un}; c.vs=&us;
+ c.constants[0][0]=(struct ps5_constant_state){true,true,64}; count=0;
+ assert(ps5_batch_copy_descriptors(&c.base,saved,out));
+ { struct ps5_resource *r=(void*)out[1];
+   for(size_t j=0;j<PS5_CONSTANT_DATA_OFFSET;++j) assert(r->data[j]==0xcc);
+   assert(!memcmp(r->data+PS5_CONSTANT_DATA_OFFSET,src[1].data+PS5_CONSTANT_DATA_OFFSET,64)); }
+ un.info.num_ssbos=1; count=0;
+ assert(ps5_batch_copy_descriptors(&c.base,saved,out));
+ assert(!memcmp(((struct ps5_resource *)out[1])->data,src[1].data,PS5_CONSTANT_DATA_OFFSET+64));
+ c.vs=NULL;
  src[2].size=4096;count=0; assert(!ps5_batch_copy_descriptors(&c.base,saved,out));
  return 0;
 }
@@ -70,4 +93,4 @@ with tempfile.TemporaryDirectory() as d:
  p=Path(d); (p/'test.c').write_text(code)
  subprocess.run(['cc','-std=c11','-Wall','-Werror',str(p/'test.c'),'-o',str(p/'test')],check=True)
  subprocess.run([str(p/'test')],check=True)
-print('descriptor snapshot: bounded copies, inline CB0 and multi-stage fallback PASS')
+print('descriptor snapshot: bounded copies, inline CB0, skipped vertex bank and multi-stage fallback PASS')
