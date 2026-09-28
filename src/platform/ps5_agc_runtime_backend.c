@@ -108,7 +108,10 @@ static _Thread_local struct ps5_agc_backend_draw_state ps5_agc_draw_state = {
                    0x01dfc437, 0x01dfc437, 0x01dfc437, 0x01dfc437},
    .mrt_mask = 0xf, .mrt_count = 1, .mrt_samples = 1,
    .sample_mask = 0xffff,
+#ifndef PS5_DYNAMIC_SCANOUT
+   /* Runtime display modes leave these unset (0): the live display size applies. */
    .depth_width = PS5_RENDER_WIDTH, .depth_height = PS5_RENDER_HEIGHT,
+#endif
 };
 #define ps5_agc_instance_count ps5_agc_draw_state.instance_count
 #define ps5_agc_mrt_targets ps5_agc_draw_state.mrt_targets
@@ -554,6 +557,12 @@ ps5_agc_set_cx_mrt_uncached(void *command, const void *table, uint32_t count,
    if (records) {
       int depth_size = ps5_agc_find_register(records, count, 0x0007u);
 
+#ifdef PS5_DYNAMIC_SCANOUT
+      if (depth_size >= 0 && (!ps5_agc_depth_width || !ps5_agc_depth_height)) {
+         ps5_agc_depth_width = PS5_RENDER_WIDTH;
+         ps5_agc_depth_height = PS5_RENDER_HEIGHT;
+      }
+#endif
       if (depth_size >= 0)
          records[depth_size].value = (ps5_agc_depth_width - 1u) |
                                      ((ps5_agc_depth_height - 1u) << 16);

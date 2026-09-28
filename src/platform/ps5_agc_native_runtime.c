@@ -2110,6 +2110,8 @@ extern int sceVideoOutConfigureOutput(int32_t, uint32_t, const void *, const voi
 static int runtime_output_needs_restore;
 /* Survives EGL teardown; only a successful HFR port close arms this guard. */
 static int runtime_output_reopen_pending;
+/* The open port was switched to the high-refresh output mode. */
+static int runtime_output_hfr_active;
 
 static int runtime_video_configure_output(void)
 {
@@ -2120,6 +2122,7 @@ static int runtime_video_configure_output(void)
         runtime_output_needs_restore = 1;
         result = preset = sceVideoOutConfigureOutput(runtime_video_handle, 15, NULL, NULL, NULL);
     }
+    runtime_output_hfr_active = result == 0;
     printf("[ps5-output-mode] target=%u support=%08" PRIx32 " preset=%08" PRIx32
            " vrr=%08" PRIx32 " result=%08" PRIx32 "\n", (unsigned)PS5_SCANOUT_FPS,
            (uint32_t)support, (uint32_t)preset, UINT32_MAX, (uint32_t)result);
@@ -2205,8 +2208,9 @@ int ps5_agc_gate2_shutdown_present(void)
     if (close_rc != 0)
         return close_rc;
 #if PS5_SCANOUT_FPS > 60
-    if (runtime_video_handle >= 0)
+    if (runtime_video_handle >= 0 && runtime_output_hfr_active)
         runtime_output_reopen_pending = 1;
+    runtime_output_hfr_active = 0;
 #endif
     memset(&runtime_video_api, 0, sizeof(runtime_video_api));
     runtime_video_handle = -1;
@@ -2222,6 +2226,22 @@ int ps5_agc_gate2_shutdown_present(void)
     runtime_render_marker = (uint64_t)RENDER_MARKER;
     return close_rc;
 }
+
+#ifdef PS5_DYNAMIC_SCANOUT
+/* Display modes change only with no port, registration or queued GPU work. */
+int ps5_agc_gate2_display_idle(void)
+{
+    int idle = runtime_video_handle < 0 && !runtime_video_registered;
+#ifdef PS5_GPU_PRESENT_BATCH
+    idle = idle && runtime_gpu_present_buffer < 0;
+#endif
+#ifdef PS5_MULTIDRAW_BATCH
+    idle = idle && !runtime_batch_active && !runtime_batch_count &&
+           !runtime_batch_faulted && !runtime_pending_batches;
+#endif
+    return idle;
+}
+#endif
 
 static int runtime_video_acquire(const video_api_t *video,
                                  uint8_t *framebuffer,
@@ -2272,8 +2292,19 @@ static int runtime_video_acquire(const video_api_t *video,
     if (runtime_video_handle < 0)
         goto fail;
 #if PS5_SCANOUT_FPS > 60
+#ifdef PS5_DYNAMIC_SCANOUT
+    ps5_scanout_active_fps = 60u;
+    if (PS5_SCANOUT_HFR_REQUESTED) {
+        /* A display without 120 Hz keeps the port at 60 Hz instead of failing. */
+        if (runtime_video_configure_output() == 0)
+            ps5_scanout_active_fps = 120u;
+        else if (runtime_video_restore_output() != 0)
+            goto fail;
+    }
+#else
     if (runtime_video_configure_output() != 0)
         goto fail;
+#endif
 #endif
     if (video->set_flip_rate(runtime_video_handle, 0) != 0)
         goto fail;

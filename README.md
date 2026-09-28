@@ -22,13 +22,25 @@ Read the [release scope and qualification](docs/release-0.3.0.md) before use.
 
 The downloadable SDK includes GL/EGL and SDL2 static libraries, headers,
 Make/pkg-config/CMake integration, complete sources, examples, licenses and
-checksums. Choose one complete profile; do not mix its libraries with another SDK.
+checksums. Do not mix its libraries with another SDK.
 
-| 0.3.0 build profile | Qualification |
-| --- | --- |
-| **1080p60** — 1920×1080 | Default CI package; host/compiler/export/consumer checked |
-| **1440p120** — 2560×1440 | Optional CI profile; host checked, with separate recorded hardware evidence |
-| **4K120** — 3840×2160 | Optional CI profile; host checked, with separate recorded hardware evidence |
+### One SDK for every display
+
+From 0.5.0 the release SDK chooses its display mode **at runtime**. An app
+picks the size and refresh rate before starting EGL, and can change them later
+by restarting EGL. The PS5 scales the output to whatever the TV accepts, so any
+mode works on any 1080p, 1440p or 4K screen.
+
+| Display mode | Size | Refresh |
+| --- | --- | --- |
+| **1080p** (Full HD) — startup default | 1920×1080 | 60 or 120 Hz |
+| **1440p** (QHD, "2K") | 2560×1440 | 60 or 120 Hz |
+| **2160p** (4K UHD) | 3840×2160 | 60 or 120 Hz |
+
+A display that cannot show 120 Hz keeps presenting at 60 Hz. See
+[Display modes](docs/display-modes.md) for the API
+(`ps5_opengl_display_modes.h`) and the restart sequence. Fixed single-mode
+1080p60, 1440p120 and 4K120 profiles remain available as CI build options.
 
 Fresh CI binaries do not inherit hardware acceptance from earlier exact binaries.
 [SDK 0.2.0](docs/release-g62.md) remains available as the historical OpenGL 3.3
@@ -45,7 +57,7 @@ high-refresh presenter. This fix is **not in the existing 0.2.0 downloads**.
 
 - OpenGL 4.6 Core / GLSL 4.60 with Mesa state tracking and runtime shader compilation.
 - All 657 OpenGL 4.6 Core commands exported by the relocatable static SDK.
-- Native fullscreen EGL and fixed 1080p60, 1440p120 and 4K120 build profiles.
+- Native fullscreen EGL with 1080p, 1440p and 4K display modes at 60 or 120 Hz, chosen at runtime.
 - GPU-backed draws, batching and eligible transfer, clear and mip/layer paths.
 - An SDL2 bridge for one fixed window, one unshared Core context and input/events.
 - Public-API examples, pinned dependencies and reproducible host checks.
@@ -124,6 +136,8 @@ synchronization and presentation findings that informed this implementation.
 Related video-decoding research is separate from OpenGL validation.
 
 ## Documentation
+
+- [Display modes](docs/display-modes.md): choosing 1080p, 1440p or 4K at 60 or 120 Hz at runtime.
 
 - [Documentation index](docs/README.md)
 - [SDK 0.3.0 release](docs/release-0.3.0.md)

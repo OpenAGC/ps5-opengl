@@ -8,10 +8,10 @@ on:
   workflow_dispatch:
     inputs:
       profile:
-        description: Fresh SDK build profile (host checks only)
+        description: Fresh SDK build profile (host checks only); dynamic = one SDK, display mode chosen at runtime
         type: choice
-        default: 1080p60
-        options: [1080p60, 1440p120, 2160p120]
+        default: dynamic
+        options: [dynamic, 1080p60, 1440p120, 2160p120]
   push:
     tags: ['v*']
 
@@ -84,9 +84,13 @@ jobs:
           make test-staging
       - name: Select fresh build profile
         env:
-          SDK_PROFILE: ${{ inputs.profile || '1080p60' }}
+          SDK_PROFILE: ${{ inputs.profile || 'dynamic' }}
         run: |
+          DYNAMIC=0
           case "$SDK_PROFILE" in
+            # One SDK for every display: 2160p120 capacity, 1080p60 startup,
+            # size and refresh chosen at runtime (ps5_opengl_display_modes.h).
+            dynamic) HEIGHT=2160; FPS=120; DYNAMIC=1 ;;
             1080p60) HEIGHT=1080; FPS=60 ;;
             1440p120) HEIGHT=1440; FPS=120 ;;
             2160p120) HEIGHT=2160; FPS=120 ;;
@@ -95,6 +99,7 @@ jobs:
           echo "SDK_PROFILE=$SDK_PROFILE" >> "$GITHUB_ENV"
           echo "PS5_SCANOUT_HEIGHT=$HEIGHT" >> "$GITHUB_ENV"
           echo "PS5_SCANOUT_FPS=$FPS" >> "$GITHUB_ENV"
+          echo "PS5_DYNAMIC_SCANOUT=$DYNAMIC" >> "$GITHUB_ENV"
       - name: Build compiler, Mesa and OpenGL 4.6 static SDK
         env:
           PS5_GPU_PRESENT_BATCH: '1'
@@ -117,7 +122,7 @@ jobs:
         run: |
           VERSION="ci-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then VERSION="${GITHUB_REF_NAME#v}"; fi
-          if [[ "$SDK_PROFILE" != 1080p60 ]]; then VERSION="$VERSION-$SDK_PROFILE"; fi
+          if [[ "$SDK_PROFILE" != dynamic ]]; then VERSION="$VERSION-$SDK_PROFILE"; fi
           python3 tools/build-sdk-bundle.py --ci-version "$VERSION" --ci-profile "$SDK_PROFILE" \
             --sdk "$RUNNER_TEMP/relocated-sdk" --source-commit "$(git rev-parse HEAD)" \
             --consumer-report "$RUNNER_TEMP/consumer-checks/summary.json" \

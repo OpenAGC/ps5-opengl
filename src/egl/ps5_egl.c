@@ -79,6 +79,16 @@ struct ps5_egl_context {
    struct ps5_egl_context *next;
 };
 
+#ifdef PS5_DYNAMIC_SCANOUT
+#include "ps5_opengl_display_modes.h"
+
+unsigned ps5_scanout_width = PS5_SCANOUT_DEFAULT_WIDTH;
+unsigned ps5_scanout_height = PS5_SCANOUT_DEFAULT_HEIGHT;
+unsigned ps5_scanout_fps = PS5_SCANOUT_DEFAULT_FPS;
+unsigned ps5_scanout_active_fps = PS5_SCANOUT_DEFAULT_FPS;
+int ps5_agc_gate2_display_idle(void) __attribute__((weak));
+#endif
+
 static struct ps5_egl_display ps5_display;
 static struct ps5_egl_config ps5_config;
 static _Thread_local EGLint ps5_last_error = EGL_SUCCESS;
@@ -375,6 +385,78 @@ ps5_background_context(struct st_context *st, struct util_queue_monitoring *stat
    (void)st;
    (void)stats;
 }
+
+#ifdef PS5_DYNAMIC_SCANOUT
+/* Display-mode changes need a fully terminated display: no screen, context,
+ * surface, open video port or queued GPU work may still use the old size. */
+static bool
+ps5_display_mode_changeable(EGLDisplay display)
+{
+   if (!ps5_valid_display(display, false)) {
+      ps5_set_error(EGL_BAD_DISPLAY);
+      return false;
+   }
+   if (ps5_display.initialized || ps5_display.screen || ps5_display.contexts ||
+       ps5_display.surfaces || ps5_window_surface ||
+       (ps5_agc_gate2_display_idle && !ps5_agc_gate2_display_idle())) {
+      ps5_set_error(EGL_BAD_ACCESS);
+      return false;
+   }
+   return true;
+}
+
+EGLAPI EGLBoolean EGLAPIENTRY
+eglSetDisplayModePS5(EGLDisplay display, EGLint width, EGLint height)
+{
+   PS5_EGL_LOCK();
+   if (!ps5_display_mode_changeable(display))
+      return EGL_FALSE;
+   if (!((width == 1920 && height == 1080) ||
+         (width == 2560 && height == 1440) ||
+         (width == 3840 && height == 2160))) {
+      ps5_set_error(EGL_BAD_PARAMETER);
+      return EGL_FALSE;
+   }
+   ps5_scanout_width = (unsigned)width;
+   ps5_scanout_height = (unsigned)height;
+   return EGL_TRUE;
+}
+
+EGLAPI EGLBoolean EGLAPIENTRY
+eglSetDisplayRefreshPS5(EGLDisplay display, EGLint refresh_hz)
+{
+   PS5_EGL_LOCK();
+   if (!ps5_display_mode_changeable(display))
+      return EGL_FALSE;
+   if (refresh_hz != 60 && refresh_hz != 120) {
+      ps5_set_error(EGL_BAD_PARAMETER);
+      return EGL_FALSE;
+   }
+   ps5_scanout_fps = (unsigned)refresh_hz;
+   ps5_scanout_active_fps = (unsigned)refresh_hz;
+   return EGL_TRUE;
+}
+
+/* Reports the selected size and the refresh rate the output accepted; the
+ * rate is final once a window surface has presented a frame. */
+EGLAPI EGLBoolean EGLAPIENTRY
+eglGetDisplayModePS5(EGLDisplay display, EGLint *width, EGLint *height,
+                     EGLint *refresh_hz)
+{
+   PS5_EGL_LOCK();
+   if (!ps5_valid_display(display, false)) {
+      ps5_set_error(EGL_BAD_DISPLAY);
+      return EGL_FALSE;
+   }
+   if (width)
+      *width = (EGLint)ps5_scanout_width;
+   if (height)
+      *height = (EGLint)ps5_scanout_height;
+   if (refresh_hz)
+      *refresh_hz = (EGLint)ps5_scanout_active_fps;
+   return EGL_TRUE;
+}
+#endif
 
 EGLAPI EGLBoolean EGLAPIENTRY
 eglInitialize(EGLDisplay display, EGLint *major, EGLint *minor)
@@ -1232,6 +1314,14 @@ eglGetProcAddress(const char *name)
 {
    if (!name)
       return NULL;
+#ifdef PS5_DYNAMIC_SCANOUT
+   if (!strcmp(name, "eglSetDisplayModePS5"))
+      return (__eglMustCastToProperFunctionPointerType)eglSetDisplayModePS5;
+   if (!strcmp(name, "eglSetDisplayRefreshPS5"))
+      return (__eglMustCastToProperFunctionPointerType)eglSetDisplayRefreshPS5;
+   if (!strcmp(name, "eglGetDisplayModePS5"))
+      return (__eglMustCastToProperFunctionPointerType)eglGetDisplayModePS5;
+#endif
    return (__eglMustCastToProperFunctionPointerType)
       _mesa_glapi_get_proc_address(name);
 }

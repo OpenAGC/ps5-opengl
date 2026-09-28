@@ -51,4 +51,27 @@
 #error Invalid tiled display buffer size or alignment
 #endif
 
+/* Runtime display modes: one SDK presents 1080p, 1440p or 2160p at 60 or
+ * 120 Hz, chosen with eglSetDisplayModePS5/eglSetDisplayRefreshPS5 while EGL
+ * is terminated. The build profile only sizes capacity: display slots and
+ * arena offsets stay at the 2160p size in every mode, and the high-refresh
+ * output path is compiled in and used when requested. */
+#ifdef PS5_DYNAMIC_SCANOUT
+#if PS5_SCANOUT_HEIGHT != 2160 || PS5_SCANOUT_FPS != 120
+#error Runtime display modes require the 2160p120 capacity profile
+#endif
+enum { PS5_SCANOUT_DEFAULT_WIDTH = 1920, PS5_SCANOUT_DEFAULT_HEIGHT = 1080,
+       PS5_SCANOUT_DEFAULT_FPS = 60 };
+/* Requested mode, and the refresh rate the output actually accepted. */
+extern unsigned ps5_scanout_width, ps5_scanout_height;
+extern unsigned ps5_scanout_fps, ps5_scanout_active_fps;
+#undef PS5_SCANOUT_WIDTH
+#undef PS5_SCANOUT_HEIGHT
+#define PS5_SCANOUT_WIDTH ps5_scanout_width
+#define PS5_SCANOUT_HEIGHT ps5_scanout_height
+#define PS5_SCANOUT_HFR_REQUESTED (ps5_scanout_fps > 60u)
+#else
+#define PS5_SCANOUT_HFR_REQUESTED (PS5_SCANOUT_FPS > 60)
+#endif
+
 #endif

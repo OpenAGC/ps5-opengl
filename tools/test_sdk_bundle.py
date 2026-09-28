@@ -588,6 +588,25 @@ class HFRBundleTests(unittest.TestCase):
                     BUNDLE.require_ci_profile(sdk, bad, name)
             with self.assertRaises(ValueError):
                 BUNDLE.require_ci_profile(sdk, flags, "2160p120" if name != "2160p120" else "1080p60")
+        # One runtime-mode SDK: 2160p120 capacity, 1080p60 startup header, API header.
+        fixture.profile_header(sdk, **BUNDLE.DISPLAY_PROFILES["1080p60"])
+        dynamic = ('-DPS5_SCANOUT_HEIGHT=2160 -DPS5_SCANOUT_FPS=120 -DPS5_DYNAMIC_SCANOUT=1 '
+                   '-DPS5_GPU_PRESENT_BATCH=1 -DPS5_DRAW_PROFILE=1 '
+                   '-DPS5_MULTIDRAW_BATCH=1 -DPS5_DEFERRED_DRAW_BATCH=1\n')
+        with self.assertRaises(ValueError):  # the API header is missing
+            BUNDLE.require_ci_profile(sdk, dynamic, "dynamic")
+        (sdk / "include/ps5_opengl_display_modes.h").write_text("#pragma once\n")
+        self.assertEqual(BUNDLE.require_ci_profile(sdk, dynamic, "dynamic"),
+                         BUNDLE.DISPLAY_PROFILES["1080p60"])
+        for bad in (dynamic.replace(" -DPS5_DYNAMIC_SCANOUT=1", ""),
+                    dynamic.replace("HEIGHT=2160", "HEIGHT=1080")):
+            with self.assertRaises(ValueError):
+                BUNDLE.require_ci_profile(sdk, bad, "dynamic")
+        fixed = dynamic.replace("HEIGHT=2160 -DPS5_SCANOUT_FPS=120 -DPS5_DYNAMIC_SCANOUT=1",
+                                "HEIGHT=1080 -DPS5_SCANOUT_FPS=60")
+        with self.assertRaises(ValueError):  # a fixed profile must not ship the API header
+            BUNDLE.require_ci_profile(sdk, fixed, "1080p60")
+        (sdk / "include/ps5_opengl_display_modes.h").unlink()
         header = sdk / "include/ps5_opengl_display.h"
         header.write_text(header.read_text() + "#define PS5_OPENGL_NATIVE_FPS 60\n")
         with self.assertRaises(ValueError):

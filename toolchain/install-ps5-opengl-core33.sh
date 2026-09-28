@@ -77,6 +77,13 @@ case "$display_height" in
     2160) display_width=3840 ;;
     *) exit 2 ;;
 esac
+if [[ ${PS5_DYNAMIC_SCANOUT:-0} == 1 ]]; then
+    # One SDK for every display: the profile header states the startup mode
+    # and the runtime display-mode API ships beside it.
+    display_width=1920 display_height=1080 display_fps=60
+    install -m 0644 "$root/src/egl/ps5_opengl_display_modes.h" \
+        "$prefix/include/ps5_opengl_display_modes.h"
+fi
 printf '%s\n' '// PS5 OpenGL - native render/presentation build profile, not HDMI status.' \
     '// Copyright (C) 2026 BlackBearReloaded' '// SPDX-License-Identifier: GPL-3.0-or-later' \
     '#pragma once' "#define PS5_OPENGL_NATIVE_WIDTH $display_width" \

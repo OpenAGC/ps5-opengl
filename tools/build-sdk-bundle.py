@@ -78,6 +78,10 @@ TARGETED = dict(
 DISPLAY = importlib.import_module("summarize-display")
 DISPLAY_PROFILES = {f"{height}p{fps}": dict(width=height * 16 // 9, height=height, fps=fps)
                     for height, fps in ((1080, 60), (1440, 120), (2160, 120))}
+# "dynamic": one SDK with runtime display modes. It is built with 2160p120
+# capacity and starts at 1080p60, which its display profile header states.
+DYNAMIC_CAPACITY = DISPLAY_PROFILES["2160p120"]
+CI_PROFILES = [*DISPLAY_PROFILES, "dynamic"]
 HFR_RUNTIME = "3cdc90bbc14def6bc3025b4460fba0892841114a"
 HFR_SDL_SOURCE = "ac2a52aa7faac5e7b9bcd6660cee36263f3e5324"
 HFR = {
@@ -228,10 +232,17 @@ def verify_g47_derivative(path, sdk, name):
 
 def require_ci_profile(sdk, config, name):
     profile = CHECK.display_profile(sdk)
-    require(profile == DISPLAY_PROFILES[name], "CI display profile differs from the SDK")
+    dynamic = name == "dynamic"
+    expected = DISPLAY_PROFILES["1080p60"] if dynamic else DISPLAY_PROFILES[name]
+    require(profile == expected, "CI display profile differs from the SDK")
+    built = DYNAMIC_CAPACITY if dynamic else profile
     for key in ("height", "fps"):
         values = re.findall(r"(?:^|\s)-DPS5_SCANOUT_" + key.upper() + r"=([^\s]+)", config)
-        require(values == [str(profile[key])], "CI runtime configuration profile mismatch")
+        require(values == [str(built[key])], "CI runtime configuration profile mismatch")
+    require(re.findall(r"(?:^|\s)-DPS5_DYNAMIC_SCANOUT=([^\s]+)", config) == (["1"] if dynamic else []),
+            "CI runtime configuration display-mode flag mismatch")
+    require((sdk / "include/ps5_opengl_display_modes.h").is_file() == dynamic,
+            "runtime display-mode header does not match the CI profile")
     for flag in ("PS5_GPU_PRESENT_BATCH", "PS5_DRAW_PROFILE",
                  "PS5_MULTIDRAW_BATCH", "PS5_DEFERRED_DRAW_BATCH"):
         require(re.findall(r"(?:^|\s)-D" + flag + r"=([^\s]+)", config) == ["1"],
@@ -634,7 +645,7 @@ def main():
     parser.add_argument("--candidate", type=Path)
     parser.add_argument("--results", type=Path)
     parser.add_argument("--ci-version", help="distinct CI-built, NOT console-validated bundle")
-    parser.add_argument("--ci-profile", choices=DISPLAY_PROFILES,
+    parser.add_argument("--ci-profile", choices=CI_PROFILES,
                         help="fresh-build profile (default: 1080p60); no hardware acceptance")
     parser.add_argument("--sample-version", choices=SAMPLES,
                         help="frozen sampled release (default: September 7)")
