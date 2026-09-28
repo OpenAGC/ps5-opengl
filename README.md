@@ -1,150 +1,147 @@
-# PS5 OpenGL
+<h1 align="center">PS5 OpenGL</h1>
 
-**OpenGL 4.6 Core and GLSL 4.60 for PlayStation 5 homebrew.**
+<p align="center">
+  <strong>OpenGL 4.6 Core and GLSL 4.60 for PlayStation 5 homebrew</strong><br>
+  A native graphics stack built on Mesa/Gallium: runtime shader compilation,
+  fullscreen EGL at 1080p, 1440p or 4K, a relocatable static SDK and an SDL2 bridge.
+</p>
 
-A native graphics stack built on Mesa/Gallium, with runtime shader compilation,
-fullscreen EGL presentation, a relocatable static SDK and an SDL2 bridge.
-Applications use standard OpenGL; platform integration remains application-owned.
+<p align="center">
+  <a href="https://github.com/blackbearreloaded/ps5-opengl/releases/latest"><img src="https://img.shields.io/github/v/release/blackbearreloaded/ps5-opengl?label=SDK" alt="Latest SDK release"></a>
+  <img src="https://img.shields.io/badge/OpenGL-4.6%20Core-5586A4" alt="OpenGL 4.6 Core">
+  <img src="https://img.shields.io/badge/GLSL-4.60-7DD3FC" alt="GLSL 4.60">
+  <img src="https://img.shields.io/badge/display-1080p%20%7C%201440p%20%7C%204K-5DDFA4" alt="1080p, 1440p and 4K">
+  <img src="https://img.shields.io/badge/refresh-60%20%7C%20120%20Hz-F5B942" alt="60 or 120 Hz">
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue" alt="GPL-3.0-or-later"></a>
+</p>
 
-[![PS5 OpenGL ImGui demo with animated shapes and controller controls](docs/images/ps5-opengl-imgui.png)](https://i.imgur.com/jwyvPhT.mp4)
+<!-- TODO: replace with the OpenGL 4.6 showcase screenshot and video. -->
+[![PS5 OpenGL demo](docs/images/ps5-opengl-imgui.png)](https://i.imgur.com/jwyvPhT.mp4)
 
 *Click the image to watch the demo.*
 
-This project is experimental and **not Khronos-certified**. It does not provide
-console enablement or guarantee that desktop applications run unchanged.
+> [!IMPORTANT]
+> PS5 OpenGL is experimental and **not Khronos-certified**. It runs in an already
+> configured native homebrew environment; it does not provide console enablement
+> or guarantee that desktop applications run unchanged.
 
-## Get started
+## Highlights
 
-[SDK 0.3.0](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/v0.3.0)
-is the first OpenGL 4.6 release. Build it from [source](docs/building.md) with
-`make sdk`; the installed package is written to `build/sdk/ps5-opengl-gl46`.
-Read the [release scope and qualification](docs/release-0.3.0.md) before use.
+- **OpenGL 4.6 Core / GLSL 4.60:** all 657 core commands are exported by the static SDK,
+  with Mesa state tracking and runtime shader compilation to native GPU code.
+- **One SDK for every display:** choose 1080p, 1440p or 4K at 60 or 120 Hz at runtime;
+  the PS5 scales the picture to whatever the TV accepts.
+- **Modern GPU features:** compute shaders, SSBOs, image load/store, indirect and
+  indirect-count multi-draw with `gl_DrawID`, direct state access, float render
+  targets, 16x anisotropic filtering, timer queries and tessellation/geometry stages.
+- **Accelerated paths:** GPU draws with batching, and GPU clears, blits, transfers and
+  mip/layer paths where eligible; remaining cases fall back to the CPU.
+- **Drop-in integration:** Make, pkg-config and CMake packages, an SDL2 bridge, and
+  examples from a minimal triangle to Dear ImGui, NanoVG, Sokol and a 4K showcase.
 
-The downloadable SDK includes GL/EGL and SDL2 static libraries, headers,
-Make/pkg-config/CMake integration, complete sources, examples, licenses and
-checksums. Do not mix its libraries with another SDK.
+## Quick start
 
-### One SDK for every display
+Download the latest SDK from [Releases](https://github.com/blackbearreloaded/ps5-opengl/releases/latest),
+verify it with its `.sha256` file and point your build at its `sdk/` directory
+(see [using the SDK](docs/consumer-build.md)). Then create a context as on any EGL platform:
 
-From 0.5.0 the release SDK chooses its display mode **at runtime**. An app
-picks the size and refresh rate before starting EGL, and can change them later
-by restarting EGL. The PS5 scales the output to whatever the TV accepts, so any
-mode works on any 1080p, 1440p or 4K screen.
+```c
+#include <EGL/egl.h>
+#include <ps5_opengl_display_modes.h>   /* SDK 0.5.0 and later */
 
-| Display mode | Size | Refresh |
-| --- | --- | --- |
-| **1080p** (Full HD) — startup default | 1920×1080 | 60 or 120 Hz |
-| **1440p** (QHD, "2K") | 2560×1440 | 60 or 120 Hz |
-| **2160p** (4K UHD) | 3840×2160 | 60 or 120 Hz |
+EGLDisplay display = eglGetDisplay(EGL_DEFAULT_DISPLAY);
+eglSetDisplayModePS5(display, 3840, 2160);   /* optional: 1080p is the default */
+eglSetDisplayRefreshPS5(display, 60);
+eglInitialize(display, NULL, NULL);
+eglBindAPI(EGL_OPENGL_API);
+/* eglChooseConfig, then eglCreateWindowSurface(display, config, 0, NULL)
+   and an OpenGL 4.6 Core context, as usual. */
+```
 
-A display that cannot show 120 Hz keeps presenting at 60 Hz. See
-[Display modes](docs/display-modes.md) for the API
-(`ps5_opengl_display_modes.h`) and the restart sequence. Fixed single-mode
-1080p60, 1440p120 and 4K120 profiles remain available as CI build options.
+Package the result as a native title folder (the
+[native app boilerplate](https://github.com/blackbearreloaded/ps5-native-app-boilerplate)
+does this) and launch it as a registered title; do not send it to an ELF loader.
 
-Fresh CI binaries do not inherit hardware acceptance from earlier exact binaries.
-[SDK 0.2.0](docs/release-g62.md) remains available as the historical OpenGL 3.3
-release.
-[Older releases](https://github.com/blackbearreloaded/ps5-opengl/releases) retain
-their own evidence. Fresh [CI-built archives](docs/ci-releases.md) are
-host-checked, not automatically console-qualified.
+## Display modes
 
-The 4.6 release includes the [EGL lifecycle safeguard](docs/lifecycle-reopen.md),
-which enforces the qualified five-second interval before reopening a closed
-high-refresh presenter. This fix is **not in the existing 0.2.0 downloads**.
+| Mode | Size | Refresh | |
+| --- | --- | --- | --- |
+| 1080p (Full HD) | 1920×1080 | 60 / 120 Hz | Startup default |
+| 1440p (QHD, "2K") | 2560×1440 | 60 / 120 Hz | |
+| 2160p (4K UHD) | 3840×2160 | 60 / 120 Hz | |
 
-## Features
+Modes are chosen before EGL starts and changed by restarting EGL; a display without
+120 Hz keeps presenting at 60 Hz. See [Display modes](docs/display-modes.md).
 
-- OpenGL 4.6 Core / GLSL 4.60 with Mesa state tracking and runtime shader compilation.
-- All 657 OpenGL 4.6 Core commands exported by the relocatable static SDK.
-- Native fullscreen EGL with 1080p, 1440p and 4K display modes at 60 or 120 Hz, chosen at runtime.
-- GPU-backed draws, batching and eligible transfer, clear and mip/layer paths.
-- An SDL2 bridge for one fixed window, one unshared Core context and input/events.
-- Public-API examples, pinned dependencies and reproducible host checks.
+## Examples
 
-Some operations use CPU fallbacks. See [supported boundaries](docs/limitations.md)
-before choosing the SDK for an application.
+| Example | Demonstrates |
+| --- | --- |
+| [OpenGL 4.6 showcase](examples/core46-showcase/README.md) | 4K, 262k compute particles, GPU culling into `glMultiDrawElementsIndirectCount`, HDR bloom |
+| [OpenGL 4.6 compute cubes](examples/core46-compute-cubes/README.md) | Compute-driven SSBO animation and indirect instanced drawing |
+| [Triangle](examples/core33-triangle/README.md) | Minimal EGL/OpenGL application |
+| [Dear ImGui](examples/core33-imgui/README.md) | Widgets, fonts, animated shapes and controller navigation |
+| [NanoVG](examples/core33-nanovg/README.md) | Upstream GL3 vector renderer |
+| [Sokol](examples/core33-sokol/README.md) and [Sokol cube](examples/core33-sokol-cube/README.md) | Existing renderer integration, depth and culling |
+| [Textured cubes benchmark](examples/core33-cubes/README.md) | Ordinary versus instanced drawing |
+
+Each example is packaged as the native test title `PPSA99005`:
+
+```sh
+make source-fetch
+make sdk-gl46          # or set PS5_OPENGL_PREFIX to a downloaded SDK's sdk/ directory
+make showcase          # imgui-demo, nanovg, sokol, sokol-cube, gl46-demo, ...
+```
+
+Deploy `build/native-app/PPSA99005/dist/PPSA99005` to `/data/homebrew/PPSA99005`.
+
+## Build from source
+
+`make sdk` builds the shader compiler, Mesa and the installed OpenGL 4.6 SDK into
+`build/sdk/ps5-opengl-gl46`, running its compiler tests and capability audit; `make test`
+runs the host test suite. The build uses every CPU core and ccache when installed.
+See [Building](docs/building.md) for prerequisites and build options.
 
 ## Performance
 
 | SDK 0.2.0 workload at 4K | Completed frames/s |
 | --- | ---: |
 | Dear ImGui window | 119.88 |
-| Dear ImGui offscreen | 119.90 |
 | 128 textured cubes, ordinary draws | 58.09 |
 | 128 textured cubes, instanced draws | 117.41 |
 
-These are 30-second workload measurements, not full-game FPS or perfect frame
-pacing. Console logs confirmed native 2160p119.88 output for the window test;
-offscreen throughput is not displayed FPS. See [performance and methodology](docs/performance.md).
-
-## Examples
-
-| Example | Demonstrates |
-| --- | --- |
-| [Triangle](examples/core33-triangle/README.md) | Minimal EGL/OpenGL application |
-| [Dear ImGui](examples/core33-imgui/README.md) | Widgets, fonts, animated shapes and controller navigation |
-| [NanoVG](examples/core33-nanovg/README.md) | Upstream GL3 vector renderer |
-| [Sokol](examples/core33-sokol/README.md) | Existing OpenGL renderer integration |
-| [Sokol cube](examples/core33-sokol-cube/README.md) | Rotation, depth testing and culling |
-| [Textured cubes benchmark](examples/core33-cubes/README.md) | Ordinary versus instanced drawing |
-| [OpenGL 4.6 compute cubes](examples/core46-compute-cubes/README.md) | Compute-driven SSBO animation and indirect instanced drawing |
-
-After setting up the [build prerequisites](docs/building.md):
-
-```sh
-make source-fetch
-make sdk-gl46
-make imgui-demo
-```
-
-Deploy the generated folder `build/native-app/PPSA99005/dist/PPSA99005` to
-`/data/homebrew/PPSA99005` in an already configured native homebrew environment.
-Launch it as a registered title; do not send the graphics executable to an ELF
-loader. See [SDK integration](docs/consumer-build.md) for your own application.
+A full native app (ProsperoPuzzles) holds 60 FPS at 1080p, 1440p and 4K on SDK 0.5.0.
+These are workload measurements, not general game FPS. See
+[performance and methodology](docs/performance.md).
 
 ## Validation
 
-The OpenGL 4.6 development inventory accounts for **19,714 cases**:
-**15,233 Pass**, **4,480 reviewed `NotSupported`**, and one legal CTS
-compatibility warning. The warning permits two requested multisample counts to
-map to the same native count; it is not a failed result. See the
-[4.6 validation report](docs/gl46-development-validation.md). This is engineering
-validation, not Khronos certification.
+The OpenGL 4.6 development inventory accounts for **19,714 Khronos CTS cases**:
+15,233 pass, 4,480 reviewed `NotSupported` and one legal compatibility warning
+([report](docs/gl46-development-validation.md)). The frozen OpenGL 3.3 campaign
+accounts for 39,544 results: 37,404 pass and 2,140 reviewed `NotSupported`
+([report](docs/validation.md)). Machine-readable evidence is checked by `make test`.
 
-The frozen full campaign accounts for **39,544 results** across four configurations:
+This is engineering validation, not Khronos certification; newer binaries carry
+focused regressions rather than inheriting a full campaign. Hardware results cover
+one firmware-6.02 console. See [supported boundaries](docs/limitations.md).
 
-| Classification | Results |
-| --- | ---: |
-| Pass | **37,404** |
-| Individually reviewed `NotSupported` | **2,140** |
-| Total accounted | **39,544** |
+## Releases
 
-No gaps, duplicates or required-case failures remain in that accepted set.
-**Accounted results are not all passes.** Later runtime changes have focused
-regressions; they do not inherit the full campaign's acceptance.
-
-The historical OpenGL 3.3 [validation report](docs/validation.md) identifies the tested binaries,
-adaptations and exclusions. [Machine-readable evidence](validation/2026-09-07/README.md)
-is included and checked by `make test`; that command does not rerun the PS5 campaign.
-
-## Project Foundation
-
-[PS5 GPU Research](https://github.com/blackbearreloaded/ps5-gpu-research)
-documents the shader toolchain, GPU-visible memory, command submission,
-synchronization and presentation findings that informed this implementation.
-Related video-decoding research is separate from OpenGL validation.
+| SDK | Highlights |
+| --- | --- |
+| [0.5.0](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/v0.5.0) | One SDK for every display: 1080p/1440p/4K at 60/120 Hz chosen at runtime |
+| [0.4.1](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/v0.4.1) | Presentation, native preparation and descriptor publication fixes |
+| [0.3.0](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/v0.3.0) | First OpenGL 4.6 release ([scope](docs/release-0.3.0.md)) |
+| [0.2.0](docs/release-g62.md) | Historical OpenGL 3.3 release |
 
 ## Documentation
 
-- [Display modes](docs/display-modes.md): choosing 1080p, 1440p or 4K at 60 or 120 Hz at runtime.
-
 - [Documentation index](docs/README.md)
-- [SDK 0.3.0 release](docs/release-0.3.0.md)
-- [Building](docs/building.md) and [using the SDK](docs/consumer-build.md)
-- [SDL2 integration](integration/SDL2/README.md)
+- [Using the SDK](docs/consumer-build.md), [display modes](docs/display-modes.md) and [SDL2 integration](integration/SDL2/README.md)
+- [Building](docs/building.md), [testing](docs/testing.md) and [CI releases](docs/ci-releases.md)
 - [Architecture](docs/architecture.md), [lifecycle](docs/lifecycle-reopen.md) and [limitations](docs/limitations.md)
-- [Performance](docs/performance.md), [testing](docs/testing.md) and [validation](docs/validation.md)
+- [Performance](docs/performance.md) and [validation](docs/validation.md)
 - [Contributing](CONTRIBUTING.md) and [third-party notices](THIRD_PARTY_NOTICES.md)
 
 ## Project references
@@ -155,20 +152,17 @@ Related video-decoding research is separate from OpenGL validation.
 | [OpenGNM PSBC](https://github.com/PS4-OpenGNM/opengnm-psbc) / [OpenGNM](https://github.com/PS4-OpenGNM/opengnm) | Shader compiler foundation and reference declarations |
 | [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk) | Public homebrew toolchain and imports |
 | [Native app boilerplate](https://github.com/blackbearreloaded/ps5-native-app-boilerplate) | Native app assembly and folder packaging |
+| [PS5 GPU research](https://github.com/blackbearreloaded/ps5-gpu-research) | Shader toolchain, memory, submission and presentation findings |
 | [Khronos VK-GL-CTS](https://github.com/KhronosGroup/VK-GL-CTS) | Pinned OpenGL test inventory and runner |
-| [SDL2](https://github.com/libsdl-org/SDL) | Window, context and input integration |
-| [Dear ImGui](https://github.com/ocornut/imgui), [NanoVG](https://github.com/memononen/nanovg), [Sokol](https://github.com/floooh/sokol) | Existing renderer examples |
-| [Hardware video decoding research](https://github.com/blackbearreloaded/ps5-hardware-video-decoding-research) | Related presentation/lifecycle research, not OpenGL validation |
+| [SDL2](https://github.com/libsdl-org/SDL), [Dear ImGui](https://github.com/ocornut/imgui), [NanoVG](https://github.com/memononen/nanovg), [Sokol](https://github.com/floooh/sokol) | Integration and renderer examples |
 
 ## Maintainer and license
 
-Maintained by [BlackBearReloaded](https://github.com/blackbearreloaded).
-Project-specific implementation, integration and validation contributions are
-credited in source headers. Upstream projects retain their authorship and licenses.
-
-Project-owned code is [GPL-3.0-or-later](LICENSE). See
-[third-party notices](THIRD_PARTY_NOTICES.md) and [LICENSES](LICENSES) for dependencies.
+Maintained by [BlackBearReloaded](https://github.com/blackbearreloaded). Upstream
+projects retain their authorship and licenses. Project-owned code is
+[GPL-3.0-or-later](LICENSE); see [third-party notices](THIRD_PARTY_NOTICES.md) and
+[LICENSES](LICENSES).
 
 No vendor SDK, firmware modules, device keys, proprietary shader packages,
-console-enablement payloads or raw device logs are distributed here.
-This independent project is not affiliated with Sony or The Khronos Group.
+console-enablement payloads or raw device logs are distributed here. This
+independent project is not affiliated with Sony or The Khronos Group.
