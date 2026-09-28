@@ -77,7 +77,7 @@ Modes are chosen before EGL starts and changed by restarting EGL; a display with
 
 | Example | Demonstrates |
 | --- | --- |
-| [OpenGL 4.6 showcase](examples/core46-showcase/README.md) | 4K, 262k compute particles, GPU culling into `glMultiDrawElementsIndirectCount`, HDR bloom |
+| [OpenGL 4.6 showcase](examples/core46-showcase/README.md) | 4K at 120 FPS: 262k compute particles, GPU culling into `glMultiDrawElementsIndirectCount`, HDR bloom |
 | [OpenGL 4.6 compute cubes](examples/core46-compute-cubes/README.md) | Compute-driven SSBO animation and indirect instanced drawing |
 | [Triangle](examples/core33-triangle/README.md) | Minimal EGL/OpenGL application |
 | [Dear ImGui](examples/core33-imgui/README.md) | Widgets, fonts, animated shapes and controller navigation |
@@ -104,11 +104,12 @@ See [Building](docs/building.md) for prerequisites and build options.
 
 ## Performance
 
-| SDK 0.2.0 workload at 4K | Completed frames/s |
+| Workload at 4K | Completed frames/s |
 | --- | ---: |
-| Dear ImGui window | 119.88 |
-| 128 textured cubes, ordinary draws | 58.09 |
-| 128 textured cubes, instanced draws | 117.41 |
+| OpenGL 4.6 showcase, SDK 0.5.0 (120 Hz display) | 119.9 |
+| Dear ImGui window, SDK 0.2.0 | 119.88 |
+| 128 textured cubes, ordinary draws, SDK 0.2.0 | 58.09 |
+| 128 textured cubes, instanced draws, SDK 0.2.0 | 117.41 |
 
 A full native app (ProsperoPuzzles) holds 60 FPS at 1080p, 1440p and 4K on SDK 0.5.0.
 These are workload measurements, not general game FPS. See

@@ -35,6 +35,9 @@
 #ifndef SHOWCASE_HEIGHT
 #define SHOWCASE_HEIGHT 2160
 #endif
+#ifndef SHOWCASE_REFRESH
+#define SHOWCASE_REFRESH 120 /* falls back to 60 Hz on displays without 120 Hz */
+#endif
 #ifndef SHOWCASE_PARTICLES
 #define SHOWCASE_PARTICLES 262144
 #endif
@@ -56,8 +59,28 @@ enum {
 
 #define TAG "[ps5-gl46-showcase]"
 
+/* Console log output (klog); weak so host previews link without it. */
+int sceKernelDebugOutText(int channel, const char *text) __attribute__((weak));
+
+#include <stdarg.h>
+static void
+say(const char *format, ...)
+{
+   char line[512];
+   va_list arguments;
+   va_start(arguments, format);
+   vsnprintf(line, sizeof(line) - 1, format, arguments);
+   va_end(arguments);
+   strcat(line, "\n");
+   fputs(line, stdout);
+   if (sceKernelDebugOutText)
+      sceKernelDebugOutText(0, line);
+}
+
 /* ps5-opengl 0.5.0 runtime display modes; absent (NULL) in fixed-profile SDKs. */
 EGLBoolean eglSetDisplayModePS5(EGLDisplay, EGLint, EGLint) __attribute__((weak));
+EGLBoolean eglSetDisplayRefreshPS5(EGLDisplay, EGLint) __attribute__((weak));
+EGLBoolean eglGetDisplayModePS5(EGLDisplay, EGLint *, EGLint *, EGLint *) __attribute__((weak));
 
 struct vertex {
    float position[3];
@@ -96,7 +119,7 @@ static int
 check(int condition, const char *stage)
 {
    if (!condition)
-      printf(TAG " FAIL stage=%s gl=%x egl=%x\n", stage, glGetError(), eglGetError());
+      say(TAG " FAIL stage=%s gl=%x egl=%x", stage, glGetError(), eglGetError());
    return condition;
 }
 
@@ -282,13 +305,13 @@ static const char *particle_fs =
    "void main(){float d=dot(v_corner,v_corner);if(d>1.0)discard;"
    "out_color=vec4(v_color*exp(-d*4.0)*0.9,1.0);}\n";
 
-/* Bloom: soft-threshold prefilter, then downsample and tent upsample. */
-static const char *bloom_cs =
+/* Bloom: soft-threshold prefilter, then downsample and tent upsample, each a
+ * fullscreen pass into the next level's framebuffer. */
+static const char *bloom_fs =
    "#version 460 core\n"
-   "layout(local_size_x=8,local_size_y=8) in;"
+   "layout(location=0) out vec4 out_color;"
    "layout(binding=0) uniform sampler2D u_src;layout(binding=1) uniform sampler2D u_add;"
-   "layout(rgba16f,binding=0) writeonly uniform image2D u_dst;"
-   "uniform int u_mode;"
+   "uniform int u_mode;uniform vec2 u_dst_size;"
    "vec3 box(vec2 uv,vec2 px){return(texture(u_src,uv+px*vec2(-1,-1)).rgb+"
    "texture(u_src,uv+px*vec2(1,-1)).rgb+texture(u_src,uv+px*vec2(-1,1)).rgb+"
    "texture(u_src,uv+px*vec2(1,1)).rgb)*0.25;}"
@@ -298,15 +321,14 @@ static const char *bloom_cs =
    "s+=texture(u_src,uv+px).rgb+texture(u_src,uv-px).rgb+"
    "texture(u_src,uv+vec2(px.x,-px.y)).rgb+texture(u_src,uv+vec2(-px.x,px.y)).rgb;"
    "return s/16.0;}"
-   "void main(){ivec2 xy=ivec2(gl_GlobalInvocationID.xy);ivec2 size=imageSize(u_dst);"
-   "if(any(greaterThanEqual(xy,size)))return;vec2 uv=(vec2(xy)+0.5)/vec2(size);"
+   "void main(){vec2 uv=gl_FragCoord.xy/u_dst_size;"
    "vec2 px=1.0/vec2(textureSize(u_src,0));vec3 c;"
    "if(u_mode==0){c=box(uv,px);float b=max(c.r,max(c.g,c.b));"
    "float soft=clamp(b-0.7,0.0,1.0);soft=soft*soft/2.0;"
    "c*=max(soft,b-1.2)/max(b,1e-4);c=min(c,vec3(60.0));}"
    "else if(u_mode==1){c=box(uv,px);}"
    "else{c=tent(uv,px)+texture(u_add,uv).rgb;}"
-   "imageStore(u_dst,xy,vec4(c,1.0));}\n";
+   "out_color=vec4(c,1.0);}\n";
 
 /* Final image: bloom, ACES, vignette, grain and the HUD text. */
 static const char *composite_fs =
@@ -703,7 +725,7 @@ compile(GLenum type, const char *source, const char *name)
       char log[4096] = {0};
       GLsizei length = 0;
       glGetShaderInfoLog(shader, sizeof(log), &length, log);
-      printf(TAG " shader=%s log=%.*s\n", name, length, log);
+      say(TAG " shader=%s log=%.*s", name, length, log);
       glDeleteShader(shader);
       return 0;
    }
@@ -729,7 +751,7 @@ program(const char *name, const char *first, GLenum first_type, const char *seco
       char log[4096] = {0};
       GLsizei length = 0;
       glGetProgramInfoLog(linked, sizeof(log), &length, log);
-      printf(TAG " program=%s link=%.*s\n", name, length, log);
+      say(TAG " program=%s link=%.*s", name, length, log);
       glDeleteProgram(linked);
       linked = 0;
    }
@@ -765,33 +787,34 @@ debug_message(GLenum source, GLenum type, GLuint id, GLenum severity, GLsizei le
    (void)id;
    (void)user;
    if (type == GL_DEBUG_TYPE_ERROR || severity == GL_DEBUG_SEVERITY_HIGH)
-      printf(TAG " gl-debug: %.*s\n", (int)length, message);
+      say(TAG " gl-debug: %.*s", (int)length, message);
 }
 #endif
 
 struct scene {
    GLuint sky, knot, floor, instances, cull, particles_update, particles_draw, bloom, composite;
    GLint model_knot, model_floor, cull_gems, cull_total, particle_dt, bloom_mode, text,
-      hud_scale;
+      hud_scale, bloom_size_uniform;
    GLuint vao, vertex_buffer, index_buffer, frame_buffer, visible_buffer, command_buffer,
       count_buffer, particle_buffer;
    GLuint grid, font, hdr, depth, framebuffer;
    GLuint bloom_down[BLOOM_LEVELS], bloom_up[BLOOM_LEVELS];
+   GLuint bloom_down_fb[BLOOM_LEVELS], bloom_up_fb[BLOOM_LEVELS];
    GLsizei bloom_size[BLOOM_LEVELS][2];
    struct draw_elements_indirect commands[2];
    uint32_t floor_first, floor_base_vertex;
 };
 
 static void
-dispatch_bloom(struct scene *s, GLuint src, GLuint add, GLuint dst, int mode, GLsizei w,
-               GLsizei h)
+bloom_pass(struct scene *s, GLuint src, GLuint add, GLuint dst_fb, int mode, GLsizei w, GLsizei h)
 {
-   glProgramUniform1i(s->bloom, s->bloom_mode, mode);
+   glBindFramebuffer(GL_FRAMEBUFFER, dst_fb);
+   glViewport(0, 0, w, h);
+   glUniform1i(s->bloom_mode, mode);
+   glUniform2f(s->bloom_size_uniform, (float)w, (float)h);
    glBindTextureUnit(0, src);
    glBindTextureUnit(1, add ? add : src);
-   glBindImageTexture(0, dst, 0, GL_FALSE, 0, GL_WRITE_ONLY, GL_RGBA16F);
-   glDispatchCompute((GLuint)(w + 7) / 8, (GLuint)(h + 7) / 8, 1);
-   glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+   glDrawArrays(GL_TRIANGLES, 0, 3);
 }
 
 static int
@@ -804,7 +827,7 @@ setup(struct scene *s, GLsizei width, GLsizei height)
    s->cull = program("cull", cull_cs, GL_COMPUTE_SHADER, NULL);
    s->particles_update = program("particles", particle_cs, GL_COMPUTE_SHADER, NULL);
    s->particles_draw = program("sparks", particle_vs, GL_VERTEX_SHADER, particle_fs);
-   s->bloom = program("bloom", bloom_cs, GL_COMPUTE_SHADER, NULL);
+   s->bloom = program("bloom", fullscreen_vs, GL_VERTEX_SHADER, bloom_fs);
    s->composite = program("composite", fullscreen_vs, GL_VERTEX_SHADER, composite_fs);
    if (!check(s->sky && s->knot && s->floor && s->instances && s->cull &&
                  s->particles_update && s->particles_draw && s->bloom && s->composite,
@@ -816,6 +839,7 @@ setup(struct scene *s, GLsizei width, GLsizei height)
    s->cull_total = glGetUniformLocation(s->cull, "u_total");
    s->particle_dt = glGetUniformLocation(s->particles_update, "u_dt");
    s->bloom_mode = glGetUniformLocation(s->bloom, "u_mode");
+   s->bloom_size_uniform = glGetUniformLocation(s->bloom, "u_dst_size");
    s->text = glGetUniformLocation(s->composite, "u_text");
    s->hud_scale = glGetUniformLocation(s->composite, "u_hud_scale");
 
@@ -894,6 +918,10 @@ setup(struct scene *s, GLsizei width, GLsizei height)
       s->bloom_size[i][1] = h > 1 ? h : 1;
       s->bloom_down[i] = float_texture(s->bloom_size[i][0], s->bloom_size[i][1]);
       s->bloom_up[i] = float_texture(s->bloom_size[i][0], s->bloom_size[i][1]);
+      glCreateFramebuffers(1, &s->bloom_down_fb[i]);
+      glNamedFramebufferTexture(s->bloom_down_fb[i], GL_COLOR_ATTACHMENT0, s->bloom_down[i], 0);
+      glCreateFramebuffers(1, &s->bloom_up_fb[i]);
+      glNamedFramebufferTexture(s->bloom_up_fb[i], GL_COLOR_ATTACHMENT0, s->bloom_up[i], 0);
       w /= 2;
       h /= 2;
    }
@@ -946,9 +974,25 @@ update_frame(struct scene *s, float t, GLsizei width, GLsizei height, unsigned f
    glNamedBufferSubData(s->frame_buffer, 0, sizeof(block), &block);
 }
 
+/* CPU time spent issuing each stage (synchronous driver work shows up here). */
+enum { STAGE_COMPUTE, STAGE_SCENE, STAGE_BLOOM, STAGE_COMPOSITE, STAGE_PRESENT, STAGE_COUNT };
+static const char *const stage_names[STAGE_COUNT] = {"compute", "scene", "bloom", "composite",
+                                                     "present"};
+static double stage_ms[STAGE_COUNT];
+static int64_t stage_mark;
+
+static void
+stage_end(int stage)
+{
+   const int64_t now = now_ns();
+   stage_ms[stage] += (double)(now - stage_mark) / 1e6;
+   stage_mark = now;
+}
+
 static void
 render(struct scene *s, float dt, GLsizei width, GLsizei height)
 {
+   stage_mark = now_ns();
    static const float identity[16] = {1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1};
 
    /* GPU work first: particles and instance culling. */
@@ -959,6 +1003,7 @@ render(struct scene *s, float dt, GLsizei width, GLsizei height)
    glUseProgram(s->cull);
    glDispatchCompute((INSTANCES + 63) / 64, 1, 1);
    glMemoryBarrier(GL_SHADER_STORAGE_BARRIER_BIT | GL_COMMAND_BARRIER_BIT);
+   stage_end(STAGE_COMPUTE);
 
    /* HDR scene. */
    glBindFramebuffer(GL_FRAMEBUFFER, s->framebuffer);
@@ -997,17 +1042,22 @@ render(struct scene *s, float dt, GLsizei width, GLsizei height)
    glDepthMask(GL_TRUE);
    glDisable(GL_BLEND);
    glBindFramebuffer(GL_FRAMEBUFFER, 0);
+   stage_end(STAGE_SCENE);
 
-   /* Bloom chain in compute: prefilter, downsample, tent upsample. */
+   /* Bloom chain: prefilter, downsample, tent upsample (fullscreen passes). */
+   glDisable(GL_DEPTH_TEST);
    glUseProgram(s->bloom);
-   dispatch_bloom(s, s->hdr, 0, s->bloom_down[0], 0, s->bloom_size[0][0], s->bloom_size[0][1]);
+   bloom_pass(s, s->hdr, 0, s->bloom_down_fb[0], 0, s->bloom_size[0][0], s->bloom_size[0][1]);
    for (int i = 1; i < BLOOM_LEVELS; ++i)
-      dispatch_bloom(s, s->bloom_down[i - 1], 0, s->bloom_down[i], 1, s->bloom_size[i][0],
-                     s->bloom_size[i][1]);
+      bloom_pass(s, s->bloom_down[i - 1], 0, s->bloom_down_fb[i], 1, s->bloom_size[i][0],
+                 s->bloom_size[i][1]);
    for (int i = BLOOM_LEVELS - 2; i >= 0; --i)
-      dispatch_bloom(s, i == BLOOM_LEVELS - 2 ? s->bloom_down[i + 1] : s->bloom_up[i + 1],
-                     s->bloom_down[i], s->bloom_up[i], 2, s->bloom_size[i][0],
-                     s->bloom_size[i][1]);
+      bloom_pass(s, i == BLOOM_LEVELS - 2 ? s->bloom_down[i + 1] : s->bloom_up[i + 1],
+                 s->bloom_down[i], s->bloom_up_fb[i], 2, s->bloom_size[i][0],
+                 s->bloom_size[i][1]);
+   glBindFramebuffer(GL_FRAMEBUFFER, 0);
+
+   stage_end(STAGE_BLOOM);
 
    /* Composite to the window. */
    glViewport(0, 0, width, height);
@@ -1017,6 +1067,7 @@ render(struct scene *s, float dt, GLsizei width, GLsizei height)
    glBindTextureUnit(1, s->bloom_up[0]);
    glBindTextureUnit(2, s->font);
    glDrawArrays(GL_TRIANGLES, 0, 3);
+   stage_end(STAGE_COMPOSITE);
 }
 
 int
@@ -1048,8 +1099,10 @@ main(void)
    /* One SDK for every display: ask for 4K before EGL starts. */
    const int display_modes = eglSetDisplayModePS5 != NULL;
    if (display_modes && !eglSetDisplayModePS5(display, SHOWCASE_WIDTH, SHOWCASE_HEIGHT))
-      printf(TAG " display mode %dx%d unavailable, using the default\n", SHOWCASE_WIDTH,
+      say(TAG " display mode %dx%d unavailable, using the default", SHOWCASE_WIDTH,
              SHOWCASE_HEIGHT);
+   if (eglSetDisplayRefreshPS5 && !eglSetDisplayRefreshPS5(display, SHOWCASE_REFRESH))
+      say(TAG " refresh %d Hz unavailable, using the default", SHOWCASE_REFRESH);
    if (!check(display != EGL_NO_DISPLAY && eglInitialize(display, NULL, NULL) &&
                  eglBindAPI(EGL_OPENGL_API) &&
                  eglChooseConfig(display, config_attributes, &config, 1, &config_count) &&
@@ -1080,7 +1133,7 @@ main(void)
    if (!setup(&s, width, height))
       return 1;
 
-   printf(TAG " ready GL=%s GLSL=%s size=%dx%d particles=%u instances=%u display_modes=%d\n",
+   say(TAG " ready GL=%s GLSL=%s size=%dx%d particles=%u instances=%u display_modes=%d",
           glGetString(GL_VERSION), glGetString(GL_SHADING_LANGUAGE_VERSION), width, height,
           PARTICLES, INSTANCES, display_modes);
    char line[80];
@@ -1096,7 +1149,8 @@ main(void)
 
    const int64_t start = now_ns();
    int64_t previous = start, window_start = start, log_start = start;
-   unsigned frames = 0, window_frames = 0;
+   unsigned frames = 0, window_frames = 0, profile_frames = 0;
+   int settled = 0, refresh_hz = 60;
    for (;;) {
       const int64_t now = now_ns();
       const float t = (float)(now - start) / 1e9f;
@@ -1106,19 +1160,30 @@ main(void)
          dt = 1.0f / 60.0f;
       update_frame(&s, t, width, height, frames);
       render(&s, dt, width, height);
+      stage_mark = now_ns();
       if (!check(eglSwapBuffers(display, surface), "present"))
          break;
+      stage_end(STAGE_PRESENT);
       ++frames;
       ++window_frames;
       if (now - window_start >= 500000000) {
          const double fps = window_frames * 1e9 / (double)(now - window_start);
-         snprintf(line, sizeof(line), "%dX%d  %.0f FPS  %.1f MS", width, height, fps,
-                  1000.0 / fps);
+         snprintf(line, sizeof(line), "%dX%d  %d HZ  %.0f FPS  %.1f MS", width, height,
+                  refresh_hz, fps, 1000.0 / fps);
          set_line(text, 1, line);
          glProgramUniform1uiv(s.composite, s.text, TEXT_LINES * TEXT_COLUMNS, text);
-         if (now - log_start >= 5000000000LL) {
-            printf(TAG " frames=%u fps=%.2f size=%dx%d gl=%x\n", frames, fps, width, height,
-                   glGetError());
+         if (now - log_start >= 2000000000LL) {
+            const unsigned counted = frames - profile_frames;
+            char profile[256];
+            int used = 0;
+            for (int i = 0; i < STAGE_COUNT; ++i) {
+               used += snprintf(profile + used, sizeof(profile) - (size_t)used, " %s=%.2f",
+                                stage_names[i], stage_ms[i] / (counted ? counted : 1));
+               stage_ms[i] = 0.0;
+            }
+            say(TAG " frames=%u fps=%.2f size=%dx%d gl=%x cpu-ms%s", frames, fps, width, height,
+                glGetError(), profile);
+            profile_frames = frames;
             log_start = now;
          }
          window_start = now;
@@ -1139,6 +1204,16 @@ main(void)
          break;
       }
 #endif
+      if (frames == 2 && eglGetDisplayModePS5) {
+         EGLint mode_w = 0, mode_h = 0, mode_hz = 0;
+         eglGetDisplayModePS5(display, &mode_w, &mode_h, &mode_hz);
+         say(TAG " display %dx%d at %d Hz", mode_w, mode_h, mode_hz);
+         refresh_hz = mode_hz;
+      }
+      if (!settled && t >= 20.0f) {
+         settled = 1; /* marks a warmed-up measurement window in the log */
+         say(TAG " settled frames=%u", frames);
+      }
       if (SHOWCASE_SECONDS > 0 && t >= SHOWCASE_SECONDS) {
          ok = glGetError() == GL_NO_ERROR;
          break;
@@ -1148,6 +1223,6 @@ main(void)
    eglDestroySurface(display, surface);
    eglDestroyContext(display, context);
    eglTerminate(display);
-   printf(TAG " frames=%u result=%s\n", frames, ok ? "PASS" : "FAIL");
+   say(TAG " frames=%u result=%s", frames, ok ? "PASS" : "FAIL");
    return ok ? 0 : 1;
 }
