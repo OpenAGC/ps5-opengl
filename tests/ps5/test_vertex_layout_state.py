@@ -29,6 +29,7 @@ struct ps5_vertex_layout { unsigned count; PsbcVertexAttribute attributes[16]; }
 struct nir { struct { uint64_t inputs_read; } info; };
 struct ps5_shader { struct nir *nir; };
 static bool ps5_vertex_format(unsigned f,unsigned *out) { *out=f; return f==1; }
+static unsigned ps5_vertex_format_alignment(unsigned f) { return f >= PIPE_FORMAT_R64_FLOAT && f <= PIPE_FORMAT_R64G64B64A64_FLOAT ? 8 : 4; }
 ''' + function + r'''
 int main(void) {
     struct nir n={.info.inputs_read=BITFIELD64_BIT(16)};

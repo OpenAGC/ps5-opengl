@@ -14,7 +14,7 @@ class NativeLogTest(unittest.TestCase):
     def test_routine_trace_policy(self):
         source = (Path(__file__).resolve().parents[1] / "src/gallium/ps5/ps5_screen.c").read_text()
         blocks = re.findall(r"#ifdef AGC_RUNTIME_DIAGNOSTICS\n.*?#endif", source, re.S)
-        self.assertEqual(len(blocks), 5)
+        self.assertEqual(len(blocks), 7)
         for block in blocks:
             self.assertGreaterEqual(block.count("printf("), 1)
             self.assertNotIn("ps5_flush_gpu_data", block)

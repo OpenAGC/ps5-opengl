@@ -49,10 +49,10 @@ jobs:
           SDK_DIR="$RUNNER_TEMP/payload/ps5-payload-sdk"
           "$SDK_DIR/bin/prospero-clang" --version
           echo "PS5_PAYLOAD_SDK=$SDK_DIR" >> "$GITHUB_ENV"
-      - name: Host regressions and published evidence integrity
-        run: make test
       - name: Fetch pinned graphics and example sources
         run: python3 tools/fetch-sources.py --sokol-samples
+      - name: Host regressions and published evidence integrity
+        run: make test
       - name: CPU and software-OpenGL staging regressions (no console)
         timeout-minutes: 10
         env:

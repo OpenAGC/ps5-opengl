@@ -94,6 +94,8 @@ static bool util_format_is_pure_uint(unsigned f) { return f == COLOR_UINT; }
 static bool util_format_is_pure_sint(unsigned f) { (void)f; return false; }
 static bool util_format_is_pure_integer(unsigned f) { return f == COLOR_UINT; }
 static bool ps5_render_condition_passes(struct ps5_context *p) { (void)p; return true; }
+/* The GPU color path needs a console; the CPU fallback is under test. */
+static bool ps5_blit_gpu_color(struct ps5_context *p, const struct pipe_blit_info *i) { (void)p; (void)i; return false; }
 static void util_format_unpack_rgba(unsigned f, unsigned *out, const void *in, unsigned n) {
     assert((f == COLOR || f == COLOR_UINT) && n == 1);
     union pipe_color_union c;

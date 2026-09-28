@@ -17,6 +17,7 @@ code=r"""
 #define PS5_BATCH_RESOURCE_COUNT 80
 #define BITFIELD_BIT(i) (1u<<(i))
 #define MIN2(a,b) ((a)<(b)?(a):(b))
+#define ARRAY_SIZE(x) (sizeof(x)/sizeof((x)[0]))
 struct pipe_resource { unsigned refs; };
 struct nir { struct { unsigned num_ubos; bool first_ubo_is_default_ubo; } info; };
 struct ps5_shader { struct nir *nir; };

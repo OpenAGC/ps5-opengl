@@ -4,7 +4,7 @@ from pathlib import Path
 import subprocess
 import tempfile
 s=(Path(__file__).resolve().parents[2]/'src/gallium/ps5/ps5_screen.c').read_text()
-a=s.index('static void\nps5_flush_gpu_data(');flush=s[a:s.index('static bool\nps5_texel_buffer_descriptor(',a)]
+a=s.index('static void\nps5_flush_gpu_data(');flush=s[a:s.index('\n}\n',a)+3]
 mesa=Path(__file__).resolve().parents[2]/'third_party/mesa-26.2.0/src/util'
 cache=(mesa/'cache_ops_x86.c').read_text()
 cache='\n'.join(line for line in cache.splitlines() if not line.startswith('#include'))
@@ -13,12 +13,12 @@ opt=opt[opt.index('void\nutil_clflushopt_range('):]
 cache=(opt+cache).replace('__builtin_ia32_clflushopt(p);','optimized++; lines[line_count++] = (uintptr_t)p;').replace('__builtin_ia32_clflush(p);','lines[line_count++] = (uintptr_t)p;').replace('__builtin_ia32_clflush((char *)start + size - 1);','lines[line_count++] = ((uintptr_t)start+size-1)&~(uintptr_t)63;').replace('__builtin_ia32_mfence();','++fences;')
 a=s.index('      uint32_t binding_records[PIPE_MAX_ATTRIBS] = {0};')
 a=s.index('         if (element->instance_divisor) {',a)
-b=s.index('         binding_mask |=',a)
+b=s.index('         binding_begin[element->vertex_buffer_index] =',a)
 calc=s[a:b]
 runtime=(Path(__file__).resolve().parents[2]/'src/platform/ps5_agc_native_runtime.c').read_text()
-a=runtime.index('static void flush_gpu_data(const void *address, size_t bytes)\n{')
+a=runtime.index('static void (flush_gpu_data)(const void *address, size_t bytes)\n{')
 native=runtime[a:runtime.index('\n}',a)+2]
-assert '(const void *)vertex_address, binding_bytes[binding]);' in s
+assert '(const void *)(vertex_address + binding_begin[binding]),\n            binding_bytes[binding] - binding_begin[binding]);' in s
 assert 'index_resource->data + index_offset,\n         (size_t)draws[0].count * info->index_size);' in s
 code=r'''
 #include <assert.h>

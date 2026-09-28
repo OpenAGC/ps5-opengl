@@ -20,11 +20,11 @@ assert '++ps5_texture_publication_epoch;' in code
 assert code.count('resource->external_cpu_access = true;') == 3
 assert 'ps5_deferred_batch_overlaps(&ps5_deferred, buffer)' in code
 assert '&ps5_inflight[(ps5_inflight_head + i) % PS5_INFLIGHT_BATCH_CAPACITY], buffer)' in code
-assert 'memset(batch, 0, sizeof(*batch));' in code
+assert 'memset(batch, 0, offsetof(struct ps5_deferred_batch, slots));' in code
 assert 'slot == 1 && !merged_geometry ? flush_cache : NULL, 2 + unit' in code
 assert 'vertex_resource->external_cpu_access ? NULL : flush_cache,' in code
 assert 'index_resource->external_cpu_access ? NULL : flush_cache,' in code
-assert 'user_data_count, vertex_metadata, NULL)' in code
+assert 'user_data_count, vertex_metadata, NULL, NULL)' in code
 assert 'context->sampler_views[stage][unit]->texture);' in code
 assert code.count('#ifdef AGC_RUNTIME_DIAGNOSTICS') >= 3
 assert '#ifdef AGC_RUNTIME_DIAGNOSTICS\n      if (sampler->compare_mode)' in code
