@@ -92,20 +92,22 @@ console qualification.
 2. Inspect host/compiler checks, all 344 Core exports, three relocated consumer
    links, archive checksums and the recorded build configuration.
 3. When ready, push a new version tag beginning with `v`. The same workflow builds
-   from that tag and creates a draft release for maintainer review.
-4. Review the draft and its validation wording before publishing it. If console
-   validation is performed, retain receipts for these exact bytes and identify
-   that scope explicitly. Do not attach an older SDK's acceptance to a rebuild.
+   from that tag and publishes the release, marked Latest. If a release for the
+   tag already exists (for example one published from a local build of the same
+   tag), the workflow leaves it unchanged.
+4. If console validation is performed, retain receipts for these exact bytes and
+   identify that scope explicitly. Do not attach an older SDK's acceptance to a
+   rebuild.
 
 Manual runs only create Actions artifacts (seven-day retention); they do not
-create tags or releases. Tag builds attach the archive and checksum to the draft.
+create tags or releases. Tag builds attach the archive and checksum to the published release.
 Existing releases/assets are never overwritten. Repository visibility is not
 changed by this workflow. Access follows the repository's permissions.
 
 The build uses pinned public source revisions, the hash-verified payload SDK
 v0.42, LLVM 21 from its signed upstream Ubuntu repository, and versioned Python
 build tools. GitHub Actions are commit-pinned; build jobs have read-only repository
-permission and no console access. Only the separate draft-release job can write
+permission and no console access. Only the separate release job can write
 release assets. The older sample-validated bundle remains a separate frozen
 artifact, documented in `docs/sdk-bundle.md`.
 
