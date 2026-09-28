@@ -59,6 +59,16 @@ Every GL object belongs to the context, so a mode change is a full EGL restart:
 Leaving a 120 Hz mode waits five seconds before the next presenter opens (the
 [lifecycle safeguard](lifecycle-reopen.md)); 60 Hz restarts do not wait.
 
+## Application metadata for 120 Hz
+
+The console grants 120 Hz output only to titles that declare it: set bits
+`0x80040` in `attribute3` of the title's `sce_sys/param.json`. Without them,
+`sceVideoOutConfigureOutput` refuses the high-refresh mode and presentation stays
+at 60 Hz (`eglGetDisplayModePS5` reports 60). `tools/native-display-metadata.py
+--fps 120 <param.json>` sets the bits, and the example packaging does so
+automatically for runtime display-mode SDKs. Declaring the capability does not
+force 120 Hz; the app still chooses its rate with `eglSetDisplayRefreshPS5`.
+
 ## Capacity
 
 Display buffers and arena offsets stay at the 2160p size in every mode, so the

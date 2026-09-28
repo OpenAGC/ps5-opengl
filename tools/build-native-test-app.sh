@@ -120,7 +120,10 @@ else
 fi
 test -s "$gate_object_path"
 display_fps=${PS5_SCANOUT_FPS:-60}
-if [[ -n ${prefix:-} && -f $prefix/include/ps5_opengl_display.h ]]; then
+if [[ -n ${prefix:-} && -f $prefix/include/ps5_opengl_display_modes.h ]]; then
+    # Runtime display modes can switch to 120 Hz: declare the capability.
+    display_fps=120
+elif [[ -n ${prefix:-} && -f $prefix/include/ps5_opengl_display.h ]]; then
     display_fps=$(python3 -c 'import importlib, sys; sys.path.insert(0, sys.argv[1]); from pathlib import Path; print(importlib.import_module("check-sdk-consumers").display_profile(Path(sys.argv[2]))["fps"])' "$root/tools" "$prefix")
 elif [[ ${PS5_IMGUI_WINDOW_TARGET:-60} -gt 60 ]]; then
     display_fps=120 # Legacy high-refresh SDKs have no profile header.

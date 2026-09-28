@@ -19,14 +19,23 @@ def with_display_profile(metadata, fps):
     return dict(metadata, attribute3=(flags & ~HFR_FLAGS) | (HFR_FLAGS if fps == 120 else 0))
 
 
+def sdk_presentation_rate(prefix):
+    """Highest rate an app built on the SDK may present at.
+
+    A runtime display-mode SDK starts at 60 Hz but can switch to 120 Hz, and the
+    console only grants 120 Hz output to titles declaring the capability."""
+    if (prefix / "include/ps5_opengl_display_modes.h").is_file():
+        return 120
+    return importlib.import_module("check-sdk-consumers").display_profile(prefix)["fps"]
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("metadata", type=Path)
     parser.add_argument("--fps", type=int, choices=(60, 120), default=60)
     parser.add_argument("--sdk-prefix", type=Path)
     args = parser.parse_args()
-    fps = (importlib.import_module("check-sdk-consumers").display_profile(args.sdk_prefix)["fps"]
-           if args.sdk_prefix else args.fps)
+    fps = sdk_presentation_rate(args.sdk_prefix) if args.sdk_prefix else args.fps
     metadata = with_display_profile(json.loads(args.metadata.read_text()), fps)
     args.metadata.write_text(json.dumps(metadata, indent=2) + "\n")
 
