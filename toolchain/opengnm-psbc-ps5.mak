@@ -46,8 +46,9 @@ SHARED_FLAGS = \
 	-DBLAKE3_NO_AVX2 \
 	-DBLAKE3_NO_AVX512
 
-CC = $(PS5_PAYLOAD_SDK)/bin/prospero-clang
-CXX = $(PS5_PAYLOAD_SDK)/bin/prospero-clang++
+# CCACHE is an optional compiler launcher (set by the build scripts).
+CC = $(CCACHE) $(PS5_PAYLOAD_SDK)/bin/prospero-clang
+CXX = $(CCACHE) $(PS5_PAYLOAD_SDK)/bin/prospero-clang++
 AR = $(PS5_PAYLOAD_SDK)/bin/prospero-ar
 PYTHON = python3
 

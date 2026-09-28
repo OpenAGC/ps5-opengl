@@ -8,6 +8,13 @@ set -euo pipefail
 project_dir=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 source_dir="$project_dir/third_party/opengnm-psbc"
 makefile="$project_dir/toolchain/Makefile.opengnm-psbc-ps5"
+
+# Use every core and, when installed, ccache (PS5_CCACHE=0 disables it).
+jobs=${PSBC_JOBS:-$(nproc)}
+ccache_launcher=
+if [ "${PS5_CCACHE:-1}" != 0 ] && command -v ccache >/dev/null 2>&1; then
+    ccache_launcher=ccache
+fi
 mode=${1:-}
 case "$mode" in ''|--if-needed) ;; *) echo 'usage: build-opengnm-psbc-ps5.sh [--if-needed]' >&2; exit 2;; esac
 python3 "$project_dir/tools/fetch-sources.py" --verify-psbc
@@ -35,7 +42,7 @@ fi
 # This standalone Makefile has no generated-header dependency graph.  Force the
 # target objects so the PS5 archive cannot silently retain an older NIR/ACO ABI
 # or lowering after compiler sources change.
-make -C "$source_dir" -f "$makefile" -B -j"${PSBC_JOBS:-8}" \
-    PSBC_DIAGNOSTIC="$diagnostic" libpsbc
+make -C "$source_dir" -f "$makefile" -B -j"$jobs" \
+    PSBC_DIAGNOSTIC="$diagnostic" CCACHE="$ccache_launcher" libpsbc
 fingerprint > "$stamp.tmp"
 mv "$stamp.tmp" "$stamp"

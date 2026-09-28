@@ -48,14 +48,18 @@ SHARED_FLAGS=\
 	-DBLAKE3_NO_AVX2 \
 	-DBLAKE3_NO_AVX512
 
-CC=gcc
-CXX=g++
+# CCACHE is an optional compiler launcher (set by the build scripts).
+CC=$(CCACHE) gcc
+CXX=$(CCACHE) g++
 LD=g++
 AR=ar
 PYTHON=python3
 
+# GCC 14+ makes incompatible pointer types an error; upstream PSBC relies on
+# the older warning.
 CFLAGS=-std=gnu11 -O2 -g -Wall $(SHARED_FLAGS) \
-	-Wno-unused-function -Wno-unused-variable
+	-Wno-unused-function -Wno-unused-variable \
+	-Wno-error=incompatible-pointer-types
 CXXFLAGS=-std=c++17 -O2 -g -Wall $(SHARED_FLAGS) \
 	-Wno-unused-function -Wno-unused-variable
 LDFLAGS=-pthread -lm

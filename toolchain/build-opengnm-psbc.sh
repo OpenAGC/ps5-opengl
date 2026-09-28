@@ -10,6 +10,13 @@ third_party_dir="$project_dir/third_party"
 psbc_dir="$third_party_dir/opengnm-psbc"
 config_file="../../toolchain/opengnm-psbc-host.mak"
 
+# Use every core and, when installed, ccache (PS5_CCACHE=0 disables it).
+jobs=${PSBC_JOBS:-$(nproc)}
+ccache_launcher=
+if [ "${PS5_CCACHE:-1}" != 0 ] && command -v ccache >/dev/null 2>&1; then
+    ccache_launcher=ccache
+fi
+
 check_revision() {
     repo_dir=$1
     expected=$2
@@ -61,7 +68,7 @@ python3 src/amd/common/gfx10_format_table.py \
 
 # Upstream enumerates C/C++ sources with wildcard at Makefile parse time.
 # Materialize generated sources before that enumeration on a fresh checkout.
-make -j"${PSBC_JOBS:-8}" CONFIG="$config_file" generated
-make -B -j"${PSBC_JOBS:-8}" CONFIG="$config_file"
+make -j"$jobs" CONFIG="$config_file" CCACHE="$ccache_launcher" generated
+make -B -j"$jobs" CONFIG="$config_file" CCACHE="$ccache_launcher"
 
 echo "Host compiler built; run make test-compiler for the current PS5 NIR/ACO contracts."

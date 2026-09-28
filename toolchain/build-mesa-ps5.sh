@@ -69,6 +69,17 @@ meson_args="
 -Dgallium-rusticl=false
 "
 
+# Meson adds ccache only for compilers it finds itself, not cross-file ones.
+if [ "${PS5_CCACHE:-1}" != 0 ] && command -v ccache >/dev/null 2>&1; then
+    sdk_bin=$(cd -- "$(dirname -- "$cross_file")/../bin" && pwd)
+    mkdir -p "$build_dir"
+    ccache_cross="$project_dir/build/mesa-ps5-ccache.ini"
+    printf "[binaries]\nc = ['ccache', '%s/prospero-clang']\ncpp = ['ccache', '%s/prospero-clang++']\n" \
+        "$sdk_bin" "$sdk_bin" > "$ccache_cross"
+    meson_args="$meson_args
+--cross-file=$ccache_cross"
+fi
+
 if [ -f "$build_dir/build.ninja" ]; then
     # Word splitting here is intentional: every line is one Meson argument.
     # shellcheck disable=SC2086

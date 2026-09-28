@@ -232,7 +232,7 @@ $(PS5_OPENGL_BUILD)/libSceAgcDriver.so: \
 # Ninja owns Mesa's source/header graph; checking archive existence is not enough.
 .PHONY: ps5-opengl-mesa
 ps5-opengl-mesa:
-	ninja -j8 -C "$(PS5_OPENGL_MESA_BUILD)" $(patsubst $(PS5_OPENGL_MESA_BUILD)/%,%,$(PS5_OPENGL_MESA_LIBS) $(PS5_OPENGL_GLAPI_BRIDGE))
+	ninja -C "$(PS5_OPENGL_MESA_BUILD)" $(patsubst $(PS5_OPENGL_MESA_BUILD)/%,%,$(PS5_OPENGL_MESA_LIBS) $(PS5_OPENGL_GLAPI_BRIDGE))
 
 $(PS5_OPENGL_RUNTIME_OBJECTS): | ps5-opengl-mesa
 
