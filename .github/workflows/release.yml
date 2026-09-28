@@ -149,7 +149,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 7
 
-  draft-release:
+  release:
     if: github.event_name == 'push' && startsWith(github.ref, 'refs/tags/v')
     needs: sdk
     runs-on: ubuntu-24.04
@@ -161,13 +161,18 @@ jobs:
         with:
           name: ps5-opengl-4.6-sdk
           path: release
-      - name: Create draft OpenGL 4.6 release without replacing existing releases
+      - name: Publish OpenGL 4.6 release without replacing existing releases
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd release
           sha256sum --check ./*.tar.gz.sha256
+          # A release published for this tag already (e.g. from a local build) is kept as is.
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "Release $GITHUB_REF_NAME already exists; leaving it unchanged."
+            exit 0
+          fi
           gh release create "$GITHUB_REF_NAME" ./*.tar.gz ./*.tar.gz.sha256 \
-            --repo "$GITHUB_REPOSITORY" --verify-tag --draft --latest=false \
+            --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
             --title "PS5 OpenGL 4.6 SDK ${GITHUB_REF_NAME#v}" \
-            --notes 'Experimental OpenGL 4.6 Core / GLSL 4.60 SDK, built from this tag. Includes all 657 OpenGL 4.6 Core entry points, compiled libraries, headers, source examples/dependencies, licenses, checksums and provenance. Host tests and relocated Make/pkg-config/CMake links passed. These freshly built binaries have NOT been validated on a PS5; hardware, CTS and performance results belong to their recorded binary identities. Review the bundled README before publishing.'
+            --notes 'Experimental OpenGL 4.6 Core / GLSL 4.60 SDK, built from this tag. Includes all 657 OpenGL 4.6 Core entry points, compiled libraries, headers, source examples/dependencies, licenses, checksums and provenance. Host tests and relocated Make/pkg-config/CMake links passed. These freshly built binaries have NOT been validated on a PS5; hardware, CTS and performance results belong to their recorded binary identities.'
