@@ -1,5 +1,11 @@
 # OpenGL 4.6 showcase
 
+The project's demo app. Every SDK release attaches it, built against that SDK, as
+`ps5-opengl-showcase-<version>-PPSA99005.zip`: extract it and upload the
+`PPSA99005` folder to `/data/homebrew/`. It appears on the home screen as
+**PS5 OpenGL Showcase** with its own icon, backgrounds and selection music
+(`sce_sys/` in this directory).
+
 A GPU-driven scene that exercises the modern OpenGL 4.6 feature set at
 **3840x2160 and 120 FPS** on a 120 Hz display (119.9 FPS measured on PS5 with
 SDK 0.5.0), using only public OpenGL/EGL interfaces:

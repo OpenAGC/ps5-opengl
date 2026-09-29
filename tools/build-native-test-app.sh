@@ -182,6 +182,23 @@ for headers in EGL GL KHR; do
 done
 cp "$root/native-app/param.json" "$app/sce_sys/param.json"
 python3 "$root/tools/native-display-metadata.py" "$app/sce_sys/param.json" --fps "$display_fps"
+# The showcase is the project's demo title: its own artwork, selection music and name.
+if [[ $gate_object == egl_public_gl46_showcase.o ]]; then
+    presentation="$root/examples/core46-showcase/sce_sys"
+    for asset in icon0.png pic0.dds pic1.dds snd0.at9; do
+        install -m 0644 "$presentation/$asset" "$app/sce_sys/$asset"
+    done
+    python3 - "$app/sce_sys/param.json" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+metadata = json.loads(path.read_text())
+metadata["localizedParameters"]["en-US"]["titleName"] = "PS5 OpenGL Showcase"
+path.write_text(json.dumps(metadata, indent=2) + "\n")
+PY
+fi
 
 group="$app/vendor/libps5_opengl_group.a"
 {
