@@ -21,7 +21,7 @@ permissions:
 jobs:
   sdk:
     runs-on: ubuntu-24.04
-    timeout-minutes: 90
+    timeout-minutes: 120
     env:
       LLVM_CONFIG: /usr/bin/llvm-config-21
       CCACHE_DIR: ${{ github.workspace }}/.ccache
@@ -123,6 +123,7 @@ jobs:
           VERSION="ci-${GITHUB_SHA:0:12}-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}"
           if [[ "$GITHUB_REF_TYPE" == tag ]]; then VERSION="${GITHUB_REF_NAME#v}"; fi
           if [[ "$SDK_PROFILE" != dynamic ]]; then VERSION="$VERSION-$SDK_PROFILE"; fi
+          echo "SDK_VERSION=$VERSION" >> "$GITHUB_ENV"
           python3 tools/build-sdk-bundle.py --ci-version "$VERSION" --ci-profile "$SDK_PROFILE" \
             --sdk "$RUNNER_TEMP/relocated-sdk" --source-commit "$(git rev-parse HEAD)" \
             --consumer-report "$RUNNER_TEMP/consumer-checks/summary.json" \
@@ -134,12 +135,30 @@ jobs:
           tar -xzf ./*.tar.gz -C unpacked
           cd unpacked/ps5-opengl-sdk-*
           sha256sum --check SHA256SUMS
+      - name: Build the showcase demo app (PPSA99005) against this SDK
+        run: |
+          revision=$(python3 -c 'import json; print(json.load(open("dependencies.json"))["native_boilerplate"]["revision"])')
+          git clone --quiet https://github.com/blackbearreloaded/ps5-native-app-boilerplate.git "$RUNNER_TEMP/boilerplate"
+          git -C "$RUNNER_TEMP/boilerplate" checkout --quiet "$revision"
+          (cd "$RUNNER_TEMP/boilerplate" && bash tools/setup-native-dependencies.sh)
+          PS5_OPENGL_PREFIX="$RUNNER_TEMP/relocated-sdk" \
+            PS5_NATIVE_APP_TEMPLATE="$RUNNER_TEMP/boilerplate" make showcase
+          name="ps5-opengl-showcase-$SDK_VERSION-PPSA99005"
+          (cd build/native-app/PPSA99005/dist &&
+            python3 -m zipfile -c "$RUNNER_TEMP/release/$name.zip" PPSA99005)
+          cd "$RUNNER_TEMP/release"
+          python3 -m zipfile -t "$name.zip"
+          unzip -Z1 "$name.zip" | grep -Fx PPSA99005/eboot.bin
+          unzip -Z1 "$name.zip" | grep -Fx PPSA99005/sce_sys/snd0.at9
+          sha256sum "$name.zip" > "$name.zip.sha256"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ps5-opengl-4.6-sdk
           path: |
             ${{ runner.temp }}/release/*.tar.gz
             ${{ runner.temp }}/release/*.tar.gz.sha256
+            ${{ runner.temp }}/release/*.zip
+            ${{ runner.temp }}/release/*.zip.sha256
           if-no-files-found: error
           compression-level: 0
           retention-days: 7
@@ -171,13 +190,15 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           cd release
-          sha256sum --check ./*.tar.gz.sha256
-          # A release published for this tag already (e.g. from a local build) is kept as is.
+          sha256sum --check ./*.tar.gz.sha256 ./*.zip.sha256
+          # A release published for this tag already (e.g. from a local build)
+          # keeps its SDK; only the showcase demo app is added or refreshed.
           if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-            echo "Release $GITHUB_REF_NAME already exists; leaving it unchanged."
+            gh release upload "$GITHUB_REF_NAME" ./*.zip ./*.zip.sha256 --clobber \
+              --repo "$GITHUB_REPOSITORY"
             exit 0
           fi
-          gh release create "$GITHUB_REF_NAME" ./*.tar.gz ./*.tar.gz.sha256 \
+          gh release create "$GITHUB_REF_NAME" ./*.tar.gz ./*.tar.gz.sha256 ./*.zip ./*.zip.sha256 \
             --repo "$GITHUB_REPOSITORY" --verify-tag --latest \
             --title "PS5 OpenGL 4.6 SDK ${GITHUB_REF_NAME#v}" \
-            --notes 'Experimental OpenGL 4.6 Core / GLSL 4.60 SDK, built from this tag. Includes all 657 OpenGL 4.6 Core entry points, compiled libraries, headers, source examples/dependencies, licenses, checksums and provenance. Host tests and relocated Make/pkg-config/CMake links passed. These freshly built binaries have NOT been validated on a PS5; hardware, CTS and performance results belong to their recorded binary identities.'
+            --notes 'Experimental OpenGL 4.6 Core / GLSL 4.60 SDK, built from this tag. Includes all 657 OpenGL 4.6 Core entry points, compiled libraries, headers, source examples/dependencies, licenses, checksums and provenance. Host tests and relocated Make/pkg-config/CMake links passed. These freshly built binaries have NOT been validated on a PS5; hardware, CTS and performance results belong to their recorded binary identities. The ps5-opengl-showcase zip is the OpenGL 4.6 showcase demo app (PPSA99005) built against this SDK: extract it and upload its PPSA99005 folder to /data/homebrew/.'

@@ -85,7 +85,9 @@ Modes are chosen before EGL starts and changed by restarting EGL; a display with
 | [Sokol](examples/core33-sokol/README.md) and [Sokol cube](examples/core33-sokol-cube/README.md) | Existing renderer integration, depth and culling |
 | [Textured cubes benchmark](examples/core33-cubes/README.md) | Ordinary versus instanced drawing |
 
-Each example is packaged as the native test title `PPSA99005`:
+Each SDK release also attaches the showcase as a ready-to-install demo app
+(`ps5-opengl-showcase-<version>-PPSA99005.zip`). Each example is packaged as the
+native test title `PPSA99005`:
 
 ```sh
 make source-fetch

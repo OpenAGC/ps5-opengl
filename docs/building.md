@@ -27,7 +27,7 @@ Place the repositories alongside each other:
 
 ```sh
 git clone https://github.com/blackbearreloaded/ps5-native-app-boilerplate.git ../ps5-native-app-boilerplate
-git -C ../ps5-native-app-boilerplate checkout 4e1d1277dd0531a9a9df8c780e446b9cc26534dd
+git -C ../ps5-native-app-boilerplate checkout 4f531c4b517f80bcb6b1267135848168d2250047
 bash ../ps5-native-app-boilerplate/tools/setup-native-dependencies.sh
 ```
 
