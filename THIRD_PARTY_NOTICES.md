@@ -1,4 +1,16 @@
-# Third-party projects and notices
+# Third-party notices
+
+## Credits and acknowledgements
+
+| Project | Role |
+| --- | --- |
+| [Mesa](https://www.mesa3d.org/) | OpenGL, Gallium, GLSL/NIR, ACO/RADV and AMD layout infrastructure |
+| [OpenGNM PSBC](https://github.com/PS4-OpenGNM/opengnm-psbc) / [OpenGNM](https://github.com/PS4-OpenGNM/opengnm) | Shader compiler foundation and reference declarations |
+| [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk) | Public homebrew toolchain and imports |
+| [Native app boilerplate](https://github.com/blackbearreloaded/ps5-native-app-boilerplate) | Native app assembly and folder packaging |
+| [PS5 GPU research](https://github.com/blackbearreloaded/ps5-gpu-research) | Shader toolchain, memory, submission and presentation findings |
+| [Khronos VK-GL-CTS](https://github.com/KhronosGroup/VK-GL-CTS) | Pinned OpenGL test inventory and runner |
+| [SDL2](https://github.com/libsdl-org/SDL), [Dear ImGui](https://github.com/ocornut/imgui), [NanoVG](https://github.com/memononen/nanovg), [Sokol](https://github.com/floooh/sokol) | Integration and renderer examples |
 
 Project-owned code uses the repository's [GPL-3.0-or-later license](LICENSE). This does not
 relicense upstream components. Preserve their notices and applicable per-file
