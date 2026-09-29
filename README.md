@@ -15,8 +15,7 @@
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue" alt="GPL-3.0-or-later"></a>
 </p>
 
-<!-- TODO: replace with the OpenGL 4.6 showcase screenshot and video. -->
-[![PS5 OpenGL demo](docs/images/ps5-opengl-imgui.png)](https://i.imgur.com/jwyvPhT.mp4)
+[![PS5 OpenGL 4.6 showcase](docs/images/ps5-opengl-showcase.png)](https://i.imgur.com/4KKg2xn.mp4)
 
 *Click the image to watch the demo.*
 
