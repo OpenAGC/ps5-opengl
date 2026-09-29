@@ -8956,9 +8956,10 @@ ps5_flush(struct pipe_context *context, struct pipe_fence_handle **out_fence,
 static void
 ps5_memory_barrier(struct pipe_context *context, unsigned flags)
 {
-   /* Compute already completes synchronously. Deferred graphics retains its
-    * resources and emits cache releases at submission boundaries; GPU consumers
-    * need that boundary, not a CPU completion wait. */
+   /* Queued compute waits for earlier work and invalidates for later work in
+    * its own commands. Deferred graphics retains its resources and emits cache
+    * releases at submission boundaries; GPU consumers need that boundary, not a
+    * CPU completion wait. */
    if (flags & ~PIPE_BARRIER_ALL)
       ps5_draw_batch_drain();
    /* Client access still requires its fence/finish; visibility does not require
@@ -15172,6 +15173,72 @@ ps5_set_compute_sampler_states(struct pipe_context *base, unsigned start, unsign
    context->compute_samplers_invalid = false;
 }
 
+#if defined(PS5_NATIVE_TITLE_RUNTIME) && defined(PS5_DEFERRED_DRAW_BATCH)
+/* Queue the dispatch behind earlier GPU work in the deferred batch. Its slot
+ * pins a private descriptor-table copy and every bound resource until the
+ * batch retires; CPU access to any of them drains, then invalidates writes.
+ * Returns false with nothing queued when the synchronous path must run it. */
+static bool
+ps5_queue_compute(struct ps5_context *context, struct pipe_resource *const *buffers,
+                  unsigned buffer_count, struct pipe_resource *const *written,
+                  unsigned written_count, const uint32_t groups[3])
+{
+   struct pipe_context *base = &context->base;
+   const struct ps5_resource *source = (const struct ps5_resource *)context->compute_descriptors;
+   /* Mapped storage has no CPU callback to wait for queued writes. */
+   for (unsigned i = 0; i < written_count; ++i)
+      if (((const struct ps5_resource *)written[i])->external_cpu_access)
+         return false;
+   if (!ps5_agc_gate2_batch_begin || !ps5_agc_gate2_batch_end ||
+       buffer_count > PS5_BATCH_RESOURCE_COUNT ||
+       PS5_COMPUTE_DESCRIPTOR_BYTES > PS5_DIRECT_ALIGNMENT)
+      return false;
+   struct pipe_resource templ = source->base;
+   templ.width0 = PS5_DIRECT_ALIGNMENT; /* the recycled snapshot class */
+   bool queued = false;
+   simple_mtx_lock(&ps5_deferred_mutex);
+   if (ps5_deferred.owner && ps5_deferred.owner != context)
+      ps5_draw_batch_flush_locked();
+   struct pipe_resource *table = ps5_descriptor_take(base, 2, &templ);
+   struct ps5_resource *copy = (struct ps5_resource *)table;
+   if (!copy || !copy->data || copy->size < PS5_COMPUTE_DESCRIPTOR_BYTES ||
+       (uintptr_t)copy->data >> 32 != (uintptr_t)source->data >> 32)
+      goto out;
+   memcpy(copy->data, source->data, PS5_COMPUTE_DESCRIPTOR_BYTES);
+   ps5_flush_gpu_data(copy->data, PS5_COMPUTE_DESCRIPTOR_BYTES);
+   if (!ps5_deferred.owner) {
+      if ((ps5_agc_gate2_batch_begin_framebuffer ? ps5_agc_gate2_batch_begin_framebuffer() :
+           ps5_agc_gate2_batch_begin()) != 0)
+         goto out;
+      ps5_deferred.owner = context;
+   }
+   const unsigned slot = ps5_deferred.count++;
+   struct ps5_deferred_slot *pinned = &ps5_deferred.slots[slot];
+   int status = ps5_agc_compute_queue(base->screen, &context->cs->output, table,
+                                      buffers, buffer_count, groups);
+   if (status) {
+      --ps5_deferred.count;
+      if (!ps5_deferred.count) {
+         ps5_draw_batch_flush_locked(); /* closes the empty batch it opened */
+      }
+      goto out;
+   }
+   pinned->storage[2] = table;
+   table = NULL;
+   for (unsigned i = 0; i < buffer_count; ++i)
+      pipe_resource_reference(&pinned->retained[pinned->retained_count++], buffers[i]);
+   for (unsigned i = 0; i < written_count; ++i)
+      ((struct ps5_resource *)written[i])->gpu_written = true;
+   queued = true;
+   if (ps5_deferred.count == PS5_MULTIDRAW_BATCH_CAPACITY)
+      ps5_draw_batch_flush_locked();
+out:
+   pipe_resource_reference(&table, NULL);
+   simple_mtx_unlock(&ps5_deferred_mutex);
+   return queued;
+}
+#endif
+
 /* Publish only bytes the CPU may have written since the resource was last
  * flushed. Owned buffers publish each CPU write at the write (unmap,
  * flush_region, subdata) or drain first, so the epoch covers them as it covers
@@ -15240,12 +15307,14 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
       size_t size = 0;
       if (command->screen != base->screen || command->target != PIPE_BUFFER ||
           (grid->indirect_offset & 3u) || grid->indirect_offset > command->width0 ||
-          sizeof(groups) > command->width0 - grid->indirect_offset ||
-          ps5_resource_info(grid->indirect, &address, &size, NULL) || !address ||
+          sizeof(groups) > command->width0 - grid->indirect_offset)
+         return;
+      /* ponytail: CPU argument readback waits for queued writers and
+       * invalidates their results. Native indirect packets need a GPU grid-size ABI. */
+      ps5_draw_batch_drain_buffer(grid->indirect);
+      if (ps5_resource_gpu_info(grid->indirect, &address, &size, NULL) || !address ||
           grid->indirect_offset > size || sizeof(groups) > size - grid->indirect_offset)
          return;
-      /* ponytail: synchronous CPU argument readback reuses existing retirement
-       * and cache handling. Native indirect packets need a GPU grid-size ABI. */
       const uint8_t *arguments = (const uint8_t *)address + grid->indirect_offset;
       ps5_flush_gpu_data(arguments, sizeof(groups));
       memcpy(groups, arguments, sizeof(groups));
@@ -15374,6 +15443,13 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
    ps5_flush_gpu_data(table->data, PS5_COMPUTE_DESCRIPTOR_BYTES);
 #ifdef PS5_DEFERRED_DRAW_BATCH
    simple_mtx_unlock(&ps5_deferred_mutex);
+#endif
+#if defined(PS5_NATIVE_TITLE_RUNTIME) && defined(PS5_DEFERRED_DRAW_BATCH)
+   if (ps5_queue_compute(context, buffers, buffer_count, written, written_count, groups)) {
+      context->last_compute_status = 0;
+      ++context->dispatches;
+      return;
+   }
 #endif
    context->last_compute_status = ps5_agc_compute_dispatch(base->screen, &context->cs->output,
       context->compute_descriptors, buffers, buffer_count, groups);

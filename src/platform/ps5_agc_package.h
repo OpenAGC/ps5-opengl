@@ -52,5 +52,14 @@ int ps5_agc_compute_dispatch(struct pipe_screen *screen,
                              struct pipe_resource *descriptors,
                              struct pipe_resource *const *buffers,
                              unsigned buffer_count, const uint32_t groups[3]);
+/* Append the dispatch to the open deferred batch without waiting. The caller
+ * holds the batch lock, publishes CPU writes and pins the descriptor table and
+ * every resource until that batch retires. Returns 1, having queued nothing,
+ * when the dispatch needs the synchronous path. */
+int ps5_agc_compute_queue(struct pipe_screen *screen,
+                          const PsbcShaderOutput *shader,
+                          struct pipe_resource *descriptors,
+                          struct pipe_resource *const *buffers,
+                          unsigned buffer_count, const uint32_t groups[3]);
 
 #endif

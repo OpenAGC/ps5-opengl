@@ -48,6 +48,10 @@ static int runtime_shader_pair_clear(void) {
     assert(!runtime_batch_faulted && !runtime_batch_active && !runtime_batch_count && !runtime_pending_batches);
     return 0;
 }
+static int runtime_compute_program_clear(void) {
+    assert(!runtime_batch_faulted && !runtime_batch_active && !runtime_batch_count && !runtime_pending_batches);
+    return 0;
+}
 #endif
 #ifdef PS5_GPU_PRESENT_BATCH
 static int runtime_gpu_present_buffer = -1;

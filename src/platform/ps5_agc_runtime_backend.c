@@ -792,15 +792,157 @@ ps5_agc_writes_scanout(void)
 #ifdef PS5_NATIVE_TITLE_RUNTIME
 #include "ps5_agc_package.h"
 
-/* publish: flush every table/resource allocation before the dispatch and
- * again after completion (bring-up callers own raw CPU pointers). */
+#ifdef PS5_MULTIDRAW_BATCH
+static bool ps5_agc_compute_wait(agc_command_buffer_t *, volatile void *, uint32_t, bool);
+
+/* One batch entry per dispatch: wait for earlier work and its CB/DB writes,
+ * invalidate what the CS reads, dispatch, publish completion, then hold the
+ * CP until the CS finished and invalidate so later draws read its writes.
+ * The program allocation is cached; the command page comes from the pool
+ * and returns to it when the batch retires. */
+static int
+ps5_agc_compute_queue_locked(const agc_api_t *agc, const PsbcShaderOutput *shader,
+                             const uint8_t *package, size_t package_size,
+                             const uint8_t *header, size_t header_size,
+                             const uint8_t *code, size_t code_size,
+                             void *table, size_t table_allocation_size,
+                             void *const *addresses, const size_t *allocation_sizes,
+                             unsigned buffer_count, const uint32_t groups[3],
+                             const uint32_t user_data[16])
+{
+   extern uint32_t *sceAgcDcbAcquireMem(void *, uint8_t, uint32_t, uint32_t,
+                                       uint64_t, uint64_t, uint32_t);
+   extern uint32_t *sceAgcCbDispatch(void *, uint32_t, uint32_t, uint32_t, uint32_t);
+   const PsbcShaderMetadata *m = &shader->metadata;
+   const int64_t direct_size = sceKernelGetDirectMemorySize();
+   /* Commands, fence and marker lines; a trailing page for GPU timestamps. */
+   const size_t bytes = 0x8000;
+   uint8_t *memory = NULL;
+   int64_t direct = -1;
+   uint32_t tmpring_size = 0;
+   if (direct_size <= 0)
+      return -1;
+   struct runtime_compute_program *program = runtime_compute_program_get(agc, direct_size,
+      package, package_size, header, header_size, code, code_size);
+   if (!program)
+      return 1;
+   if (!runtime_work_take(bytes, (void **)&memory, &direct)) {
+      if (sceKernelAllocateDirectMemory(0, direct_size, bytes, 0x4000,
+                                       DIRECT_MEMORY_TYPE, &direct))
+         return -1;
+      if (sceKernelMapDirectMemory((void **)&memory, bytes, MAP_PROTECTION, 0,
+                                  direct, 0x4000)) {
+         if (sceKernelReleaseDirectMemory(direct, bytes))
+            runtime_require_retirement(0);
+         return -1;
+      }
+   }
+   memset(memory + 0x3f80, 0, 0x80);
+#ifdef PS5_DRAW_GPU_TIMESTAMPS
+   memset(memory + bytes - 0x4000, 0, 0x4000);
+#endif
+   uint32_t *words = (uint32_t *)memory;
+   agc_command_buffer_t command = {
+      words, words + 0x3000 / 4, words, words + 0x3000 / 4,
+      (uintptr_t)command_out_of_space, NULL, 0, 0
+   };
+   volatile uint32_t *fence = (volatile uint32_t *)(memory + 0x3f80);
+   volatile uint64_t *marker = (volatile uint64_t *)(memory + 0x3fc0);
+   const uint32_t expected = UINT32_C(0x43535035);
+   bool ok = ps5_agc_compute_wait(&command, fence, 1, true) &&
+      agc->set_sh(&command, program->registers, 8) &&
+      agc->set_sh_direct(&command, 0x218, &tmpring_size, 1) &&
+      agc->set_sh_direct(&command, 0x240, user_data, m->user_sgpr_count) &&
+      (!table || sceAgcDcbAcquireMem(&command, 0, 0, 0x4380, (uintptr_t)table,
+                                     table_allocation_size, 0xa0));
+   for (unsigned i = 0; ok && i < buffer_count; ++i)
+      ok = sceAgcDcbAcquireMem(&command, 0, 0, 0x4380, (uintptr_t)addresses[i],
+                               allocation_sizes[i], 0xa0) != NULL;
+   ok = ok && sceAgcCbDispatch(&command, groups[0], groups[1], groups[2],
+                               m->compute_wave_size == 32 ? 0x8000 : 0) &&
+      runtime_release_completion(agc, &command, marker, expected) &&
+      ps5_agc_compute_wait(&command, marker, expected, false);
+   /* Mesa gfx10_emit_barrier for later readers: shader L0/L1 and L2. */
+   for (unsigned i = 0; ok && i < buffer_count; ++i)
+      ok = runtime_acquire_cpu_uploads(&command, addresses[i], allocation_sizes[i]) != NULL;
+   if (!ok || out_of_space || command.up > command.down) {
+      if (runtime_work_put(memory, direct, bytes))
+         runtime_require_retirement(0);
+      return -1;
+   }
+   flush_gpu_data(memory, (size_t)(command.up - words) * sizeof(*words));
+   flush_gpu_data(memory + 0x3f80, 0x80);
+#ifdef PS5_DRAW_GPU_TIMESTAMPS
+   flush_gpu_data(memory + bytes - 0x4000, 0x4000);
+#endif
+   struct runtime_batch_entry entry = {
+      .submit = {words, (uint32_t)(command.up - words), 0, {0}},
+      .memory = memory, .direct = direct, .bytes = bytes,
+      .marker = marker, .expected = expected,
+      /* No completion offset: a dispatch is never combined into a draw group. */
+   };
+#ifdef PS5_ASYNC_NATIVE_PREP
+   if (runtime_async_drain() != 0) {
+      if (runtime_work_put(memory, direct, bytes))
+         runtime_require_retirement(0);
+      return -1;
+   }
+#endif
+   if (runtime_batch_append(agc, &entry) != 0) {
+      if (runtime_work_put(memory, direct, bytes))
+         runtime_require_retirement(0);
+      return -1;
+   }
+   return 0;
+}
+#endif
+
+enum ps5_agc_compute_mode {
+   PS5_AGC_COMPUTE_PUBLISH, /* flush every allocation before and after (raw CPU pointers) */
+   PS5_AGC_COMPUTE_WAIT,    /* caller publishes and invalidates; submit and wait */
+   PS5_AGC_COMPUTE_QUEUE,   /* append to the open batch; caller holds the batch lock */
+};
+
+#ifdef PS5_MULTIDRAW_BATCH
+/* RELEASE_MEM is asynchronous; like the CB/DB texture barrier, signal and
+ * make the CP wait before later work reads what earlier work wrote. */
+static bool
+ps5_agc_compute_wait(agc_command_buffer_t *command, volatile void *fence, uint32_t value,
+                     bool flush_targets)
+{
+   const uintptr_t address = (uintptr_t)fence;
+   const uint32_t release[] = {
+      UINT32_C(0xc0064900), UINT32_C(0x0070f514), /* CACHE_FLUSH_AND_INV_TS */
+      UINT32_C(0x23000000), (uint32_t)address, (uint32_t)(address >> 32), value, 0, 0,
+   };
+   const uint32_t wait[] = {
+      PS5_AGC_PKT3(0x3c, 5), UINT32_C(0x13), /* memory, equal, ME */
+      (uint32_t)address, (uint32_t)(address >> 32), value, UINT32_MAX, 4,
+   };
+   const unsigned words = (flush_targets ? 8u : 0u) + 7u;
+   if (command->down < command->up || (size_t)(command->down - command->up) < words)
+      return false;
+   if (flush_targets) {
+      memcpy(command->up, release, sizeof(release));
+      command->up += 8;
+   }
+   memcpy(command->up, wait, sizeof(wait));
+   command->up += 7;
+   return true;
+}
+#endif
+
+/* Returns 1 without side effects when QUEUE cannot take the dispatch
+ * (private/scratch memory or a full program cache). */
 static int
 ps5_agc_compute_run(struct pipe_screen *screen,
                     const PsbcShaderOutput *shader,
                     struct pipe_resource *descriptors,
                     struct pipe_resource *const *buffers,
-                    unsigned buffer_count, const uint32_t groups[3], bool publish)
+                    unsigned buffer_count, const uint32_t groups[3],
+                    enum ps5_agc_compute_mode mode)
 {
+   const bool publish = mode == PS5_AGC_COMPUTE_PUBLISH;
    extern uint32_t *sceAgcDcbAcquireMem(void *, uint8_t, uint32_t, uint32_t,
                                        uint64_t, uint64_t, uint32_t);
    extern uint32_t *sceAgcCbDispatch(void *, uint32_t, uint32_t, uint32_t, uint32_t);
@@ -825,6 +967,15 @@ ps5_agc_compute_run(struct pipe_screen *screen,
    for (unsigned i = 0; i < 3; ++i)
       if (!groups[i] || groups[i] > 65535)
          return -1;
+#ifdef PS5_MULTIDRAW_BATCH
+   if (mode == PS5_AGC_COMPUTE_QUEUE &&
+       (shader->metadata.compute_private_stride || shader->metadata.scratch_buffer_backed ||
+        shader->metadata.scratch_bytes_per_wave))
+      return 1; /* guard checks need the completed dispatch */
+#else
+   if (mode == PS5_AGC_COMPUTE_QUEUE)
+      return 1;
+#endif
 
    if (ps5_agc_package_build(shader, 0, &package, &package_size) ||
        shader_sections(package, package_size, &header, &header_size, &code, &code_size) ||
@@ -918,8 +1069,10 @@ ps5_agc_compute_run(struct pipe_screen *screen,
     * themselves. Do not call them from inside the submission critical section.
     * ponytail: serialize and retire before releasing memory; asynchronous
     * compute needs a complete resource-lifetime contract first. */
-   ps5_screen_submit_lock(screen);
-   locked = true;
+   if (mode != PS5_AGC_COMPUTE_QUEUE) {
+      ps5_screen_submit_lock(screen);
+      locked = true;
+   }
    if (load_apis(NULL, NULL, NULL, &agc, &video))
       goto cleanup;
    if (!runtime_agc_initialized) {
@@ -927,6 +1080,14 @@ ps5_agc_compute_run(struct pipe_screen *screen,
          goto cleanup;
       runtime_agc_initialized = 1;
    }
+#ifdef PS5_MULTIDRAW_BATCH
+   if (mode == PS5_AGC_COMPUTE_QUEUE) {
+      result = ps5_agc_compute_queue_locked(&agc, shader, package, package_size,
+         header, header_size, code, code_size, table, table_allocation_size,
+         addresses, allocation_sizes, buffer_count, groups, user_data);
+      goto cleanup;
+   }
+#endif
    /* Bounded command area, separate cache line for completion, then header/code. */
    const int64_t direct_size = sceKernelGetDirectMemorySize();
    struct ps5_agc_compute_memory_layout layout;
@@ -1052,7 +1213,8 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
                         struct pipe_resource *const *buffers,
                         unsigned buffer_count, const uint32_t groups[3])
 {
-   return ps5_agc_compute_run(screen, shader, descriptors, buffers, buffer_count, groups, true);
+   return ps5_agc_compute_run(screen, shader, descriptors, buffers, buffer_count, groups,
+                              PS5_AGC_COMPUTE_PUBLISH);
 }
 
 int
@@ -1062,7 +1224,19 @@ ps5_agc_compute_dispatch(struct pipe_screen *screen,
                          struct pipe_resource *const *buffers,
                          unsigned buffer_count, const uint32_t groups[3])
 {
-   return ps5_agc_compute_run(screen, shader, descriptors, buffers, buffer_count, groups, false);
+   return ps5_agc_compute_run(screen, shader, descriptors, buffers, buffer_count, groups,
+                              PS5_AGC_COMPUTE_WAIT);
+}
+
+int
+ps5_agc_compute_queue(struct pipe_screen *screen,
+                      const PsbcShaderOutput *shader,
+                      struct pipe_resource *descriptors,
+                      struct pipe_resource *const *buffers,
+                      unsigned buffer_count, const uint32_t groups[3])
+{
+   return ps5_agc_compute_run(screen, shader, descriptors, buffers, buffer_count, groups,
+                              PS5_AGC_COMPUTE_QUEUE);
 }
 #endif
 

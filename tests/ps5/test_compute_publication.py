@@ -27,6 +27,20 @@ assert 'ps5_flush_gpu_data(table->data, PS5_COMPUTE_DESCRIPTOR_BYTES);' in launc
 assert 'if (i < PS5_COMPUTE_STORAGE_SLOTS)\n         written[written_count++] = bound->buffer;' in launch
 drain = function('static void\nps5_draw_batch_drain_buffer(')
 assert drain.index('ps5_invalidate_gpu_writes(buffer);') > drain.index('ps5_draw_batch_retire_one_locked(true)')
+# Queued dispatches run before the synchronous fallback, pin a private table
+# copy plus every resource in a batch slot, and mark writes only once queued.
+queue = function('static bool\nps5_queue_compute(')
+assert launch.index('ps5_queue_compute(') < launch.index('ps5_agc_compute_dispatch(')
+assert 'external_cpu_access)\n         return false;' in queue
+assert queue.index('memcpy(copy->data, source->data, PS5_COMPUTE_DESCRIPTOR_BYTES);') < \
+    queue.index('ps5_flush_gpu_data(copy->data, PS5_COMPUTE_DESCRIPTOR_BYTES);') < \
+    queue.index('ps5_agc_compute_queue(') < queue.index('pinned->storage[2] = table;') < \
+    queue.index('pinned->retained[pinned->retained_count++], buffers[i]') < \
+    queue.index('->gpu_written = true;')
+assert queue.index('if (status) {') < queue.index('pinned->storage[2] = table;')
+# CPU readback of indirect arguments waits for queued writers first.
+assert launch.index('ps5_draw_batch_drain_buffer(grid->indirect);') < \
+    launch.index('ps5_resource_gpu_info(grid->indirect')
 
 code = r'''
 #include <assert.h>

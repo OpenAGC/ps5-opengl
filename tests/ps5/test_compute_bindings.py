@@ -230,7 +230,9 @@ static int ps5_packed_depth_sampled_descriptor(struct pipe_resource *base,
     return -1;
 }
 ''' + extent_helper + array_layout + msaa_tile_helper + linear_helpers + msaa_support + size_helper + format_encoding + tiled_helper + image_descriptor + r'''
-static int ps5_resource_info(struct pipe_resource *base, void **address, size_t *size, size_t *allocation) {
+static unsigned indirect_drains;
+static void ps5_draw_batch_drain_buffer(struct pipe_resource *r) { assert(r); ++indirect_drains; }
+static int ps5_resource_gpu_info(struct pipe_resource *base, void **address, size_t *size, size_t *allocation) {
     (void)allocation;
     if (fail_info) return -1;
     *address=((struct ps5_resource *)base)->data;

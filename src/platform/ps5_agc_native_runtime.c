@@ -1280,6 +1280,7 @@ static uint32_t *runtime_acquire_cpu_uploads(agc_command_buffer_t *command,
                                (uintptr_t)memory, bytes, 0xa0);
 }
 
+
 static int runtime_work_cache_clear(void)
 {
     while (runtime_work_free_count) {
@@ -1289,6 +1290,85 @@ static int runtime_work_cache_clear(void)
             return -1;
         runtime_work_free_bytes -= entry->bytes;
         --runtime_work_free_count;
+    }
+    return 0;
+}
+#endif
+
+#ifdef PS5_NATIVE_TITLE_RUNTIME
+/* Queued compute keeps one immutable header/code allocation per package,
+ * found by package bytes like shader pairs. Entries stay until shutdown;
+ * a full cache leaves the caller on its synchronous path. */
+static struct runtime_compute_program {
+    uint8_t *package, *memory;
+    size_t package_size, bytes;
+    int64_t direct;
+    agc_register_t *registers;
+} runtime_compute_programs[256];
+static unsigned runtime_compute_program_count;
+
+static struct runtime_compute_program *runtime_compute_program_get(
+    const agc_api_t *agc, int64_t direct_limit,
+    const uint8_t *package, size_t package_size,
+    const uint8_t *header, size_t header_size,
+    const uint8_t *code, size_t code_size)
+{
+    for (unsigned i = 0; i < runtime_compute_program_count; ++i) {
+        struct runtime_compute_program *p = &runtime_compute_programs[i];
+        if (p->package_size == package_size && !memcmp(p->package, package, package_size))
+            return p;
+    }
+    if (runtime_compute_program_count == sizeof(runtime_compute_programs) /
+                                         sizeof(runtime_compute_programs[0]) ||
+        header_size > 0x1000 || code_size > 16u * 1024u * 1024u)
+        return NULL;
+    struct runtime_compute_program p = {.package_size = package_size, .direct = -1,
+        .bytes = (0x1000 + code_size + 0x3fffu) & ~(size_t)0x3fffu};
+    void *program = NULL;
+    p.package = malloc(package_size);
+    if (!p.package)
+        return NULL;
+    if (sceKernelAllocateDirectMemory(0, direct_limit, p.bytes, 0x4000,
+                                     DIRECT_MEMORY_TYPE, &p.direct) != 0)
+        goto fail;
+    if (sceKernelMapDirectMemory((void **)&p.memory, p.bytes, MAP_PROTECTION, 0,
+                                p.direct, 0x4000) != 0) {
+        p.memory = NULL;
+        goto fail;
+    }
+    memset(p.memory, 0, p.bytes);
+    memcpy(p.package, package, package_size);
+    memcpy(p.memory, header, header_size);
+    memcpy(p.memory + 0x1000, code, code_size);
+    /* Same header-relative layout the synchronous path verifies. */
+    if (agc->create_shader(&program, p.memory, p.memory + 0x1000) ||
+        program != p.memory)
+        goto fail;
+    p.registers = *(agc_register_t **)(p.memory + 0x20);
+    if (p.registers != (agc_register_t *)(p.memory + 0x60) || p.memory[0x5c] != 8)
+        goto fail;
+    flush_gpu_data(p.memory, p.bytes);
+    runtime_compute_programs[runtime_compute_program_count] = p;
+    return &runtime_compute_programs[runtime_compute_program_count++];
+fail:
+    if (p.memory && munmap(p.memory, p.bytes) != 0)
+        abort(); /* Never release a still-mapped allocation. */
+    if (p.direct >= 0 && sceKernelReleaseDirectMemory(p.direct, p.bytes) != 0)
+        abort();
+    free(p.package);
+    return NULL;
+}
+
+static int runtime_compute_program_clear(void)
+{
+    while (runtime_compute_program_count) {
+        struct runtime_compute_program *p =
+            &runtime_compute_programs[runtime_compute_program_count - 1];
+        if (munmap(p->memory, p->bytes) != 0 ||
+            sceKernelReleaseDirectMemory(p->direct, p->bytes) != 0)
+            return -1;
+        free(p->package);
+        --runtime_compute_program_count;
     }
     return 0;
 }
@@ -2170,6 +2250,7 @@ int ps5_agc_gate2_shutdown_present(void)
 #if defined(PS5_NATIVE_TITLE_RUNTIME) && defined(PS5_MULTIDRAW_BATCH)
     runtime_require_retirement(runtime_work_cache_clear() == 0);
     runtime_require_retirement(runtime_shader_pair_clear() == 0);
+    runtime_require_retirement(runtime_compute_program_clear() == 0);
 #endif
 
 #ifdef PS5_FRAME_SUSPEND
