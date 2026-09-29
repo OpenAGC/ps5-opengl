@@ -16,6 +16,7 @@
  * The demo runs until the application is closed and logs its frame rate. */
 #define _POSIX_C_SOURCE 200809L
 #include <math.h>
+#include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -40,6 +41,9 @@
 #endif
 #ifndef SHOWCASE_PARTICLES
 #define SHOWCASE_PARTICLES 262144
+#endif
+#ifndef SHOWCASE_COMPUTE_BLOOM
+#define SHOWCASE_COMPUTE_BLOOM 0 /* 1: 11 compute dispatches instead of fullscreen passes */
 #endif
 #ifndef SHOWCASE_SECONDS
 #define SHOWCASE_SECONDS 0 /* 0 runs until the application is closed */
@@ -306,29 +310,43 @@ static const char *particle_fs =
    "out_color=vec4(v_color*exp(-d*4.0)*0.9,1.0);}\n";
 
 /* Bloom: soft-threshold prefilter, then downsample and tent upsample, each a
- * fullscreen pass into the next level's framebuffer. */
-static const char *bloom_fs =
-   "#version 460 core\n"
-   "layout(location=0) out vec4 out_color;"
-   "layout(binding=0) uniform sampler2D u_src;layout(binding=1) uniform sampler2D u_add;"
-   "uniform int u_mode;uniform vec2 u_dst_size;"
-   "vec3 box(vec2 uv,vec2 px){return(texture(u_src,uv+px*vec2(-1,-1)).rgb+"
-   "texture(u_src,uv+px*vec2(1,-1)).rgb+texture(u_src,uv+px*vec2(-1,1)).rgb+"
-   "texture(u_src,uv+px*vec2(1,1)).rgb)*0.25;}"
-   "vec3 tent(vec2 uv,vec2 px){vec3 s=texture(u_src,uv).rgb*4.0;"
-   "s+=(texture(u_src,uv+vec2(px.x,0)).rgb+texture(u_src,uv-vec2(px.x,0)).rgb+"
-   "texture(u_src,uv+vec2(0,px.y)).rgb+texture(u_src,uv-vec2(0,px.y)).rgb)*2.0;"
-   "s+=texture(u_src,uv+px).rgb+texture(u_src,uv-px).rgb+"
-   "texture(u_src,uv+vec2(px.x,-px.y)).rgb+texture(u_src,uv+vec2(-px.x,px.y)).rgb;"
-   "return s/16.0;}"
-   "void main(){vec2 uv=gl_FragCoord.xy/u_dst_size;"
-   "vec2 px=1.0/vec2(textureSize(u_src,0));vec3 c;"
-   "if(u_mode==0){c=box(uv,px);float b=max(c.r,max(c.g,c.b));"
-   "float soft=clamp(b-0.7,0.0,1.0);soft=soft*soft/2.0;"
-   "c*=max(soft,b-1.2)/max(b,1e-4);c=min(c,vec3(60.0));}"
-   "else if(u_mode==1){c=box(uv,px);}"
-   "else{c=tent(uv,px)+texture(u_add,uv).rgb;}"
-   "out_color=vec4(c,1.0);}\n";
+ * fullscreen pass into the next level's framebuffer (or, with
+ * SHOWCASE_COMPUTE_BLOOM, a compute dispatch writing the level as an image). */
+#define BLOOM_FILTER(OUTPUT, POSITION, STORE) \
+   "#version 460 core\n" OUTPUT \
+   "layout(binding=0) uniform sampler2D u_src;layout(binding=1) uniform sampler2D u_add;" \
+   "uniform int u_mode;uniform vec2 u_dst_size;" \
+   "vec3 box(vec2 uv,vec2 px){return(texture(u_src,uv+px*vec2(-1,-1)).rgb+" \
+   "texture(u_src,uv+px*vec2(1,-1)).rgb+texture(u_src,uv+px*vec2(-1,1)).rgb+" \
+   "texture(u_src,uv+px*vec2(1,1)).rgb)*0.25;}" \
+   "vec3 tent(vec2 uv,vec2 px){vec3 s=texture(u_src,uv).rgb*4.0;" \
+   "s+=(texture(u_src,uv+vec2(px.x,0)).rgb+texture(u_src,uv-vec2(px.x,0)).rgb+" \
+   "texture(u_src,uv+vec2(0,px.y)).rgb+texture(u_src,uv-vec2(0,px.y)).rgb)*2.0;" \
+   "s+=texture(u_src,uv+px).rgb+texture(u_src,uv-px).rgb+" \
+   "texture(u_src,uv+vec2(px.x,-px.y)).rgb+texture(u_src,uv+vec2(-px.x,px.y)).rgb;" \
+   "return s/16.0;}" \
+   "void main(){" POSITION "vec2 uv=xy/u_dst_size;" \
+   "vec2 px=1.0/vec2(textureSize(u_src,0));vec3 c;" \
+   "if(u_mode==0){c=box(uv,px);float b=max(c.r,max(c.g,c.b));" \
+   "float soft=clamp(b-0.7,0.0,1.0);soft=soft*soft/2.0;" \
+   "c*=max(soft,b-1.2)/max(b,1e-4);c=min(c,vec3(60.0));}" \
+   "else if(u_mode==1){c=box(uv,px);}" \
+   "else{c=tent(uv,px)+texture(u_add,uv).rgb;}" \
+   STORE "}\n"
+
+#if SHOWCASE_COMPUTE_BLOOM
+static const char *bloom_cs = BLOOM_FILTER(
+   "layout(local_size_x=8,local_size_y=8) in;"
+   "layout(rgba16f,binding=0) writeonly uniform image2D u_dst;",
+   "ivec2 p=ivec2(gl_GlobalInvocationID.xy);"
+   "if(any(greaterThanEqual(vec2(p),u_dst_size)))return;vec2 xy=vec2(p)+0.5;",
+   "imageStore(u_dst,p,vec4(c,1.0));");
+#else
+static const char *bloom_fs = BLOOM_FILTER(
+   "layout(location=0) out vec4 out_color;",
+   "vec2 xy=gl_FragCoord.xy;",
+   "out_color=vec4(c,1.0);");
+#endif
 
 /* Final image: bloom, ACES, vignette, grain and the HUD text. */
 static const char *composite_fs =
@@ -806,15 +824,23 @@ struct scene {
 };
 
 static void
-bloom_pass(struct scene *s, GLuint src, GLuint add, GLuint dst_fb, int mode, GLsizei w, GLsizei h)
+bloom_pass(struct scene *s, GLuint src, GLuint add, int level, bool up, int mode, GLsizei w,
+           GLsizei h)
 {
-   glBindFramebuffer(GL_FRAMEBUFFER, dst_fb);
-   glViewport(0, 0, w, h);
    glUniform1i(s->bloom_mode, mode);
    glUniform2f(s->bloom_size_uniform, (float)w, (float)h);
    glBindTextureUnit(0, src);
    glBindTextureUnit(1, add ? add : src);
+#if SHOWCASE_COMPUTE_BLOOM
+   glBindImageTexture(0, up ? s->bloom_up[level] : s->bloom_down[level], 0, GL_FALSE, 0,
+                      GL_WRITE_ONLY, GL_RGBA16F);
+   glDispatchCompute((GLuint)(w + 7) / 8, (GLuint)(h + 7) / 8, 1);
+   glMemoryBarrier(GL_SHADER_IMAGE_ACCESS_BARRIER_BIT | GL_TEXTURE_FETCH_BARRIER_BIT);
+#else
+   glBindFramebuffer(GL_FRAMEBUFFER, up ? s->bloom_up_fb[level] : s->bloom_down_fb[level]);
+   glViewport(0, 0, w, h);
    glDrawArrays(GL_TRIANGLES, 0, 3);
+#endif
 }
 
 static int
@@ -827,7 +853,11 @@ setup(struct scene *s, GLsizei width, GLsizei height)
    s->cull = program("cull", cull_cs, GL_COMPUTE_SHADER, NULL);
    s->particles_update = program("particles", particle_cs, GL_COMPUTE_SHADER, NULL);
    s->particles_draw = program("sparks", particle_vs, GL_VERTEX_SHADER, particle_fs);
+#if SHOWCASE_COMPUTE_BLOOM
+   s->bloom = program("bloom", bloom_cs, GL_COMPUTE_SHADER, NULL);
+#else
    s->bloom = program("bloom", fullscreen_vs, GL_VERTEX_SHADER, bloom_fs);
+#endif
    s->composite = program("composite", fullscreen_vs, GL_VERTEX_SHADER, composite_fs);
    if (!check(s->sky && s->knot && s->floor && s->instances && s->cull &&
                  s->particles_update && s->particles_draw && s->bloom && s->composite,
@@ -1044,17 +1074,16 @@ render(struct scene *s, float dt, GLsizei width, GLsizei height)
    glBindFramebuffer(GL_FRAMEBUFFER, 0);
    stage_end(STAGE_SCENE);
 
-   /* Bloom chain: prefilter, downsample, tent upsample (fullscreen passes). */
+   /* Bloom chain: prefilter, downsample, tent upsample. */
    glDisable(GL_DEPTH_TEST);
    glUseProgram(s->bloom);
-   bloom_pass(s, s->hdr, 0, s->bloom_down_fb[0], 0, s->bloom_size[0][0], s->bloom_size[0][1]);
+   bloom_pass(s, s->hdr, 0, 0, false, 0, s->bloom_size[0][0], s->bloom_size[0][1]);
    for (int i = 1; i < BLOOM_LEVELS; ++i)
-      bloom_pass(s, s->bloom_down[i - 1], 0, s->bloom_down_fb[i], 1, s->bloom_size[i][0],
+      bloom_pass(s, s->bloom_down[i - 1], 0, i, false, 1, s->bloom_size[i][0],
                  s->bloom_size[i][1]);
    for (int i = BLOOM_LEVELS - 2; i >= 0; --i)
       bloom_pass(s, i == BLOOM_LEVELS - 2 ? s->bloom_down[i + 1] : s->bloom_up[i + 1],
-                 s->bloom_down[i], s->bloom_up_fb[i], 2, s->bloom_size[i][0],
-                 s->bloom_size[i][1]);
+                 s->bloom_down[i], i, true, 2, s->bloom_size[i][0], s->bloom_size[i][1]);
    glBindFramebuffer(GL_FRAMEBUFFER, 0);
 
    stage_end(STAGE_BLOOM);

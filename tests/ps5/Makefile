@@ -2088,7 +2088,7 @@ egl_public_gl46_compute_cubes.o: ../../examples/core46-compute-cubes/main.c
 	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
 
 egl_public_gl46_showcase.o: ../../examples/core46-showcase/main.c
-	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 -c -o $@ $<
+	$(CC) $(CFLAGS) -DGL_GLEXT_PROTOTYPES=1 $(SHOWCASE_CFLAGS) -c -o $@ $<
 
 PS5_CUBES_OBJECTS ?= 128
 PS5_CUBES_SECONDS ?= 30
