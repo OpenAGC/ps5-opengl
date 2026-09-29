@@ -38,13 +38,15 @@ Everything is created with direct state access (`glCreate*`, `glNamed*`).
 - **Declare high frame rate.** The title's `param.json` carries the `attribute3`
   bits `0x80040`; without them the console refuses 120 Hz output and the driver
   stays at 60 Hz. The example packaging sets them for runtime display-mode SDKs.
-- **Keep per-frame work on the graphics path.** Each compute dispatch currently
-  runs synchronously (about 1 ms of CPU each), so the showcase uses two per frame
-  (particles and culling) and draws bloom with fullscreen passes. Moving the
-  11-pass bloom from compute to fragment shaders took it from 48 to 60+ FPS.
+- **Compute is cheap to issue.** A dispatch is queued behind earlier draws in the
+  driver's batch without a CPU wait, so it costs about 25-35 us of CPU. SDKs up to
+  0.5.0 ran each dispatch synchronously (about 1.1 ms), which is why bloom uses
+  fullscreen passes. Build with `SHOWCASE_CFLAGS=-DSHOWCASE_COMPUTE_BLOOM=1` for
+  the 11-dispatch compute bloom: 0.37 ms of CPU per frame at 120 FPS, against
+  12.6 ms and 48 FPS with the synchronous path.
 
 The log prints the CPU time per stage every two seconds, for example
-`cpu-ms compute=0.51 scene=4.55 bloom=0.35 composite=2.41 present=0.51`.
+`cpu-ms compute=0.03 scene=5.11 bloom=0.35 composite=2.36 present=0.48`.
 
 ## Build
 
@@ -57,7 +59,8 @@ PS5_OPENGL_PREFIX=/path/to/ps5-opengl-sdk-0.5.0/sdk make showcase
 Deploy `build/native-app/PPSA99005/dist/PPSA99005` and launch it as a registered
 title. It runs until closed and logs `[ps5-gl46-showcase] ... fps=...` every five
 seconds. Compile-time options: `SHOWCASE_WIDTH`/`SHOWCASE_HEIGHT` (display mode),
-`SHOWCASE_PARTICLES` and `SHOWCASE_SECONDS` (0 runs until closed).
+`SHOWCASE_PARTICLES`, `SHOWCASE_SECONDS` (0 runs until closed) and
+`SHOWCASE_COMPUTE_BLOOM`, passed through `SHOWCASE_CFLAGS`.
 
 ## Host preview
 
