@@ -137,20 +137,8 @@ jobs:
           sha256sum --check SHA256SUMS
       - name: Build the showcase demo app (PPSA99005) against this SDK
         run: |
-          revision=$(python3 -c 'import json; print(json.load(open("dependencies.json"))["native_boilerplate"]["revision"])')
-          git clone --quiet https://github.com/blackbearreloaded/ps5-native-app-boilerplate.git "$RUNNER_TEMP/boilerplate"
-          git -C "$RUNNER_TEMP/boilerplate" checkout --quiet "$revision"
-          (cd "$RUNNER_TEMP/boilerplate" && bash tools/setup-native-dependencies.sh)
-          PS5_OPENGL_PREFIX="$RUNNER_TEMP/relocated-sdk" \
-            PS5_NATIVE_APP_TEMPLATE="$RUNNER_TEMP/boilerplate" make showcase
-          name="ps5-opengl-showcase-$SDK_VERSION-PPSA99005"
-          (cd build/native-app/PPSA99005/dist &&
-            python3 -m zipfile -c "$RUNNER_TEMP/release/$name.zip" PPSA99005)
-          cd "$RUNNER_TEMP/release"
-          python3 -m zipfile -t "$name.zip"
-          unzip -Z1 "$name.zip" | grep -Fx PPSA99005/eboot.bin
-          unzip -Z1 "$name.zip" | grep -Fx PPSA99005/sce_sys/snd0.at9
-          sha256sum "$name.zip" > "$name.zip.sha256"
+          make demo PS5_OPENGL_PREFIX="$RUNNER_TEMP/relocated-sdk" DEMO_VERSION="$SDK_VERSION"
+          cp build/demo/ps5-opengl-showcase-"$SDK_VERSION"-PPSA99005.zip* "$RUNNER_TEMP/release/"
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ps5-opengl-4.6-sdk

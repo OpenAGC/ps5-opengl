@@ -97,6 +97,11 @@ make showcase          # imgui-demo, nanovg, sokol, sokol-cube, gl46-demo, ...
 
 Deploy `build/native-app/PPSA99005/dist/PPSA99005` to `/data/homebrew/PPSA99005`.
 
+`make demo` builds the demo app on its own: it builds the SDK if needed, fetches the
+pinned native-app boilerplate below `build/`, builds the showcase and writes
+`build/demo/ps5-opengl-showcase-<DEMO_VERSION>-PPSA99005.zip` with its checksum.
+It only builds; it never deploys or runs anything.
+
 ## Build from source
 
 `make sdk` builds the shader compiler, Mesa and the installed OpenGL 4.6 SDK into

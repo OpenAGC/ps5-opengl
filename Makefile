@@ -8,7 +8,7 @@ PS5_PAYLOAD_SDK ?= $(PS5_NATIVE_APP_TEMPLATE)/.deps/native/ps5-payload-sdk
 export PS5_NATIVE_APP_TEMPLATE PS5_PAYLOAD_SDK
 PS5_OPENGL_SDK_PREFIX ?= build/sdk/ps5-opengl-gl46
 
-.PHONY: help source-fetch cts-fetch sdk sdk-gl46 imgui-demo nanovg sokol sokol-cube cubes gl46-demo showcase test test-imgui test-sokol-cube test-cubes test-glsl test-compiler test-multidraw test-layered-mip test-depth-targets test-staging
+.PHONY: help source-fetch cts-fetch sdk sdk-gl46 imgui-demo nanovg sokol sokol-cube cubes gl46-demo showcase demo test test-imgui test-sokol-cube test-cubes test-glsl test-compiler test-multidraw test-layered-mip test-depth-targets test-staging
 help:
 	@printf '%s\n' 'source-fetch: pinned graphics/example sources' \
 	  'sdk / sdk-gl46: build the compiler, Mesa and installed OpenGL 4.6 SDK' \
@@ -17,6 +17,7 @@ help:
 	  'cubes: package the 3D frame benchmark using the current source runtime' \
 	  'gl46-demo: package the compute-driven OpenGL 4.6 cube animation' \
 	  'showcase: package the OpenGL 4.6 showcase (4K, compute, indirect count, bloom)' \
+	  'demo: build the SDK if needed, then the showcase demo app and its release zip' \
 	  'test: dependency-free host tests and published validation audit' \
 	  'test-imgui: software-Mesa renderer and TV-demo input checks' \
 	  'cts-fetch: also fetch pinned optional CTS sources; see docs/testing.md'
@@ -50,6 +51,22 @@ gl46-demo:
 	bash tools/build-native-test-app.sh egl_public_gl46_compute_cubes
 showcase:
 	bash tools/build-native-test-app.sh egl_public_gl46_showcase
+
+# The demo app: the showcase built against an SDK (the one built here unless
+# PS5_OPENGL_PREFIX names another), with its pinned boilerplate fetched below
+# build/. DEMO_VERSION names the zip in build/demo/.
+PS5_OPENGL_PREFIX ?= $(CURDIR)/build/sdk/ps5-opengl-gl46
+DEMO_VERSION ?= dev
+# The fetched boilerplate's payload SDK is used unless PS5_PAYLOAD_SDK is set
+# explicitly (the default above names a sibling checkout that may not exist).
+DEMO_PAYLOAD_SDK = $(if $(filter file,$(origin PS5_PAYLOAD_SDK)),$$template/.deps/native/ps5-payload-sdk,$(PS5_PAYLOAD_SDK))
+demo:
+	template=$$(bash tools/fetch-native-boilerplate.sh) && sdk="$(DEMO_PAYLOAD_SDK)" && \
+	  { test -f "$(PS5_OPENGL_PREFIX)/manifest.sha256" || \
+	    $(MAKE) sdk-gl46 PS5_NATIVE_APP_TEMPLATE="$$template" PS5_PAYLOAD_SDK="$$sdk"; } && \
+	  PS5_OPENGL_PREFIX="$(PS5_OPENGL_PREFIX)" PS5_NATIVE_APP_TEMPLATE="$$template" \
+	  PS5_PAYLOAD_SDK="$$sdk" bash tools/build-native-test-app.sh egl_public_gl46_showcase
+	bash tools/package-demo-app.sh "$(DEMO_VERSION)"
 test-cubes:
 	bash tools/test-cubes-host.sh
 test-glsl:
