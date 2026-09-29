@@ -38,6 +38,12 @@ assert queue.index('memcpy(copy->data, source->data, PS5_COMPUTE_DESCRIPTOR_BYTE
     queue.index('pinned->retained[pinned->retained_count++], buffers[i]') < \
     queue.index('->gpu_written = true;')
 assert queue.index('if (status) {') < queue.index('pinned->storage[2] = table;')
+assert queue.index('pinned->compute = true;') > queue.index('if (status) {')
+# A memory barrier submits only when a pending batch entry is not a queued dispatch.
+barrier = function('static void\nps5_memory_barrier(')
+assert barrier.index('ps5_draw_batch_compute_only()') < barrier.index('ps5_draw_batch_submit();')
+only = function('static bool\nps5_draw_batch_compute_only(')
+assert 'compute &= ps5_deferred.slots[slot].compute;' in only
 # CPU readback of indirect arguments waits for queued writers first.
 assert launch.index('ps5_draw_batch_drain_buffer(grid->indirect);') < \
     launch.index('ps5_resource_gpu_info(grid->indirect')

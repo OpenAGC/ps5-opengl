@@ -133,6 +133,7 @@ struct ps5_query;
 static void ps5_draw_batch_drain_query(struct ps5_query *query);
 static bool ps5_draw_batch_query_ready(const struct ps5_query *query, bool wait);
 static void ps5_draw_batch_drain_buffer(struct pipe_resource *resource);
+static bool ps5_draw_batch_compute_only(void);
 #else
 #define ps5_draw_batch_drain_buffer(resource) \
    ps5_invalidate_gpu_writes((struct ps5_resource *)(resource))
@@ -8964,8 +8965,14 @@ ps5_memory_barrier(struct pipe_context *context, unsigned flags)
       ps5_draw_batch_drain();
    /* Client access still requires its fence/finish; visibility does not require
     * retiring unrelated GPU work on this CPU thread. */
-   else if (flags)
+   else if (flags) {
+#ifdef PS5_DEFERRED_DRAW_BATCH
+      /* Only queued dispatches pending: they already order on the GPU. */
+      if (ps5_draw_batch_compute_only())
+         return;
+#endif
       ps5_draw_batch_submit();
+   }
    (void)context;
 }
 
@@ -11472,6 +11479,7 @@ struct ps5_deferred_slot {
    unsigned retained_count;
    struct ps5_query *occlusion_query;
    struct pipe_resource *occlusion_buffer;
+   bool compute; /* a queued dispatch, ordered by its own GPU waits */
 };
 
 struct ps5_deferred_batch {
@@ -11513,6 +11521,17 @@ ps5_context_queue_present(struct pipe_context *base, unsigned buffer_index)
    (void)base;
    (void)buffer_index;
 #endif
+}
+
+static bool
+ps5_draw_batch_compute_only(void)
+{
+   simple_mtx_lock(&ps5_deferred_mutex);
+   bool compute = true;
+   for (unsigned slot = 0; slot < ps5_deferred.count; ++slot)
+      compute &= ps5_deferred.slots[slot].compute;
+   simple_mtx_unlock(&ps5_deferred_mutex);
+   return compute;
 }
 
 static void
@@ -15224,6 +15243,7 @@ ps5_queue_compute(struct ps5_context *context, struct pipe_resource *const *buff
       goto out;
    }
    pinned->storage[2] = table;
+   pinned->compute = true;
    table = NULL;
    for (unsigned i = 0; i < buffer_count; ++i)
       pipe_resource_reference(&pinned->retained[pinned->retained_count++], buffers[i]);
