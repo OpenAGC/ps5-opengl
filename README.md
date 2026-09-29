@@ -17,7 +17,9 @@
 
 [![PS5 OpenGL 4.6 showcase](docs/images/ps5-opengl-showcase.png)](https://i.imgur.com/4KKg2xn.mp4)
 
-*Click the image to watch the demo.*
+*Click the image to watch the demo. The showcase renders at 4K and 120 Hz on the
+console; the capture hardware recorded it at 60 Hz, which is why the screenshot
+and video show 60 FPS.*
 
 > [!IMPORTANT]
 > PS5 OpenGL is experimental and **not Khronos-certified**. It runs in an already
