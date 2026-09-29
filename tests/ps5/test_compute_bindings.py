@@ -165,6 +165,8 @@ code = r'''
 #define PS5_MAX_CONSTANT_BUFFER_SIZE 0x10000u
 struct ps5_resource {
     struct pipe_resource base; uint8_t *data;
+    uint64_t texture_publication_epoch; size_t texture_published_bytes;
+    bool external_cpu_access, gpu_written;
     size_t size, allocation_size, render_staging_offset, render_staging_size, depth_staging_offset, depth_staging_size, layer_stride;
     unsigned level_stride[PIPE_MAX_TEXTURE_LEVELS];
     size_t level_offset[PIPE_MAX_TEXTURE_LEVELS];
@@ -241,10 +243,17 @@ static bool mapped_locked;
 static void ps5_screen_submit_lock(struct pipe_screen *s) { (void)s; assert(!mapped_locked); mapped_locked=true; ++mapped_waits; }
 static void ps5_screen_submit_unlock(struct pipe_screen *s) { (void)s; assert(mapped_locked); mapped_locked=false; }
 static void ps5_draw_batch_submit(void) { ++barrier_submissions; }
+static uint64_t ps5_texture_publication_epoch=1;
+static unsigned texture_publications;
+static void ps5_flush_texture_backing(void *batch, unsigned slot, struct ps5_resource *t, size_t bytes, bool stencil) {
+    assert(!batch && !slot && !stencil && t->base.target!=PIPE_BUFFER && bytes==t->allocation_size);
+    ++texture_publications;
+}
 static void ps5_draw_batch_drain(void) { ++fragment_drains; }
 static bool ps5_render_condition_passes(const struct ps5_context *context) { (void)context; return render_condition_pass; }
-static void ps5_flush_gpu_data(const void *address, size_t size) { assert(address && (fragment_mode ? size==32 || size==64 || size==256 || size==512 || size==768 || size==2048 || size==4*PS5_TESSELLATION_BUFFER_STRIDE || size==PS5_DESCRIPTOR_STORAGE_BYTES ||
-    (size>=PS5_CONSTANT_DATA_OFFSET && size<PS5_DESCRIPTOR_STORAGE_BYTES && size%16==0) : size==12)); }
+static unsigned compute_flushes;
+static void ps5_flush_gpu_data(const void *address, size_t size) { compute_flushes+=!fragment_mode; assert(!fragment_mode || (address && (fragment_mode ? size==32 || size==64 || size==256 || size==512 || size==768 || size==2048 || size==4*PS5_TESSELLATION_BUFFER_STRIDE || size==PS5_DESCRIPTOR_STORAGE_BYTES ||
+    (size>=PS5_CONSTANT_DATA_OFFSET && size<PS5_DESCRIPTOR_STORAGE_BYTES && size%16==0) : 1))); }
 ''' + texel_format + texel_descriptor + r'''
 static bool ps5_uses_merged_geometry_metadata(const struct ps5_context *c, const struct ps5_shader *s, const PsbcShaderMetadata *m) { return false; }
 static unsigned ps5_texture_count(const struct ps5_context *c, const struct ps5_shader *s, const PsbcShaderMetadata *m) { return s->nir->info.num_textures; }
@@ -262,7 +271,7 @@ void u_upload_unmap(struct u_upload_mgr *upload) { assert(upload); }
 static void destroy(struct pipe_screen *s, struct pipe_resource *r) {
     assert(s && r && !r->reference.count); ++destroyed;
 }
-int ps5_agc_compute_execute(struct pipe_screen *s, const PsbcShaderOutput *shader,
+int ps5_agc_compute_dispatch(struct pipe_screen *s, const PsbcShaderOutput *shader,
     struct pipe_resource *table, struct pipe_resource *const *buffers, unsigned count,
     const uint32_t groups[3]) {
     assert(s && shader && groups[0]==2 && groups[1]==1 && groups[2]==1);

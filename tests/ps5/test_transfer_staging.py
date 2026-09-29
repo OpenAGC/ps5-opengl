@@ -124,6 +124,7 @@ static void util_format_apply_color_swizzle(union pipe_color_union *dst,
 static void ps5_flush_gpu_data(const void *p, size_t n) { assert(p && n); }
 static unsigned drains;
 static void ps5_draw_batch_drain_buffer(struct pipe_resource *r) { (void)r; ++drains; }
+static void ps5_invalidate_gpu_writes(struct ps5_resource *r) { if (r) r->gpu_written = false; }
 static unsigned heap_live, mapped_live, maps, unmaps;
 static unsigned fail_heap;
 static bool fail_map;

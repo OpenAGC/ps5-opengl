@@ -38,11 +38,19 @@ int ps5_agc_compute_plan_memory(size_t code_size, uint32_t private_stride,
    (32u + 15u + PS5_AGC_COMPUTE_MAX_IMAGES + PS5_AGC_COMPUTE_MAX_TEXTURES)
 /* Internal bring-up path, not a public GL compute capability. All resources
  * must remain owned and unchanged until this synchronous call returns.
- * Raw UBO/SSBO and validated mip/layer image views; unbound slots are zero. */
+ * Raw UBO/SSBO and validated mip/layer image views; unbound slots are zero.
+ * Flushes every resource allocation from the CPU cache before and after. */
 int ps5_agc_compute_execute(struct pipe_screen *screen,
                             const PsbcShaderOutput *shader,
                             struct pipe_resource *descriptors,
                             struct pipe_resource *const *buffers,
                             unsigned buffer_count, const uint32_t groups[3]);
+/* Same dispatch without CPU cache maintenance: the caller publishes CPU
+ * writes beforehand and invalidates before later CPU access. */
+int ps5_agc_compute_dispatch(struct pipe_screen *screen,
+                             const PsbcShaderOutput *shader,
+                             struct pipe_resource *descriptors,
+                             struct pipe_resource *const *buffers,
+                             unsigned buffer_count, const uint32_t groups[3]);
 
 #endif

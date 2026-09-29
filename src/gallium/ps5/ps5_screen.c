@@ -134,7 +134,8 @@ static void ps5_draw_batch_drain_query(struct ps5_query *query);
 static bool ps5_draw_batch_query_ready(const struct ps5_query *query, bool wait);
 static void ps5_draw_batch_drain_buffer(struct pipe_resource *resource);
 #else
-#define ps5_draw_batch_drain_buffer(resource) ((void)(resource))
+#define ps5_draw_batch_drain_buffer(resource) \
+   ps5_invalidate_gpu_writes((struct ps5_resource *)(resource))
 #define ps5_draw_batch_drain_query(query) ((void)(query))
 #define ps5_draw_batch_query_ready(query, wait) true
 #endif
@@ -552,6 +553,7 @@ struct ps5_resource {
    uint64_t texture_publication_epoch, stencil_publication_epoch;
    size_t texture_published_bytes, stencil_published_bytes;
    bool external_cpu_access;
+   bool gpu_written; /* CPU-cached lines may predate a compute write */
    struct pipe_resource *render_pool_owner;
    struct pipe_resource *stencil_sample;
    uint8_t *data;
@@ -5232,18 +5234,31 @@ ps5_resource_create(struct pipe_screen *screen,
    return resource;
 }
 
+/* A compute write leaves CPU-cached lines stale, and a partial CPU write to a
+ * stale line would write old neighbouring bytes back over GPU results. Every
+ * CPU access drains first, so invalidate there instead of after each dispatch. */
+static void
+ps5_invalidate_gpu_writes(struct ps5_resource *resource)
+{
+   if (!resource || !resource->gpu_written)
+      return;
+   resource->gpu_written = false;
+   ps5_flush_gpu_data(resource->data, resource->allocation_size);
+}
+
 static int
 ps5_resource_get_info(struct pipe_resource *base, void **address,
                   size_t *logical_size, size_t *allocation_size, bool cpu_export)
 {
    struct ps5_resource *resource = (struct ps5_resource *)base;
 
+   /* GPU users are ordered by the queue: compute submits behind queued
+    * graphics, so only a CPU export waits and invalidates. */
    if (cpu_export) {
       ps5_draw_batch_drain();
       if (base && (base->bind & PIPE_BIND_DISPLAY_TARGET))
          ps5_draw_batch_drain_buffer(base);
-   } else {
-      ps5_draw_batch_drain_buffer(base);
+      ps5_invalidate_gpu_writes(resource);
    }
    if (!resource)
       return -1;
@@ -6833,6 +6848,8 @@ ps5_transfer_map(struct pipe_context *context, struct pipe_resource *base,
    if (base->target != PIPE_BUFFER || (usage & PIPE_MAP_READ) ||
        !(usage & PIPE_MAP_UNSYNCHRONIZED))
       ps5_draw_batch_drain_buffer(base);
+   else
+      ps5_invalidate_gpu_writes(resource);
 
    if (usage & PIPE_MAP_PERSISTENT)
       resource->external_cpu_access = true;
@@ -11776,6 +11793,7 @@ ps5_draw_batch_drain_buffer(struct pipe_resource *base)
       fputs("[ps5-gallium] scanout reuse before confirmed flip completion\n", stderr);
       _Exit(EXIT_FAILURE);
    }
+   ps5_invalidate_gpu_writes(buffer);
    simple_mtx_unlock(&ps5_deferred_mutex);
 }
 
@@ -15154,13 +15172,42 @@ ps5_set_compute_sampler_states(struct pipe_context *base, unsigned start, unsign
    context->compute_samplers_invalid = false;
 }
 
+/* Publish only bytes the CPU may have written since the resource was last
+ * flushed. Owned buffers publish each CPU write at the write (unmap,
+ * flush_region, subdata) or drain first, so the epoch covers them as it covers
+ * textures. Persistent and exported mappings have no write callback. */
+static void
+ps5_publish_compute_resource(struct pipe_resource *base, size_t offset, size_t bytes)
+{
+   struct ps5_resource *resource = (struct ps5_resource *)base;
+   if (base->target != PIPE_BUFFER) {
+      ps5_flush_texture_backing(NULL, 0, resource, resource->allocation_size, false);
+      return;
+   }
+   if (resource->external_cpu_access) {
+      ps5_flush_gpu_data(resource->data + offset, bytes);
+      return;
+   }
+#ifdef PS5_DEFERRED_DRAW_BATCH
+   if (resource->texture_publication_epoch == ps5_texture_publication_epoch &&
+       resource->texture_published_bytes >= resource->allocation_size)
+      return;
+#endif
+   ps5_flush_gpu_data(resource->data, resource->allocation_size);
+   resource->texture_publication_epoch = ps5_texture_publication_epoch;
+   resource->texture_published_bytes = resource->allocation_size;
+}
+
 static void
 ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
 {
    struct ps5_context *context = (struct ps5_context *)base;
    struct pipe_resource *buffers[PS5_AGC_COMPUTE_MAX_RESOURCES];
+   /* Storage buffers and images the dispatch may write. */
+   struct pipe_resource *written[PS5_COMPUTE_STORAGE_SLOTS + PS5_COMPUTE_IMAGE_SLOTS];
+   size_t offsets[PS5_AGC_COMPUTE_MAX_RESOURCES], sizes[PS5_AGC_COMPUTE_MAX_RESOURCES];
    uint32_t groups[3];
-   unsigned buffer_count = 0;
+   unsigned buffer_count = 0, written_count = 0;
    context->last_compute_status = -1;
    if (!context->cs || !context->compute_descriptors ||
        (context->cs->ssbos && context->compute_bindings_invalid) ||
@@ -15223,6 +15270,10 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
       srd[1] = address >> 32;
       srd[2] = bound->buffer_size;
       srd[3] = UINT32_C(0x31016fac);
+      if (i < PS5_COMPUTE_STORAGE_SLOTS)
+         written[written_count++] = bound->buffer;
+      offsets[buffer_count] = bound->buffer_offset;
+      sizes[buffer_count] = bound->buffer_size;
       buffers[buffer_count++] = bound->buffer;
    }
    for (unsigned i = 0; i < PS5_COMPUTE_IMAGE_SLOTS; ++i) {
@@ -15239,9 +15290,9 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
                                        descriptor) :
           ps5_storage_image_view_descriptor(view, descriptor))
          return;
-      const struct ps5_resource *native = (const struct ps5_resource *)resource;
-      if (resource->target == PIPE_BUFFER)
-         ps5_flush_gpu_data(native->data + view->u.buf.offset, view->u.buf.size);
+      written[written_count++] = resource;
+      offsets[buffer_count] = resource->target == PIPE_BUFFER ? view->u.buf.offset : 0;
+      sizes[buffer_count] = resource->target == PIPE_BUFFER ? view->u.buf.size : 0;
       buffers[buffer_count++] = resource;
    }
    for (unsigned i = 0; i < PS5_COMPUTE_TEXTURE_SLOTS; ++i) {
@@ -15260,8 +15311,8 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
          if (!ps5_texel_buffer_descriptor(view, context->cs->output.metadata.address32_hi,
                                           descriptor))
             return;
-         const struct ps5_resource *resource = (const struct ps5_resource *)view->texture;
-         ps5_flush_gpu_data(resource->data + view->u.buf.offset, view->u.buf.size);
+         offsets[buffer_count] = view->u.buf.offset;
+         sizes[buffer_count] = view->u.buf.size;
          buffers[buffer_count++] = view->texture;
          continue;
       }
@@ -15312,10 +15363,35 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
          memcpy(table->data + PS5_COMPUTE_TEXTURE_OFFSET + i * 48 + 32,
                 context->compute_samplers[i], 16);
       }
+      offsets[buffer_count] = sizes[buffer_count] = 0;
       buffers[buffer_count++] = view->texture;
    }
-   context->last_compute_status = ps5_agc_compute_execute(base->screen, &context->cs->output,
+#ifdef PS5_DEFERRED_DRAW_BATCH
+   simple_mtx_lock(&ps5_deferred_mutex); /* publication epochs */
+#endif
+   for (unsigned i = 0; i < buffer_count; ++i)
+      ps5_publish_compute_resource(buffers[i], offsets[i], sizes[i]);
+   ps5_flush_gpu_data(table->data, PS5_COMPUTE_DESCRIPTOR_BYTES);
+#ifdef PS5_DEFERRED_DRAW_BATCH
+   simple_mtx_unlock(&ps5_deferred_mutex);
+#endif
+   context->last_compute_status = ps5_agc_compute_dispatch(base->screen, &context->cs->output,
       context->compute_descriptors, buffers, buffer_count, groups);
+   /* The dispatch has completed. Mapped storage without a CPU callback sees
+    * results now; everything else invalidates at its next CPU access. */
+#ifdef PS5_DEFERRED_DRAW_BATCH
+   simple_mtx_lock(&ps5_deferred_mutex);
+#endif
+   for (unsigned i = 0; i < written_count; ++i) {
+      struct ps5_resource *resource = (struct ps5_resource *)written[i];
+      if (resource->external_cpu_access)
+         ps5_flush_gpu_data(resource->data, resource->allocation_size);
+      else
+         resource->gpu_written = true;
+   }
+#ifdef PS5_DEFERRED_DRAW_BATCH
+   simple_mtx_unlock(&ps5_deferred_mutex);
+#endif
    if (context->last_compute_status)
       printf("[ps5-gallium] compute submit failed status=%d resources=%u\n",
              context->last_compute_status, buffer_count);
@@ -16243,6 +16319,8 @@ ps5_buffer_subdata(struct pipe_context *base, struct pipe_resource *resource,
       return;
    if (!(usage & PIPE_MAP_UNSYNCHRONIZED))
       ps5_draw_batch_drain_buffer(resource);
+   else
+      ps5_invalidate_gpu_writes(buffer);
    memcpy(buffer->data + offset, data, size);
    /* UNSYNCHRONIZED writes may fill previously unused holes inside an already
     * published bounding range. Publish at the write, even without a drain. */

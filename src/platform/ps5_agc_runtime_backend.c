@@ -792,12 +792,14 @@ ps5_agc_writes_scanout(void)
 #ifdef PS5_NATIVE_TITLE_RUNTIME
 #include "ps5_agc_package.h"
 
-int
-ps5_agc_compute_execute(struct pipe_screen *screen,
-                        const PsbcShaderOutput *shader,
-                        struct pipe_resource *descriptors,
-                        struct pipe_resource *const *buffers,
-                        unsigned buffer_count, const uint32_t groups[3])
+/* publish: flush every table/resource allocation before the dispatch and
+ * again after completion (bring-up callers own raw CPU pointers). */
+static int
+ps5_agc_compute_run(struct pipe_screen *screen,
+                    const PsbcShaderOutput *shader,
+                    struct pipe_resource *descriptors,
+                    struct pipe_resource *const *buffers,
+                    unsigned buffer_count, const uint32_t groups[3], bool publish)
 {
    extern uint32_t *sceAgcDcbAcquireMem(void *, uint8_t, uint32_t, uint32_t,
                                        uint64_t, uint64_t, uint32_t);
@@ -982,14 +984,17 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
    /* ProsperoAI's proven acquire/release flags: invalidate before CS reads,
     * flush shader writes before signaling CPU completion. No VideoOut needed.
     * Physical storage can exceed logical bytes (tiled images/padding). Keep
-    * logical sizes for descriptor ownership above, allocated spans for caches. */
+    * logical sizes for descriptor ownership above, allocated spans for caches.
+    * Without publish, the caller publishes CPU writes beforehand. */
    if (table) {
-      flush_gpu_data(table, table_allocation_size);
+      if (publish)
+         flush_gpu_data(table, table_allocation_size);
       if (!sceAgcDcbAcquireMem(&command, 0, 0, 0x4380, (uintptr_t)table, table_allocation_size, 0xa0))
          goto cleanup;
    }
    for (unsigned i = 0; i < buffer_count; ++i) {
-      flush_gpu_data(addresses[i], allocation_sizes[i]);
+      if (publish)
+         flush_gpu_data(addresses[i], allocation_sizes[i]);
       if (!sceAgcDcbAcquireMem(&command, 0, 0, 0x4380,
                              (uintptr_t)addresses[i], allocation_sizes[i], 0xa0))
          goto cleanup;
@@ -1026,7 +1031,7 @@ ps5_agc_compute_execute(struct pipe_screen *screen,
          runtime_require_retirement(before[i] == UINT32_C(0xa5a5a5a5) &&
                                     after[i] == UINT32_C(0xa5a5a5a5));
    }
-   for (unsigned i = 0; i < buffer_count; ++i)
+   for (unsigned i = 0; publish && i < buffer_count; ++i)
       flush_gpu_data(addresses[i], allocation_sizes[i]);
    result = 0;
 cleanup:
@@ -1038,6 +1043,26 @@ cleanup:
    if (locked)
       ps5_screen_submit_unlock(screen);
    return result;
+}
+
+int
+ps5_agc_compute_execute(struct pipe_screen *screen,
+                        const PsbcShaderOutput *shader,
+                        struct pipe_resource *descriptors,
+                        struct pipe_resource *const *buffers,
+                        unsigned buffer_count, const uint32_t groups[3])
+{
+   return ps5_agc_compute_run(screen, shader, descriptors, buffers, buffer_count, groups, true);
+}
+
+int
+ps5_agc_compute_dispatch(struct pipe_screen *screen,
+                         const PsbcShaderOutput *shader,
+                         struct pipe_resource *descriptors,
+                         struct pipe_resource *const *buffers,
+                         unsigned buffer_count, const uint32_t groups[3])
+{
+   return ps5_agc_compute_run(screen, shader, descriptors, buffers, buffer_count, groups, false);
 }
 #endif
 

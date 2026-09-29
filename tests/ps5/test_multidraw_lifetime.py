@@ -449,7 +449,9 @@ struct pipe_sampler_view { struct pipe_resource *texture; unsigned target, forma
 struct ps5_resource { struct pipe_resource base; uint64_t texture_publication_epoch, stencil_publication_epoch;
     int64_t direct_start; unsigned render_arena_slot_count; bool external_cpu_access; unsigned render_staging_size, depth_staging_size;
     unsigned level_stride[16];
-    uint8_t *data, *stencil_data; size_t size, allocation_size, stencil_allocation_size; };
+    uint8_t *data, *stencil_data; size_t size, allocation_size, stencil_allocation_size; bool gpu_written; };
+static unsigned gpu_write_invalidations;
+__attribute__((unused)) static void ps5_invalidate_gpu_writes(struct ps5_resource *r) { if (r && r->gpu_written) { r->gpu_written=false; ++gpu_write_invalidations; } }
 struct pipe_screen { struct pipe_resource *(*resource_create)(struct pipe_screen *, const struct pipe_resource *); };
 struct ps5_screen { struct pipe_screen base; struct pipe_resource *render_pool; };
 struct pipe_context { struct pipe_screen *screen; };

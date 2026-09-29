@@ -81,6 +81,7 @@ static unsigned drains, flush_count;
 static struct pipe_resource *expected_drain;
 static struct { const void *p; size_t n; } flushes[128];
 static void ps5_draw_batch_drain_buffer(struct pipe_resource *r) { assert(r && r==expected_drain); ++drains; }
+__attribute__((unused)) static void ps5_invalidate_gpu_writes(struct ps5_resource *resource) { (void)resource; }
 static void ps5_flush_gpu_data(const void *p,size_t n) {
     assert(p && n && flush_count < ARRAY_SIZE(flushes));
     flushes[flush_count].p=p; flushes[flush_count++].n=n;

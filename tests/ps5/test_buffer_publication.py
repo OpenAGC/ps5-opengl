@@ -21,6 +21,7 @@ struct pipe_box {int x,y,z,width,height,depth;};
 struct pipe_transfer {struct pipe_resource *resource;unsigned usage;struct pipe_box box;};
 static unsigned drains,flushes;static uint8_t cpu[128],gpu[128];
 static void ps5_draw_batch_drain_buffer(struct pipe_resource *r){(void)r;++drains;}
+static unsigned invalidations;static void ps5_invalidate_gpu_writes(struct ps5_resource *r){(void)r;++invalidations;}
 static void ps5_flush_gpu_data(const void *p,size_t n){
  size_t at=(const uint8_t*)p-cpu;assert(at+n<=sizeof(cpu));memcpy(gpu+at,p,n);++flushes;
 }

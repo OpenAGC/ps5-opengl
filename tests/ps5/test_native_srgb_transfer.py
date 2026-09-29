@@ -85,6 +85,7 @@ static bool ps5_render_target_format(unsigned f) { return ps5_sampled_texture_fo
 static bool ps5_msaa4_color_format(unsigned f) { return ps5_render_target_format(f); }
 static unsigned drains, flushes;
 static void ps5_draw_batch_drain_buffer(struct pipe_resource *r) { assert(r); ++drains; }
+__attribute__((unused)) static void ps5_invalidate_gpu_writes(struct ps5_resource *resource) { (void)resource; }
 static void ps5_flush_gpu_data(const void *p, size_t n) { assert(p && n); ++flushes; }
 ''' + section("static bool\nps5_linear_sampled_layout(", "static bool\nps5_color_render_target(") + section(
     "static size_t\nps5_tiled_depth_layer_xor(", "static bool\nps5_integer_texture_format(") + section(
