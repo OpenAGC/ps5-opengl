@@ -172,6 +172,8 @@ one firmware-6.02 console. See [supported boundaries](docs/limitations.md).
 
 ## Maintainer and license
 
+Built with the [PS5 Payload SDK](https://github.com/ps5-payload-dev/sdk) by John Törnblom (ps5-payload-dev).
+
 Maintained by [BlackBearReloaded](https://github.com/blackbearreloaded). Upstream
 projects retain their authorship and licenses. Project-owned code is
 [GPL-3.0-or-later](LICENSE); see [third-party notices](THIRD_PARTY_NOTICES.md) and
