@@ -77,12 +77,16 @@ Modes are chosen before EGL starts and changed by restarting EGL; a display with
 | Example | Demonstrates |
 | --- | --- |
 | [OpenGL 4.6 showcase](examples/core46-showcase/README.md) | 4K at 120 FPS: 262k compute particles, GPU culling into `glMultiDrawElementsIndirectCount`, HDR bloom |
-| [OpenGL 4.6 compute cubes](examples/core46-compute-cubes/README.md) | Compute-driven SSBO animation and indirect instanced drawing |
-| [Triangle](examples/core33-triangle/README.md) | Minimal EGL/OpenGL application |
-| [Dear ImGui](examples/core33-imgui/README.md) | Widgets, fonts, animated shapes and controller navigation |
-| [NanoVG](examples/core33-nanovg/README.md) | Upstream GL3 vector renderer |
-| [Sokol](examples/core33-sokol/README.md) and [Sokol cube](examples/core33-sokol-cube/README.md) | Existing renderer integration, depth and culling |
-| [Textured cubes benchmark](examples/core33-cubes/README.md) | Ordinary versus instanced drawing |
+| [OpenGL 4.6 compute cubes](examples/core46-compute-cubes/README.md) | A compute shader writes an SSBO; one indirect instanced draw per frame |
+| [Triangle](examples/core33-triangle/README.md) | Minimal OpenGL 4.6 context, shaders and draw: the starting point for a new app |
+| [Dear ImGui](examples/core33-imgui/README.md) | Unmodified upstream ImGui OpenGL3 backend, with an interactive TV demo |
+| [NanoVG](examples/core33-nanovg/README.md) | Unmodified upstream NanoVG GL3 vector renderer |
+| [Sokol](examples/core33-sokol/README.md) and [Sokol cube](examples/core33-sokol-cube/README.md) | Unmodified `sokol_gfx` GL backend, and an upstream desktop sample ported to the SDK |
+| [Textured cubes benchmark](examples/core33-cubes/README.md) | Ordinary versus instanced draw submission |
+
+The examples are code references built from source; only the showcase ships as
+a prebuilt app. The ImGui, NanoVG and Sokol examples use those libraries'
+OpenGL 3.3 backends unchanged, which the OpenGL 4.6 SDK runs as-is.
 
 Each SDK release also attaches the showcase as a ready-to-install demo app
 (`ps5-opengl-showcase-<version>-PPSA99005.zip`). Each example is packaged as the

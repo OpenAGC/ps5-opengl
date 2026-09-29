@@ -86,8 +86,8 @@ resolution/refresh guarantee follows from the qualified 120-Hz profiles.
 
 ## Reproducing a comparison
 
-Use the [ImGui benchmark](../examples/core33-imgui/README.md) or
-[cubes profile](../examples/core33-cubes/README.md#opt-in-matched-profile).
+Use the [ImGui benchmark](example-validation.md#matched-windowed-benchmark) or
+[cubes profile](example-validation.md#opt-in-matched-profile).
 Record the source, SDK manifest/runtime hashes, scene, dimensions, warm-up,
 duration, logging settings and completion mode.
 

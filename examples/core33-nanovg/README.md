@@ -1,25 +1,22 @@
-# Installed-SDK NanoVG GL3 renderer check
+# NanoVG integration
 
-Uses unmodified [NanoVG](https://github.com/memononen/nanovg) at
-`ce3bf745eb2d2dbc14a50bf2446783f691ac4353` (zlib license). Only EGL/native
-entry-point, build glue, and deterministic test content are project-owned.
-The GL3 backend keeps antialiasing, stencil strokes, UBOs, and debug checks.
+Runs unmodified [NanoVG](https://github.com/memononen/nanovg) at
+`ce3bf745eb2d2dbc14a50bf2446783f691ac4353` (zlib license) with its GL3 backend,
+keeping antialiasing, stencil strokes, UBOs and debug checks. Only the EGL entry
+point, build glue and test content are project-owned. NanoVG's GL3 backend
+targets 3.3 Core, which the SDK's OpenGL 4.6 driver runs unchanged.
+
+`main.c` renders three frames at 320x240 and 640x480, recreating the renderer
+between them. The frames cover premultiplied blending, a stencil-cut hole,
+self-intersecting stencil strokes, shader clipping, a nearest-filtered image and
+a gradient. Each frame is checked against pixel probes, then the app exits.
 
 ```sh
 make source-fetch
 make sdk
-bash tools/test-nanovg-host.sh
-make nanovg
+bash tools/test-nanovg-host.sh      # host software Mesa
+make nanovg                         # PPSA99005 folder
 ```
 
-Three frames exercise 320x240 / 640x480 targets and renderer recreation:
-premultiplied blending, a stencil-cut hole, stencil strokes with a
-self-intersection, shader clipping, a nearest-filtered image, and a gradient.
-Acceptance requires 45 toleranced pixel probes, an entirely cleared stencil
-buffer after every frame, no logged GL/backend errors, status 0, and clean
-resource/EGL teardown. The same oracle runs first on host software Mesa.
-The image is presented, but screenshots are not required.
-
-Use the locked native gate wrapper with `egl_public_core33_nanovg.o`, frozen
-hashes, 60-second observation, and stop text `[ps5-nanovg] finished`.
-This is supplemental renderer compatibility evidence, not official CTS coverage.
+Acceptance criteria and the native run procedure are in
+[example validation](../../docs/example-validation.md#nanovg).

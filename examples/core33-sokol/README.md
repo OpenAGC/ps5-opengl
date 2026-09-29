@@ -1,29 +1,26 @@
-# Installed-SDK Sokol renderer check
+# Sokol integration
 
-Uses unmodified [Sokol](https://github.com/floooh/sokol) `sokol_gfx.h` at
-`48c85905aeaa1350feb17515961aecb6c75447d8` (zlib license), with its GL backend
-and debug validation enabled. EGL entry point, scene and numeric oracle are
-project-owned. The SDK contains modern Khronos headers; two 4.x header macros
-are undefined before including Sokol to select its existing 3.3 fallback
-paths, as with a 3.3-only external loader. No GL functions are stubbed and no
-upstream algorithms are changed. The host script rejects imports outside the
-344-command Core 3.3 list; it does not merely rely on a version string.
+Runs unmodified [Sokol](https://github.com/floooh/sokol) `sokol_gfx.h` at
+`48c85905aeaa1350feb17515961aecb6c75447d8` (zlib license) with its GL backend
+and debug validation. The EGL entry point, scene and pixel oracle are
+project-owned.
+
+The SDK ships OpenGL 4.6 headers. `main.c` undefines two 4.x header macros
+before including Sokol, which selects Sokol's existing GL 3.3 paths, as an
+application with a 3.3-only loader would get. No GL function is stubbed and no
+Sokol code is changed; the SDK's OpenGL 4.6 driver runs those paths unchanged.
+
+`main.c` renders three frames at 320x240, 640x480 and 320x240, recreating the
+renderer and resources each time. The frames draw an indexed, textured quad with
+instancing, uniforms, nearest samplers, alpha blending and scissor, and compare
+every pixel with a CPU oracle before the app exits.
 
 ```sh
 make source-fetch
 make sdk
-bash tools/test-sokol-host.sh
-make sokol
+bash tools/test-sokol-host.sh       # host software Mesa
+make sokol                          # PPSA99005 folder
 ```
 
-Three frames at 320x240 / 640x480 / 320x240 recreate the renderer and resources,
-upload an indexed quad, update an instance buffer, and draw two textured
-instances with uniforms, nearest samplers, alpha blending and hardware scissor.
-Every RGBA component is compared with an independent CPU oracle (1,843,200
-components total, tolerance 2). All frames, resource states, GL/EGL cleanup,
-and Sokol warnings/errors must pass. The same scene/oracle runs first on host
-software Mesa. Blits present the checked images; screenshots are unnecessary.
-
-Run the locked native gate wrapper with `egl_public_core33_sokol.o`, frozen
-hashes, 60-second observation and stop text `[ps5-sokol] finished`.
-This is renderer compatibility evidence, not official CTS coverage.
+Acceptance criteria and the native run procedure are in
+[example validation](../../docs/example-validation.md#sokol).

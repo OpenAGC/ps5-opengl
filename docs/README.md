@@ -26,6 +26,7 @@ GL/EGL interfaces and the platform integration appropriate to your application.
 ## Verify and contribute
 
 - [Testing](testing.md): risk-based host and bounded native checks.
+- [Example validation](example-validation.md): acceptance criteria and benchmark procedures for the examples.
 - [CTS campaign](cts-campaign.md): efficient batching and submission prerequisites.
 - [CTS release qualification](cts-qualification.md): measured prerequisite results and current blockers.
 - [Validation](validation.md): frozen full-campaign results and evidence boundaries.
