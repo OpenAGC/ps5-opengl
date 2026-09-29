@@ -182,3 +182,5 @@ projects retain their authorship and licenses. Project-owned code is
 No vendor SDK, firmware modules, device keys, proprietary shader packages,
 console-enablement payloads or raw device logs are distributed here. This
 independent project is not affiliated with Sony or The Khronos Group.
+
+This project was developed with AI assistance from OpenAI and/or Anthropic tools.
