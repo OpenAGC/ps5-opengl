@@ -32,11 +32,11 @@ int
 main(void)
 {
    static const char *vertex_source =
-      "#version 330 core\n"
+      "#version 460 core\n"
       "layout(location=0) in vec2 position;\n"
       "void main() { gl_Position = vec4(position, 0.0, 1.0); }\n";
    static const char *fragment_source =
-      "#version 330 core\n"
+      "#version 460 core\n"
       "layout(location=0) out vec4 color;\n"
       "void main() { color = vec4(1.0, 0.0, 1.0, 1.0); }\n";
    static const GLfloat vertices[] = {
@@ -54,8 +54,8 @@ main(void)
       EGL_NONE,
    };
    static const EGLint context_attributes[] = {
-      EGL_CONTEXT_MAJOR_VERSION_KHR, 3,
-      EGL_CONTEXT_MINOR_VERSION_KHR, 3,
+      EGL_CONTEXT_MAJOR_VERSION_KHR, 4,
+      EGL_CONTEXT_MINOR_VERSION_KHR, 6,
       EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR,
       EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR,
       EGL_NONE,
@@ -64,7 +64,7 @@ main(void)
    EGLSurface surface = EGL_NO_SURFACE;
    EGLContext context = EGL_NO_CONTEXT;
    EGLConfig config = NULL;
-   EGLint major = 0, minor = 0, count = 0;
+   EGLint major = 0, minor = 0, count = 0, width = 0, height = 0;
    GLuint vertex_shader = 0, fragment_shader = 0, program = 0;
    GLuint vertex_array = 0, vertex_buffer = 0;
    GLint linked = GL_FALSE;
@@ -80,8 +80,11 @@ main(void)
                                     (EGLNativeWindowType)0, NULL);
    context = eglCreateContext(display, config, EGL_NO_CONTEXT,
                               context_attributes);
+   /* The window follows the SDK's display mode (1080p by default). */
    if (surface == EGL_NO_SURFACE || context == EGL_NO_CONTEXT ||
-       !eglMakeCurrent(display, surface, surface, context))
+       !eglMakeCurrent(display, surface, surface, context) ||
+       !eglQuerySurface(display, surface, EGL_WIDTH, &width) ||
+       !eglQuerySurface(display, surface, EGL_HEIGHT, &height))
       goto cleanup;
 
    vertex_shader = compile_shader(GL_VERTEX_SHADER, vertex_source);
@@ -104,7 +107,7 @@ main(void)
    glVertexAttribPointer(0, 2, GL_FLOAT, GL_FALSE, 0, NULL);
    glEnableVertexAttribArray(0);
    glUseProgram(program);
-   glViewport(0, 0, 1920, 1080);
+   glViewport(0, 0, width, height);
    glClearColor(0.0f, 0.0f, 0.0f, 1.0f);
    glClear(GL_COLOR_BUFFER_BIT);
    glDrawArrays(GL_TRIANGLES, 0, 3);
