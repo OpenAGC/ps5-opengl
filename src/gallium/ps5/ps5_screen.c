@@ -7787,8 +7787,16 @@ ps5_blit_gpu_color(struct ps5_context *context, const struct pipe_blit_info *inf
       right = MIN2(right, info->scissor.maxx);
       top = MIN2(top, info->scissor.maxy);
    }
+   /* The CPU fallback maps the destination box, which must lie inside the
+    * surface: a box clipped by the surface edge always takes the GPU path. */
+   const int64_t dst_width = MAX2(info->dst.resource->width0 >> info->dst.level, 1u);
+   const int64_t dst_height = MAX2(info->dst.resource->height0 >> info->dst.level, 1u);
+   const bool dst_clipped = info->dst.box.x < 0 || info->dst.box.y < 0 ||
+      (int64_t)info->dst.box.x + info->dst.box.width > dst_width ||
+      (int64_t)info->dst.box.y + info->dst.box.height > dst_height;
    if (right <= left || top <= bottom ||
-       (uint64_t)(right - left) * (top - bottom) < PS5_GPU_BLIT_MIN_PIXELS)
+       (!dst_clipped &&
+        (uint64_t)(right - left) * (top - bottom) < PS5_GPU_BLIT_MIN_PIXELS))
       return false;
 
    const bool resolve = info->src.resource->nr_samples == 4 &&
