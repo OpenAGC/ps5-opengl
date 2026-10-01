@@ -141,7 +141,19 @@ static void util_blitter_blit_generic(struct blitter_context *b,const struct pip
     assert(v->u.tex.first_level==expected.src.level && v->u.tex.last_level==expected.src.level);
     assert(width0==v->texture->width0 && height0==v->texture->height0);
     assert(mask==expected.mask && filter==expected.filter && !alpha && !sample0 && !sample && !override);
-    assert((scissor!=NULL)==expected.scissor_enable);
+    /* The blit is always clipped to the destination box, the caller scissor
+     * and the destination surface. */
+    int64_t left=expected.dst.box.x, bottom=expected.dst.box.y;
+    int64_t right=left+expected.dst.box.width, top=bottom+expected.dst.box.height;
+    if (expected.scissor_enable) {
+        left=MAX2(left,expected.scissor.minx); bottom=MAX2(bottom,expected.scissor.miny);
+        right=MIN2(right,expected.scissor.maxx); top=MIN2(top,expected.scissor.maxy);
+    }
+    left=MAX2(left,0); bottom=MAX2(bottom,0);
+    right=MIN2(right,(int64_t)MAX2(s->texture->width0>>s->level,1u));
+    top=MIN2(top,(int64_t)MAX2(s->texture->height0>>s->level,1u));
+    assert(scissor && scissor->minx==left && scissor->miny==bottom &&
+           scissor->maxx==right && scissor->maxy==top);
     struct ps5_context *c=(struct ps5_context *)b->pipe;
     assert(c->deferred_blitter_draw);
     c->viewport_valid=!c->viewport_valid; c->scissor_valid=!c->scissor_valid;
@@ -203,7 +215,15 @@ int main(void) {
     REJECT(src.format,2); REJECT(dst.format,2); REJECT(src.level,1); REJECT(dst.level,1);
     REJECT(scissor_enable,true); REJECT(num_window_rectangles,1); REJECT(alpha_blend,true);
     REJECT(swizzle_enable,true); REJECT(sample0_only,true); REJECT(dst_sample,1);
-    REJECT(src.box.x,-1); REJECT(dst.box.y,-1); REJECT(src.box.z,1); REJECT(dst.box.depth,2);
+    REJECT(src.box.x,-1); REJECT(src.box.z,1); REJECT(dst.box.depth,2);
+    /* A destination box clipped by the surface edge is drawn, however small:
+     * the CPU fallback cannot map a box outside the surface. */
+    { struct pipe_blit_info clipped=b; clipped.dst.box.y=-1;
+      assert(ps5_blit_gpu_color(&c,&clipped));
+      clipped.dst.box.y=1020; clipped.dst.box.height=8; clipped.dst.box.width=8;
+      clipped.src.box.height=8; clipped.src.box.width=8;
+      assert(ps5_blit_gpu_color(&c,&clipped));
+      clipped.dst.box.y=1024; assert(!ps5_blit_gpu_color(&c,&clipped)); }
     REJECT(src.box.x,513); REJECT(dst.box.y,INT_MAX); REJECT(src.box.width,INT_MIN);
     REJECT(dst.box.width,-512); REJECT(src.box.height,0); REJECT(dst.resource,&r.base);
     struct pipe_blit_info flipped=b;

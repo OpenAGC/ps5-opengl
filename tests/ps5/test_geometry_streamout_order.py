@@ -55,6 +55,7 @@ static bool ps5_streamout_storage(struct ps5_context *c,struct pipe_resource **s
 code += next(line for line in source.splitlines() if line.startswith('#define PS5_TESS_STREAMOUT_ORDINAL_COUNT')) + '\n'
 code += function('ps5_prepare_primitive_query')
 code += function('ps5_streamout_record_compare')
+code += function('ps5_tess_streamout_record_compare')
 code += function('ps5_collect_geometry_streamout')
 code += r'''
 int main(void) {

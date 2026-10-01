@@ -25,12 +25,35 @@ static unsigned maps, unmaps, creates, real_calls[6], owned_calls[6];
 static int mode, allocation_failure;
 static void *pool;
 static size_t used;
+#define MIB (1024u*1024u)
+/* Modes 0-2: the default 128 MiB heap. Modes 3-4: a 512 MiB heap, which is
+ * taken from direct memory (3) or, failing that, from halving mmap sizes (4). */
 static void *test_map(void *p,size_t n,int prot,int flags,int fd,off_t offset) {
-    assert(!p && n == 128u*1024u*1024u && prot == (PROT_READ|PROT_WRITE));
+    assert(!p && prot == (PROT_READ|PROT_WRITE));
     assert(flags == (MAP_PRIVATE|MAP_ANON) && fd == -1 && offset == 0);
+    assert(mode != 3);
+    assert(n == (mode == 4 ? (512u*MIB) >> maps : 128u*MIB));
     ++maps;
-    if (mode == 1) return MAP_FAILED;
+    if (mode == 1 || (mode == 4 && n != 128u*MIB)) return MAP_FAILED;
     pool=mmap(p,n,prot,flags,fd,offset); assert(pool != MAP_FAILED); return pool;
+}
+static unsigned direct_allocations, direct_maps;
+int64_t sceKernelGetDirectMemorySize(void) { assert(mode >= 3); return INT64_C(1) << 33; }
+int32_t sceKernelAllocateDirectMemory(int64_t start,int64_t end,size_t n,size_t alignment,
+                                      int type,int64_t *physical) {
+    assert(mode >= 3 && !start && end == INT64_C(1) << 33 && n == 512u*MIB);
+    assert(alignment == 2u*MIB && type == 12 && physical);
+    ++direct_allocations;
+    if (mode == 4) return -1;
+    *physical=0x40000000; return 0;
+}
+int32_t sceKernelMapDirectMemory(void **address,size_t n,int prot,int flags,
+                                 int64_t physical,size_t alignment) {
+    assert(mode == 3 && address && !*address && n == 512u*MIB);
+    assert(prot == (PROT_READ|PROT_WRITE) && !flags && physical == 0x40000000 && alignment == 2u*MIB);
+    ++direct_maps;
+    pool=mmap(NULL,n,prot,MAP_PRIVATE|MAP_ANON,-1,0); assert(pool != MAP_FAILED);
+    *address=pool; return 0;
 }
 static int test_unmap(void *p,size_t n) { assert(p == pool); ++unmaps; return munmap(p,n); }
 #define mmap test_map
@@ -88,11 +111,15 @@ size_t sceLibcMspaceMallocUsableSize(const void *p) {
 int main(int argc,char **argv) {
     assert(argc == 2); mode=atoi(argv[1]);
     void *p=__wrap_malloc(16); assert(p);
-    assert(ps5_heap_owns(p) == (mode == 0));
-    assert(maps == 1 && creates == (mode != 1) && unmaps == (mode == 2));
+    const int owned = mode == 0 || mode >= 3;
+    const unsigned expected_maps = mode == 3 ? 0 : mode == 4 ? 3 : 1;
+    assert(ps5_heap_owns(p) == owned);
+    assert(maps == expected_maps && creates == (mode != 1) && unmaps == (mode == 2));
+    assert(direct_allocations == (mode >= 3) && direct_maps == (mode == 3));
+    if (owned) assert(PS5_OPENGL_HEAP_SIZE == (mode == 3 ? 512u*MIB : 128u*MIB));
     memset(p,0xa5,16);
     void *q=__wrap_realloc(p,32); assert(q);
-    if (!mode) {
+    if (owned) {
         assert(q != p && atomic_load(&ps5_heap_live_bytes) == 32);
         for (unsigned i=0;i<16;++i) assert(((unsigned char *)q)[i] == 0xa5);
         q=__wrap_realloc(q,8); assert(q && atomic_load(&ps5_heap_live_bytes) == 8);
@@ -108,20 +135,28 @@ int main(int argc,char **argv) {
     p=__real_malloc(16); assert(p && !ps5_heap_owns(p));
     assert(__wrap_malloc_usable_size(p) == 16);
     p=__wrap_realloc(p,32); assert(p); __wrap_free(p);
-    if (!mode) {
+    if (owned) {
         assert(!atomic_load(&ps5_heap_live_bytes) && !atomic_load(&ps5_heap_blocks));
         assert(atomic_load(&ps5_heap_peak_bytes) == 32);
         for (unsigned i=0;i<6;++i) assert(owned_calls[i]);
-        unsigned real_malloc=real_calls[0];
-        p=__wrap_malloc(16); assert(p); allocation_failure=1;
-        assert(!__wrap_malloc(16) && !__wrap_realloc(p,32));
-        q=(void *)(uintptr_t)1;
-        assert(__wrap_posix_memalign(&q,64,16) == ENOMEM && q == (void *)(uintptr_t)1);
-        assert(real_calls[0] == real_malloc); /* No cross-heap fallback on owned-heap OOM. */
-        assert(atomic_load(&ps5_heap_live_bytes) == 16 && atomic_load(&ps5_heap_blocks) == 1);
-        assert(atomic_load(&ps5_heap_failures) == 3);
-        __wrap_free(p);
+        unsigned real_malloc=real_calls[0], real_memalign=real_calls[4];
+        p=__wrap_malloc(16); assert(p && ps5_heap_owns(p)); allocation_failure=1;
+        memset(p,0x5a,16);
+        /* An exhausted owned heap spills to the libc heap; every block is
+         * still freed and resized by the heap that owns its address. */
+        q=__wrap_malloc(16);
+        assert(q && !ps5_heap_owns(q) && real_calls[0] == real_malloc+1);
+        __wrap_free(q);
+        q=__wrap_realloc(p,32); /* moves the owned block to the libc heap */
+        assert(q && !ps5_heap_owns(q) && real_calls[0] == real_malloc+2);
+        for (unsigned i=0;i<16;++i) assert(((unsigned char *)q)[i] == 0x5a);
         assert(!atomic_load(&ps5_heap_live_bytes) && !atomic_load(&ps5_heap_blocks));
+        __wrap_free(q);
+        q=NULL;
+        assert(!__wrap_posix_memalign(&q,64,16) && q && !ps5_heap_owns(q));
+        assert(!((uintptr_t)q%64) && real_calls[4] == real_memalign+1);
+        __wrap_free(q);
+        assert(atomic_load(&ps5_heap_failures) == 3);
         allocation_failure=0;
         p=__wrap_malloc(16); assert(p && !__wrap_realloc(p,0));
         assert(atomic_load(&ps5_heap_ambiguous_zero_reallocs) == 1);
@@ -136,14 +171,20 @@ int main(int argc,char **argv) {
         assert(atomic_load(&ps5_heap_state) == -1 && !ps5_heap_base);
         assert(!atomic_load(&ps5_heap_live_bytes) && !atomic_load(&ps5_heap_blocks));
     }
-    assert(maps == 1); /* Failure is not repeatedly retried by every allocation. */
+    /* Failure is not repeatedly retried by every allocation. */
+    assert(maps == expected_maps && direct_allocations == (mode >= 3));
     puts("app-heap: PASS wrapper routing, initialization/reentrancy/failure, owned and foreign allocations");
 }
 '''
+default_size = "const size_t ps5_opengl_heap_size = 128u * 1024u * 1024u;"
+assert code.count(default_size) == 1
+# A title that reserves more than the flexible-memory budget, as the CTS runner does.
+large = code.replace(default_size, "const size_t ps5_opengl_heap_size = 512u * 1024u * 1024u;")
 with tempfile.TemporaryDirectory() as temporary:
-    executable = str(Path(temporary) / "app-heap")
-    subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
-                    "-fsanitize=address,undefined", "-g", "-x", "c", "-o", executable, "-"],
-                   input=code, text=True, check=True)
-    for mode in (0, 1, 2):
-        subprocess.run([executable, str(mode)], cwd=temporary, check=True)
+    for name, program, modes in (("app-heap", code, (0, 1, 2)), ("app-heap-large", large, (3, 4))):
+        executable = str(Path(temporary) / name)
+        subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
+                        "-fsanitize=address,undefined", "-g", "-x", "c", "-o", executable, "-"],
+                       input=program, text=True, check=True)
+        for mode in modes:
+            subprocess.run([executable, str(mode)], cwd=temporary, check=True)

@@ -38,6 +38,7 @@ struct ps5_context {
     void *tessellation_hs_package,*tessellation_tes_package,*tessellation_layout;
     unsigned tessellation_hs_package_size,tessellation_tes_package_size;
     bool tessellation_streamout;
+    unsigned tessellation_patch_vertices;
     struct output tessellation_output;
 };
 static unsigned char *borrowed;

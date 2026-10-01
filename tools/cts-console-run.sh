@@ -93,6 +93,10 @@ launch() {
         "$run" "$mode" "$first" "$last" "${CTS_LOG_FLUSH:-1}" "${CTS_ONLY_CASELISTS:-0}" \
         "${CTS_SHADER_SOURCES:-0}" "${CTS_DUMP_NIR:-0}" "${CTS_COMPUTE_SYNC:-0}" \
         "${CTS_LOG_IMAGES:-0}" "${CTS_WATCHDOG:-0}" > "$control"
+    # CTS_ENV="NAME=value ...": driver environment variables for this launch.
+    for variable in ${CTS_ENV:-}; do
+        printf 'env=%s\n' "$variable" >> "$control"
+    done
     put_verified "$control" "$remote_root/control.txt"
     rm -f "$control"
 

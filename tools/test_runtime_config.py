@@ -28,7 +28,9 @@ class RuntimeConfigTest(unittest.TestCase):
             shutil.copyfile(root / "tests/ps5/native-app.mk", work / "tests/ps5/native-app.mk")
             for name in ("toolchain/ps5-opengl-core33.mk", "sdk/toolchain/prospero.mk"):
                 (work / name).touch()
+            # The builder runs under a shell; substitute what it would expand.
             command = [arg.replace("$root", str(work)).replace("$sdk", str(work / "sdk"))
+                          .replace("$(nproc)", str(os.cpu_count() or 1))
                        for arg in command[:-1]]
             command += ["--eval=probe:;@echo $(PS5_OPENGL_RUNTIME_DEFINES)", "probe"]
             for enabled in (None, "0", "1", "0"):

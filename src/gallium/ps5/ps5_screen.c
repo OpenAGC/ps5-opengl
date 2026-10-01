@@ -30,6 +30,7 @@ ps5_runtime_printf(const char *format, ...)
 
 #include "compiler/nir/nir.h"
 #include "compiler/nir/nir_builder.h"
+#include "compiler/nir/nir_xfb_info.h"
 #include "nir/tgsi_to_nir.h"
 #include "amd/common/amdgfxregs.h"
 #include "amd/common/ac_descriptors.h"
@@ -398,6 +399,16 @@ struct ps5_context {
    uint8_t *tessellation_tes_package;
    size_t tessellation_tes_package_size;
    uint8_t patch_vertices;
+   /* Two-pass tessellation + geometry, see ps5_draw_tess_gs_two_pass. The
+    * derived shaders are keyed by the serials of the application's stages. */
+   uint64_t tess_capture_tes_serial;
+   uint64_t tess_capture_gs_serial;
+   struct ps5_shader *tess_capture_tes;
+   struct ps5_shader *tess_capture_vs;
+   struct ps5_shader *tess_capture_fs;
+   struct ps5_vertex_elements *tess_capture_elements;
+   struct pipe_resource *tess_capture_buffer;
+   bool tess_capture_active;
    struct ps5_shader *geometry_vs;
    struct ps5_shader *geometry_gs;
    struct ps5_vertex_layout *geometry_layout;
@@ -492,6 +503,8 @@ struct ps5_context {
 struct ps5_shader {
    PsbcStage stage;
    nir_shader *nir;
+   /* Never reused, unlike the address of a deleted shader. */
+   uint64_t serial;
    /* Framebuffer fetch reads color buffer 0 through this texture unit + 1. */
    unsigned fbfetch_unit;
    struct pipe_stream_output_info stream_output;
@@ -12110,6 +12123,269 @@ ps5_prepare_default_tcs(struct ps5_context *context)
    return true;
 }
 
+/* Tessellation followed by an instanced or large geometry shader is drawn in
+ * two passes. The linked pipeline loses geometry invocations in whole
+ * tessellation rings at high levels (measured at level 64), and an input
+ * primitive whose output exceeds one 128-thread subgroup needs the
+ * per-instance subgroup mode, which hangs behind the tessellator. So the
+ * tessellated primitives are captured through transform feedback and drawn
+ * again as ordinary primitives for the geometry shader; both halves are
+ * pipelines the hardware runs correctly. */
+#define PS5_TESS_CAPTURE_MAX_SLOTS 16u
+#define PS5_TESS_CAPTURE_MAX_BYTES (UINT64_C(256) << 20)
+
+static uint64_t
+ps5_next_shader_serial(void)
+{
+   static uint64_t serial;
+
+   return __atomic_add_fetch(&serial, 1, __ATOMIC_RELAXED);
+}
+
+/* The varying slots a geometry shader reads, in ascending order. They are
+ * captured and replayed as whole 32-bit vec4 slots. */
+static bool
+ps5_tess_capture_slots(const nir_shader *gs, uint8_t *slots, unsigned *count)
+{
+   uint64_t read = 0;
+
+   *count = 0;
+   if (!gs->info.io_lowered)
+      return false;
+   nir_foreach_function_impl(impl, (nir_shader *)gs) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic != nir_intrinsic_load_per_vertex_input)
+               continue;
+            const nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
+            if (intr->def.bit_size != 32 || sem.location + sem.num_slots > 64)
+               return false;
+            read |= BITFIELD64_RANGE(sem.location, sem.num_slots);
+         }
+      }
+   }
+   /* The second pass still needs one vertex record per captured vertex. */
+   if (!read)
+      read = VARYING_BIT_POS;
+   u_foreach_bit64(slot, read) {
+      if (*count == PS5_TESS_CAPTURE_MAX_SLOTS)
+         return false;
+      slots[(*count)++] = slot;
+   }
+   return true;
+}
+
+/* The evaluation shader with every slot in "slots" captured to buffer 0, one
+ * vec4 per slot. NULL when a slot is not written by direct 32-bit stores. */
+static nir_shader *
+ps5_tess_capture_tes_nir(const nir_shader *tes, const uint8_t *slots,
+                         unsigned count)
+{
+   nir_shader *nir;
+   bool valid = true;
+   bool captured = false;
+
+   if (!tes->info.io_lowered || !(nir = nir_shader_clone(NULL, tes)))
+      return NULL;
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (!nir_intrinsic_has_io_xfb(intr))
+               continue;
+            const nir_io_semantics sem = nir_intrinsic_io_semantics(intr);
+            /* The application's own captures belong to the geometry shader. */
+            nir_io_xfb xfb = {0};
+            for (unsigned i = 0; i < count; ++i) {
+               if (slots[i] < sem.location ||
+                   slots[i] >= sem.location + sem.num_slots)
+                  continue;
+               /* st/mesa lowers evaluation outputs to direct 32-bit stores. */
+               if (intr->intrinsic != nir_intrinsic_store_output ||
+                   !nir_src_is_const(intr->src[1]) ||
+                   intr->src[0].ssa->bit_size != 32 ||
+                   nir_intrinsic_component(intr) +
+                      intr->src[0].ssa->num_components > 4) {
+                  valid = false;
+                  continue;
+               }
+               if (slots[i] != sem.location + nir_src_as_uint(intr->src[1]))
+                  continue;
+               u_foreach_bit(c, nir_intrinsic_write_mask(intr)) {
+                  const unsigned component = nir_intrinsic_component(intr) + c;
+                  xfb.out[component].num_components = 1;
+                  xfb.out[component].buffer = 0;
+                  xfb.out[component].offset = i * 4u + component;
+               }
+               captured = true;
+            }
+            nir_intrinsic_set_io_xfb(intr, xfb);
+         }
+      }
+   }
+   memset(nir->info.xfb_stride, 0, sizeof(nir->info.xfb_stride));
+   nir->info.xfb_stride[0] = count * 4u;
+   nir->info.has_transform_feedback_varyings = true;
+   ralloc_free(nir->xfb_info);
+   nir->xfb_info = NULL;
+   if (valid && captured)
+      nir_gather_xfb_info_from_intrinsics(nir);
+   if (!nir->xfb_info) {
+      ralloc_free(nir);
+      return NULL;
+   }
+   return nir;
+}
+
+/* A vertex shader that replays the captured slots: attribute i feeds slot i. */
+static nir_shader *
+ps5_tess_capture_vs_nir(const uint8_t *slots, unsigned count)
+{
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_VERTEX, psbc_get_nir_options(PSBC_STAGE_VERTEX),
+      "ps5-tess-capture-vs");
+   bool position = false;
+
+   for (unsigned i = 0; i < count; ++i) {
+      const bool scalar = slots[i] == VARYING_SLOT_PSIZ;
+      nir_variable *in = nir_variable_create(b.shader, nir_var_shader_in,
+                                             glsl_vec4_type(), NULL);
+      nir_variable *out = nir_variable_create(
+         b.shader, nir_var_shader_out,
+         scalar ? glsl_float_type() : glsl_vec4_type(), NULL);
+      in->data.location = VERT_ATTRIB_GENERIC0 + i;
+      in->data.driver_location = i;
+      out->data.location = slots[i];
+      nir_def *value = nir_load_var(&b, in);
+      nir_store_var(&b, out, scalar ? nir_channel(&b, value, 0) : value,
+                    scalar ? 1 : 15);
+      position |= slots[i] == VARYING_SLOT_POS;
+   }
+   if (!position) {
+      nir_variable *out = nir_variable_create(b.shader, nir_var_shader_out,
+                                             glsl_vec4_type(), NULL);
+      out->data.location = VARYING_SLOT_POS;
+      nir_store_var(&b, out, nir_imm_vec4(&b, 0, 0, 0, 1), 15);
+   }
+   nir_lower_io_passes(b.shader, false);
+   nir_remove_dead_variables(b.shader,
+                             nir_var_shader_in | nir_var_shader_out, NULL);
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   return b.shader;
+}
+
+/* The capture pass rasterizes nothing; its fragment shader links to nothing. */
+static nir_shader *
+ps5_tess_capture_fs_nir(void)
+{
+   nir_builder b = nir_builder_init_simple_shader(
+      MESA_SHADER_FRAGMENT, psbc_get_nir_options(PSBC_STAGE_FRAGMENT),
+      "ps5-tess-capture-fs");
+
+   b.shader->info.io_lowered = true;
+   nir_shader_gather_info(b.shader, nir_shader_get_entrypoint(b.shader));
+   return b.shader;
+}
+
+/* Whether the linked tessellation + geometry pipeline must not draw this
+ * geometry shader. PS5_TESS_GS_PATH=direct|capture overrides for diagnosis. */
+static bool
+ps5_tess_gs_two_pass(const nir_shader *gs)
+{
+   static int forced = -1;
+   const unsigned invocations = MAX2(gs->info.gs.invocations, 1);
+
+   if (forced < 0) {
+      const char *path = getenv("PS5_TESS_GS_PATH");
+      forced = !path ? 0 : !strcmp(path, "direct") ? 1 :
+               !strcmp(path, "capture") ? 2 : 0;
+   }
+   if (forced)
+      return forced == 2;
+   return invocations > 1 || gs->info.gs.vertices_out > 64;
+}
+
+static void
+ps5_release_tess_capture(struct ps5_context *context)
+{
+   struct ps5_shader *tes = context->tess_capture_tes;
+   struct ps5_shader *vs = context->tess_capture_vs;
+
+   context->tess_capture_tes_serial = 0;
+   context->tess_capture_gs_serial = 0;
+   context->tess_capture_tes = NULL;
+   context->tess_capture_vs = NULL;
+   /* One function deletes the shader state of every stage. */
+   context->base.delete_vs_state(&context->base, tes);
+   context->base.delete_vs_state(&context->base, vs);
+   free(context->tess_capture_elements);
+   context->tess_capture_elements = NULL;
+}
+
+static bool
+ps5_prepare_tess_capture(struct ps5_context *context)
+{
+   struct pipe_context *base = &context->base;
+   struct pipe_shader_state state = {.type = PIPE_SHADER_IR_NIR};
+   uint8_t slots[PS5_TESS_CAPTURE_MAX_SLOTS];
+   struct ps5_vertex_elements *elements;
+   struct ps5_shader *tes;
+   unsigned count;
+
+   if (context->tess_capture_tes_serial == context->tes->serial &&
+       context->tess_capture_gs_serial == context->gs->serial)
+      return context->tess_capture_tes != NULL;
+   ps5_release_tess_capture(context);
+   context->tess_capture_tes_serial = context->tes->serial;
+   context->tess_capture_gs_serial = context->gs->serial;
+   if (!context->tess_capture_fs) {
+      state.ir.nir = ps5_tess_capture_fs_nir();
+      context->tess_capture_fs = base->create_fs_state(base, &state);
+   }
+   if (!context->tess_capture_fs ||
+       !ps5_tess_capture_slots(context->gs->nir, slots, &count))
+      return false;
+   tes = calloc(1, sizeof(*tes));
+   elements = calloc(1, sizeof(*elements));
+   if (tes)
+      tes->nir = ps5_tess_capture_tes_nir(context->tes->nir, slots, count);
+   state.ir.nir = tes && tes->nir && elements
+      ? ps5_tess_capture_vs_nir(slots, count) : NULL;
+   context->tess_capture_vs = state.ir.nir
+      ? base->create_vs_state(base, &state) : NULL;
+   if (!context->tess_capture_vs) {
+      printf("[ps5-gallium] tess-capture unavailable slots=%u\n", count);
+      if (tes)
+         ralloc_free(tes->nir);
+      free(tes);
+      free(elements);
+      return false;
+   }
+   tes->stage = PSBC_STAGE_TESS_EVAL;
+   tes->serial = ps5_next_shader_serial();
+   tes->stream_output.num_outputs = count;
+   tes->stream_output.stride[0] = count * 4u;
+   elements->count = count;
+   for (unsigned i = 0; i < count; ++i) {
+      tes->stream_output.output[i] = (struct pipe_stream_output){
+         .register_index = i, .num_components = 4, .dst_offset = i * 4u,
+      };
+      elements->elements[i] = (struct pipe_vertex_element){
+         .src_offset = i * 16u, .src_stride = count * 16u,
+         .src_format = PIPE_FORMAT_R32G32B32A32_FLOAT,
+      };
+   }
+   context->tess_capture_tes = tes;
+   context->tess_capture_elements = elements;
+   printf("[ps5-gallium] tess-capture ready slots=%u\n", count);
+   return true;
+}
+
 #ifndef PS5_KLOG
 #define PS5_KLOG(...) do { \
       int sceKernelDebugOutText(int channel, const char *text) __attribute__((weak)); \
@@ -12133,6 +12409,147 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
              const struct pipe_draw_indirect_info *indirect,
              const struct pipe_draw_start_count_bias *draws,
              unsigned num_draws);
+
+/* False when the draw was not taken over. */
+static bool
+ps5_draw_tess_gs_two_pass(struct pipe_context *base,
+                          const struct pipe_draw_info *info,
+                          unsigned drawid_offset,
+                          const struct pipe_draw_start_count_bias *draw)
+{
+   struct ps5_context *context = (struct ps5_context *)base;
+   struct ps5_shader *const vs = context->vs, *const tcs = context->tcs;
+   struct ps5_shader *const tes = context->tes, *const gs = context->gs;
+   struct ps5_shader *const fs = context->fs;
+   struct pipe_rasterizer_state *const rasterizer = context->rasterizer;
+   const enum mesa_prim primitive = gs->nir->info.gs.input_primitive;
+   const unsigned vertices_per_primitive =
+      ps5_streamout_vertices_per_primitive(primitive);
+   const unsigned patches = context->patch_vertices
+      ? draw->count / context->patch_vertices : 0;
+   struct pipe_stream_output_target *saved_targets[PIPE_MAX_SO_BUFFERS] = {0};
+   const unsigned saved_target_count = context->stream_output_target_count;
+   const enum mesa_prim saved_primitive = context->stream_output_primitive;
+   const bool queries_enabled = context->queries_enabled;
+   struct pipe_stream_output_target *target;
+   struct pipe_rasterizer_state discard;
+   unsigned offsets[PIPE_MAX_SO_BUFFERS] = {0};
+   unsigned captured;
+   int capture_status;
+   uint64_t bytes;
+
+   if (!vertices_per_primitive || !rasterizer || !fs ||
+       !ps5_prepare_tess_capture(context))
+      return false;
+   if (info->instance_count > 1) {
+      /* One capture per instance. The instance moves into the base instance,
+       * which only vertex-buffer divisors may observe. */
+      const struct ps5_shader *const stages[] = {vs, tcs, tes};
+      for (unsigned stage = 0; stage < ARRAY_SIZE(stages); ++stage)
+         if (BITSET_TEST(stages[stage]->nir->info.system_values_read,
+                         SYSTEM_VALUE_INSTANCE_ID) ||
+             BITSET_TEST(stages[stage]->nir->info.system_values_read,
+                         SYSTEM_VALUE_BASE_INSTANCE))
+            return false;
+      if ((uint64_t)info->start_instance + info->instance_count - 1u > UINT32_MAX)
+         return false;
+      for (unsigned instance = 0; instance < info->instance_count; ++instance) {
+         struct pipe_draw_info single = *info;
+
+         single.instance_count = 1;
+         single.start_instance = info->start_instance + instance;
+         if (!ps5_draw_tess_gs_two_pass(base, &single, drawid_offset, draw))
+            return instance != 0;
+         if (context->last_draw_status != 0)
+            break;
+      }
+      return true;
+   }
+   if (!patches) {
+      context->last_draw_status = 0;
+      return true;
+   }
+   /* A quad patch at the maximum level yields 2 * 64 * 64 triangles. */
+   bytes = (uint64_t)patches * 8192u * vertices_per_primitive *
+           context->tess_capture_elements->count * 16u;
+   if (bytes > PS5_TESS_CAPTURE_MAX_BYTES ||
+       !ps5_streamout_storage(context, &context->tess_capture_buffer, bytes))
+      return false;
+   target = base->create_stream_output_target(
+      base, context->tess_capture_buffer, 0, (unsigned)bytes);
+   if (!target)
+      return false;
+
+   for (unsigned i = 0; i < saved_target_count; ++i)
+      pipe_so_target_reference(&saved_targets[i],
+                               context->stream_output_targets[i]);
+   base->set_stream_output_targets(base, 1, &target, offsets, primitive);
+   discard = *rasterizer;
+   discard.rasterizer_discard = 1;
+   context->rasterizer = &discard;
+   context->tes = context->tess_capture_tes;
+   context->gs = NULL;
+   context->fs = context->tess_capture_fs;
+   /* The application's queries count the geometry shader's primitives. */
+   context->queries_enabled = false;
+   context->tess_capture_active = true;
+   context->last_draw_status = 0;
+   ps5_draw_vbo(base, info, drawid_offset, NULL, draw, 1);
+   capture_status = context->last_draw_status;
+   captured = ((struct ps5_stream_output_target *)target)->vertex_count;
+   context->queries_enabled = queries_enabled;
+   context->fs = fs;
+   context->gs = gs;
+   context->tes = tes;
+   context->rasterizer = rasterizer;
+   memset(offsets, 0xff, sizeof(offsets)); /* append: keep the positions */
+   base->set_stream_output_targets(base, saved_target_count, saved_targets,
+                                   offsets, saved_primitive);
+   for (unsigned i = 0; i < saved_target_count; ++i)
+      pipe_so_target_reference(&saved_targets[i], NULL);
+   pipe_so_target_reference(&target, NULL);
+   printf("[ps5-gallium] tess-capture status=%d patches=%u vertices=%u\n",
+          capture_status, patches, captured);
+
+   if (capture_status == 0 && captured) {
+      struct pipe_vertex_buffer saved_buffers[PIPE_MAX_ATTRIBS];
+      const unsigned saved_buffer_count = context->vertex_buffer_count;
+      struct ps5_vertex_elements *const elements = context->vertex_elements;
+      const struct pipe_vertex_buffer buffer = {
+         .buffer.resource = context->tess_capture_buffer,
+      };
+      const struct pipe_draw_info replay = {
+         .mode = primitive, .instance_count = 1,
+      };
+      const struct pipe_draw_start_count_bias replay_draw = {
+         .count = captured,
+      };
+
+      for (unsigned i = 0; i < saved_buffer_count; ++i) {
+         saved_buffers[i] = context->vertex_buffers[i];
+         saved_buffers[i].buffer.resource = NULL;
+         pipe_resource_reference(&saved_buffers[i].buffer.resource,
+                                 context->vertex_buffers[i].buffer.resource);
+      }
+      base->set_vertex_buffers(base, 1, &buffer);
+      context->vertex_elements = context->tess_capture_elements;
+      context->vs = context->tess_capture_vs;
+      context->tcs = NULL;
+      context->tes = NULL;
+      ps5_draw_vbo(base, &replay, drawid_offset, NULL, &replay_draw, 1);
+      /* The next two-pass draw rewrites the capture buffer. */
+      ps5_draw_batch_drain();
+      context->tes = tes;
+      context->tcs = tcs;
+      context->vs = vs;
+      context->vertex_elements = elements;
+      base->set_vertex_buffers(base, saved_buffer_count, saved_buffers);
+      for (unsigned i = 0; i < saved_buffer_count; ++i)
+         pipe_resource_reference(&saved_buffers[i].buffer.resource, NULL);
+   }
+   context->tess_capture_active = false;
+   return capture_status == 0;
+}
 
 /* A rejected draw renders nothing; report the status of the first ones. */
 static void
@@ -12213,6 +12630,17 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
       ps5_draw_vbo(base, info, drawid_offset, indirect, draws, num_draws);
       context->tcs = NULL;
       return;
+   }
+
+   if (PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDATE && info && !indirect && draws &&
+       num_draws == 1 && info->mode == MESA_PRIM_PATCHES &&
+       !info->primitive_restart && context->tes && context->gs &&
+       !context->tess_capture_active &&
+       ps5_tess_gs_two_pass(context->gs->nir)) {
+      if (ps5_draw_tess_gs_two_pass(base, info, drawid_offset, &draws[0]))
+         return;
+      /* Not captured: the linked pipeline draws what it can. */
+      context->last_draw_status = 0;
    }
 
    if (info && (info->mode == MESA_PRIM_QUADS ||
@@ -14349,6 +14777,14 @@ ps5_select_tessellation_pipeline(struct ps5_context *context,
 
    if (!context->tcs && !context->tes)
       return true;
+   /* One input primitive's output must fit one 128-thread subgroup: the
+    * per-instance subgroup mode hangs the GPU behind the tessellator. */
+   if (context->gs &&
+       MAX2(context->gs->nir->info.gs.invocations, 1) *
+          context->gs->nir->info.gs.vertices_out > 128) {
+      printf("[ps5-gallium] tessellation-select reject=geometry-subgroup\n");
+      return false;
+   }
    if (!PS5_ENABLE_TESSELLATION_CANDIDATE || !context->tcs ||
        !context->tes || !context->patch_vertices ||
        context->patch_vertices > 32 ||
@@ -15930,6 +16366,7 @@ ps5_create_shader_state(struct pipe_screen *screen,
    }
    shader->stage = stage;
    shader->nir = templ->ir.nir;
+   shader->serial = ps5_next_shader_serial();
    shader->stream_output = templ->stream_output;
    if (!ps5_lower_fbfetch(shader)) {
       ralloc_free(shader->nir);
@@ -17073,6 +17510,9 @@ ps5_context_destroy(struct pipe_context *base)
    pipe_resource_reference(&context->streamout_records, NULL);
    pipe_resource_reference(&context->primitive_query_storage, NULL);
    ps5_delete_shader_state(base, context->default_tcs);
+   ps5_release_tess_capture(context);
+   ps5_delete_shader_state(base, context->tess_capture_fs);
+   pipe_resource_reference(&context->tess_capture_buffer, NULL);
    for (index = 0; index < PIPE_MAX_SO_BUFFERS; ++index)
       pipe_resource_reference(&context->streamout_staging[index], NULL);
    pipe_resource_reference(&context->vertex_descriptor_table, NULL);

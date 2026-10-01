@@ -42,6 +42,7 @@ static void ps5_release_tessellation_pipeline(struct ps5_context *ctx) {
   ctx->tessellation_tes = ctx->tessellation_gs = NULL;
 }
 static void psbc_free_output(int *output) { (void)output; }
+static void ps5_draw_batch_drain(void) {}
 static void ralloc_free(void *ptr) { free(ptr); }
 ''' + function + r'''
 int main(void) {

@@ -357,6 +357,7 @@ void redirectToKlog(void) { qpRedirectOut(klogOut, klogOutFormat); }
 //   logflush=0                  buffered QPA logs (--deqp-log-flush=disable)
 //   only_caselists=1            run only sessions with a host-written case list
 //   shader_sources=1            log shader sources (diagnostic reruns only)
+//   env=<NAME>=<value>          set a driver environment variable (repeatable)
 // Official mode runs glcts::TestRunner unchanged, as `cts-runner --type=gl46
 // --logdir=<run>` does. Sessions mode first asks the same runner for its
 // session list (--summary), then runs each session with exactly those
@@ -379,6 +380,7 @@ struct Control {
   bool computeSync = false;
   bool logImages = false;
   int watchdog = 0;
+  std::vector<std::string> env;
 };
 
 struct Session {
@@ -441,6 +443,8 @@ Control readControl(void) {
       control.logImages = value == "1";
     else if (key == "watchdog")
       control.watchdog = std::atoi(value.c_str());
+    else if (key == "env")
+      control.env.push_back(value);
   }
   return control;
 }
@@ -573,6 +577,11 @@ int runConformance(void) {
       setenv("PSBC_DUMP_NIR", "1", 1);
     if (control.computeSync)
       setenv("PS5_COMPUTE_SYNC", "1", 1);
+    for (const std::string &variable : control.env) {
+      const size_t equals = variable.find('=');
+      if (equals != std::string::npos && equals != 0)
+        setenv(variable.substr(0, equals).c_str(), variable.substr(equals + 1).c_str(), 1);
+    }
     // Driver diagnostics (printf) go to a buffered file next to the logs.
     if (std::freopen((dir + "/stdout.txt").c_str(), "a", stdout) != nullptr)
       setvbuf(stdout, nullptr, _IOFBF, 1 << 16);
