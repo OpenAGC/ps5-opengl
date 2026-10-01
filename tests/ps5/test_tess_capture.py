@@ -35,8 +35,7 @@ for signature in ("static bool\nps5_lower_default_tess_levels(",
                   "static bool\nps5_tess_capture_slots(",
                   "static nir_shader *\nps5_tess_capture_tes_nir(",
                   "static nir_shader *\nps5_tess_capture_vs_nir(",
-                  "static nir_shader *\nps5_tess_capture_fs_nir(",
-                  "static bool\nps5_tess_gs_two_pass("):
+                  "static nir_shader *\nps5_tess_capture_fs_nir("):
     helpers += function(DRIVER, signature)
 
 code = r'''
@@ -196,7 +195,6 @@ int main(void) {
         const unsigned expected=2+point_size+wide;
         uint8_t slots[PS5_TESS_CAPTURE_MAX_SLOTS];
         unsigned count=0;
-        assert(ps5_tess_gs_two_pass(gs));
         assert(ps5_tess_capture_slots(gs,slots,&count) && count==expected);
         assert(slots[0]==VARYING_SLOT_POS);
         /* st/mesa lowers a dvec2 to four 32-bit components of one slot. */
@@ -304,22 +302,6 @@ int main(void) {
         assert(!ps5_tess_capture_tes_nir(tes,missing,1));
         ralloc_free(tes);
         puts("PASS more than 16 slots and unwritten interfaces refused");
-    }
-    /* Small non-instanced geometry shaders keep the linked pipeline. */
-    {
-        nir_shader *gs=geometry(1,3,false,false);
-        assert(!ps5_tess_gs_two_pass(gs));
-        ralloc_free(gs);
-        gs=geometry(1,64,false,false);
-        assert(!ps5_tess_gs_two_pass(gs));
-        ralloc_free(gs);
-        gs=geometry(1,66,false,false);
-        assert(ps5_tess_gs_two_pass(gs));
-        ralloc_free(gs);
-        gs=geometry(2,3,false,false);
-        assert(ps5_tess_gs_two_pass(gs));
-        ralloc_free(gs);
-        puts("PASS selection: instanced or more than 64 vertices");
     }
     /* The capture pass draws with a fragment shader that reads nothing. */
     {

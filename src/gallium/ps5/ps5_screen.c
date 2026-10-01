@@ -12123,14 +12123,17 @@ ps5_prepare_default_tcs(struct ps5_context *context)
    return true;
 }
 
-/* Tessellation followed by an instanced or large geometry shader is drawn in
- * two passes. The linked pipeline loses geometry invocations in whole
- * tessellation rings at high levels (measured at level 64), and an input
- * primitive whose output exceeds one 128-thread subgroup needs the
- * per-instance subgroup mode, which hangs behind the tessellator. So the
+/* Tessellation followed by a geometry shader is drawn in two passes: the
  * tessellated primitives are captured through transform feedback and drawn
- * again as ordinary primitives for the geometry shader; both halves are
- * pipelines the hardware runs correctly. */
+ * again as ordinary primitives for the geometry shader. Both halves are
+ * pipelines the hardware runs correctly, while the linked pipeline does not
+ * at every tessellation level. Measured at level 64 with quads: in each ring
+ * whose side has a multiple of six segments, a geometry shader emitting 64
+ * vertices per primitive loses the second half of every primitive's output,
+ * with hardware instancing (4 x 16) and without (1 x 64) alike. An input
+ * primitive whose output exceeds one 128-thread subgroup needs the
+ * per-instance subgroup mode, which hangs the GPU behind the tessellator. The
+ * linked pipeline remains the fallback for draws that cannot be captured. */
 #define PS5_TESS_CAPTURE_MAX_SLOTS 16u
 #define PS5_TESS_CAPTURE_MAX_BYTES (UINT64_C(256) << 20)
 
@@ -12292,22 +12295,18 @@ ps5_tess_capture_fs_nir(void)
    return b.shader;
 }
 
-/* Whether the linked tessellation + geometry pipeline must not draw this
- * geometry shader. PS5_TESS_GS_PATH=direct|capture overrides for diagnosis. */
+/* Whether a tessellation + geometry draw takes the two-pass path: always,
+ * unless PS5_TESS_GS_PATH=direct asks for the linked pipeline (diagnosis). */
 static bool
-ps5_tess_gs_two_pass(const nir_shader *gs)
+ps5_tess_gs_two_pass(void)
 {
-   static int forced = -1;
-   const unsigned invocations = MAX2(gs->info.gs.invocations, 1);
+   static int direct = -1;
 
-   if (forced < 0) {
+   if (direct < 0) {
       const char *path = getenv("PS5_TESS_GS_PATH");
-      forced = !path ? 0 : !strcmp(path, "direct") ? 1 :
-               !strcmp(path, "capture") ? 2 : 0;
+      direct = path && !strcmp(path, "direct");
    }
-   if (forced)
-      return forced == 2;
-   return invocations > 1 || gs->info.gs.vertices_out > 64;
+   return !direct;
 }
 
 static void
@@ -12635,8 +12634,7 @@ ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
    if (PS5_ENABLE_TRANSFORM_FEEDBACK_CANDIDATE && info && !indirect && draws &&
        num_draws == 1 && info->mode == MESA_PRIM_PATCHES &&
        !info->primitive_restart && context->tes && context->gs &&
-       !context->tess_capture_active &&
-       ps5_tess_gs_two_pass(context->gs->nir)) {
+       !context->tess_capture_active && ps5_tess_gs_two_pass()) {
       if (ps5_draw_tess_gs_two_pass(base, info, drawid_offset, &draws[0]))
          return;
       /* Not captured: the linked pipeline draws what it can. */
