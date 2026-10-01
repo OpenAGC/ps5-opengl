@@ -10,6 +10,7 @@
   <a href="https://github.com/blackbearreloaded/ps5-opengl/releases/latest"><img src="https://img.shields.io/github/v/release/blackbearreloaded/ps5-opengl?label=SDK" alt="Latest SDK release"></a>
   <img src="https://img.shields.io/badge/OpenGL-4.6%20Core-5586A4" alt="OpenGL 4.6 Core">
   <img src="https://img.shields.io/badge/GLSL-4.60-7DD3FC" alt="GLSL 4.60">
+  <a href="docs/gl46-conformance-run.md"><img src="https://img.shields.io/badge/OpenGL%204.6%20CTS-98%2C590%20passed%20%7C%200%20failed-2EA44F" alt="OpenGL 4.6 conformance test run: 98,590 passed, 0 failed"></a>
   <img src="https://img.shields.io/badge/display-1080p%20%7C%201440p%20%7C%204K-5DDFA4" alt="1080p, 1440p and 4K">
   <img src="https://img.shields.io/badge/refresh-60%20%7C%20120%20Hz-F5B942" alt="60 or 120 Hz">
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-GPL--3.0--or--later-blue" alt="GPL-3.0-or-later"></a>
@@ -120,7 +121,7 @@ See [Building](docs/building.md) for prerequisites and build options.
 
 | Workload at 4K | Completed frames/s |
 | --- | ---: |
-| OpenGL 4.6 showcase, SDK 0.5.0 (120 Hz display) | 119.9 |
+| OpenGL 4.6 showcase, SDK 1.0.0 (4K at 120 Hz) | 119.9 |
 | Dear ImGui window, SDK 0.2.0 | 119.88 |
 | 128 textured cubes, ordinary draws, SDK 0.2.0 | 58.09 |
 | 128 textured cubes, instanced draws, SDK 0.2.0 | 117.41 |
@@ -131,14 +132,54 @@ These are workload measurements, not general game FPS. See
 
 ## Validation
 
-SDK 1.0.0 passes the complete Khronos OpenGL 4.6 conformance test run on a PS5:
-`cts-runner --type=gl46` of VK-GL-CTS 4.6.8.1, **122,799 results with 98,590
-passes, 24,205 justified `NotSupported`, 4 compatibility warnings and no failure**
-([report](docs/gl46-conformance-run.md),
-[evidence](validation/2026-10-01-gl46-conformance/README.md)). The earlier
-OpenGL 3.3 campaign accounts for 39,544 results: 37,404 pass and 2,140 reviewed
-`NotSupported` ([report](docs/validation.md)). `make test` verifies the
-machine-readable evidence of both.
+SDK 1.0.0 passes the complete **Khronos OpenGL 4.6 conformance test run** on a
+PS5: every session of `cts-runner --type=gl46` from VK-GL-CTS 4.6.8.1, in one
+launch of one binary, with no failure and no crash.
+
+| Results | Pass | NotSupported | Compatibility warnings | Failures |
+| ---: | ---: | ---: | ---: | ---: |
+| **122,799** | **98,590** | 24,205 | 4 | **0** |
+
+```mermaid
+pie showData
+    title 122,799 results of the OpenGL 4.6 conformance test run
+    "Pass" : 98590
+    "NotSupported: optional extensions" : 22748
+    "NotSupported: other justified reasons" : 1457
+    "Compatibility warnings" : 4
+```
+
+| Session | Surface | Results | Pass | NotSupported | Warnings | Failures |
+| --- | --- | ---: | ---: | ---: | ---: | ---: |
+| OpenGL ES 3.0 tests under OpenGL 4.5 | 256x256 | 1,325 | 1,325 | 0 | 0 | 0 |
+| OpenGL ES 3.1 tests under OpenGL 4.5 | 256x256 | 31,248 | 30,866 | 382 | 0 | 0 |
+| Context creation, OpenGL 3.0 to 4.5 | 64x64 | 22 | 3 | 19 | 0 | 0 |
+| OpenGL 4.6, single configuration | 64x64 | 11,348 | 5,056 | 6,292 | 0 | 0 |
+| OpenGL 4.6 | 64x64 | 19,714 | 15,335 | 4,378 | 1 | 0 |
+| OpenGL 4.6 | 113x47 | 19,714 | 15,335 | 4,378 | 1 | 0 |
+| OpenGL 4.6 | Framebuffer object 64x16384 | 19,714 | 15,335 | 4,378 | 1 | 0 |
+| OpenGL 4.6 | Framebuffer object 16384x64 | 19,714 | 15,335 | 4,378 | 1 | 0 |
+| **Total** | | **122,799** | **98,590** | **24,205** | **4** | **0** |
+
+A compatibility warning is a passing result: one framebuffer completeness case
+reports it in each OpenGL 4.6 session.
+
+Every `NotSupported` result is assigned to a rule, and the run is rejected if one
+is left over:
+
+| Why a test reports NotSupported | Results |
+| --- | ---: |
+| It tests an extension outside OpenGL 4.6 (sparse textures and buffers, shader subgroups, fragment shading rate, mesh shaders and others) | 22,748 |
+| The test excludes the combination itself (OpenGL ES only, formats or targets it does not apply to) | 871 |
+| It needs more than 4 samples or a multisampled default framebuffer | 532 |
+| It needs more than the minimum OpenGL 4.6 requires for a limit | 35 |
+| It insists on a window surface; the conformant configuration renders offscreen. All of these pass in a supplementary run | 19 |
+
+The [report](docs/gl46-conformance-run.md) describes the run and what it fixed;
+the [evidence](validation/2026-10-01-gl46-conformance/README.md) holds every
+case result, the runner summary and the justifications, and `make test` verifies
+it. The earlier OpenGL 3.3 campaign accounts for 39,544 results: 37,404 pass and
+2,140 reviewed `NotSupported` ([report](docs/validation.md)).
 
 The results were not submitted to Khronos: this is the project's own run of the
 test suite, not Khronos certification. They belong to the tested binary, the
