@@ -89,10 +89,10 @@ launch() {
     mkdir -p "$out"
     preflight
     control=$(mktemp)
-    printf 'run=%s\nmode=%s\nfirst=%s\nlast=%s\nlogflush=%s\nonly_caselists=%s\nshader_sources=%s\ndump_nir=%s\ncompute_sync=%s\nlog_images=%s\n' \
+    printf 'run=%s\nmode=%s\nfirst=%s\nlast=%s\nlogflush=%s\nonly_caselists=%s\nshader_sources=%s\ndump_nir=%s\ncompute_sync=%s\nlog_images=%s\nwatchdog=%s\n' \
         "$run" "$mode" "$first" "$last" "${CTS_LOG_FLUSH:-1}" "${CTS_ONLY_CASELISTS:-0}" \
         "${CTS_SHADER_SOURCES:-0}" "${CTS_DUMP_NIR:-0}" "${CTS_COMPUTE_SYNC:-0}" \
-        "${CTS_LOG_IMAGES:-0}" > "$control"
+        "${CTS_LOG_IMAGES:-0}" "${CTS_WATCHDOG:-0}" > "$control"
     put_verified "$control" "$remote_root/control.txt"
     rm -f "$control"
 

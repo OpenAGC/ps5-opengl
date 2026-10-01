@@ -3185,9 +3185,11 @@ ps5_prepare_fragment_storage(struct ps5_context *context, uint32_t *user_data,
    for (unsigned i = 0; i < count; ++i) {
       const struct pipe_shader_buffer *bound = &context->fragment_buffers[i];
       const struct ps5_resource *resource = (const struct ps5_resource *)bound->buffer;
-      /* ponytail: require the declared prefix bound; sparse-use analysis comes
-       * with public storage support. Never submit a missing descriptor. */
-      if (!resource || resource->base.screen != context->base.screen ||
+      /* An unbound slot keeps its zeroed (null) descriptor, as in the vertex
+       * path: GL leaves such access undefined, it is not a draw error. */
+      if (!resource)
+         continue;
+      if (resource->base.screen != context->base.screen ||
           !resource->data || bound->buffer_offset > resource->size ||
           bound->buffer_size > resource->size - bound->buffer_offset)
          return false;
@@ -3322,7 +3324,9 @@ ps5_prepare_geometry_storage(struct ps5_context *context,
       const struct pipe_shader_buffer *bound = &context->geometry_buffers[i];
       const struct ps5_resource *resource =
          (const struct ps5_resource *)bound->buffer;
-      if (!resource || resource->base.screen != context->base.screen ||
+      if (!resource)
+         continue;
+      if (resource->base.screen != context->base.screen ||
           !resource->data || bound->buffer_offset > resource->size ||
           bound->buffer_size > resource->size - bound->buffer_offset)
          return false;
@@ -10377,6 +10381,10 @@ ps5_draw_vbo_locked(struct pipe_context *base,
       return;
    }
    if (!ps5_prepare_fragment_storage(context, pixel_user_data, pixel_user_data_count)) {
+      printf("[ps5-gallium] resource-prepare reject=fragment-storage buffers=%u images=%u invalid=%u/%u bindings=%u\n",
+             ps5_shader_storage_count(context->fs), context->fs->nir->info.num_images,
+             context->fragment_bindings_invalid, context->fragment_images_invalid,
+             context->fs->active->output.metadata.descriptor_binding_count);
       context->last_draw_status = -15;
       return;
    }
@@ -13940,9 +13948,9 @@ ps5_stream_output_info_valid(const struct pipe_stream_output_info *info,
          return false;
       used_buffers |= BITFIELD_BIT(output->output_buffer);
    }
-   for (unsigned buffer = 0; buffer < PIPE_MAX_SO_BUFFERS; ++buffer)
-      if (!(used_buffers & BITFIELD_BIT(buffer)) && info->stride[buffer])
-         return false;
+   /* A buffer may declare xfb_stride without capturing anything (GL 4.4
+    * enhanced layouts); it is simply never written. */
+   (void)used_buffers;
    return true;
 }
 
@@ -13993,6 +14001,8 @@ ps5_stream_output_split_nir(const nir_shader *source)
    return split;
 }
 
+static unsigned ps5_streamout_buffer_mask(unsigned stream_buffer_mask);
+
 static bool
 ps5_stream_output_metadata_matches(
    const struct pipe_stream_output_info *info,
@@ -14007,9 +14017,10 @@ ps5_stream_output_metadata_matches(
                            info->output[index].stream * PIPE_MAX_SO_BUFFERS);
    if (metadata->streamout_enabled_stream_buffers_mask != mask)
       return false;
+   /* Buffers that only declare xfb_stride capture nothing and are not written. */
    for (unsigned buffer = 0; buffer < PIPE_MAX_SO_BUFFERS; ++buffer)
-      if (metadata->streamout_strides_dwords[buffer] !=
-          info->stride[buffer])
+      if ((ps5_streamout_buffer_mask(mask) & BITFIELD_BIT(buffer)) &&
+          metadata->streamout_strides_dwords[buffer] != info->stride[buffer])
          return false;
    return true;
 }

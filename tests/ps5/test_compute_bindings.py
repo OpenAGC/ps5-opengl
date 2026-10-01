@@ -569,7 +569,7 @@ static void fragment_contract(void) {
     struct pipe_shader_buffer bindings[16];
     for(unsigned i=0;i<16;++i) bindings[i]=(struct pipe_shader_buffer){&data.base,16,64};
     fragment_mode=true;
-    assert(!ps5_prepare_fragment_storage(&c,userdata,16)); /* Missing bank. */
+    assert(ps5_prepare_fragment_storage(&c,userdata,16) && !descriptors[0] && !descriptors[2]); /* Unbound slots stay null. */
     ps5_set_shader_buffers(&c.base,MESA_SHADER_FRAGMENT,0,16,bindings,65535);
     assert(fragment_drains==0 && data.base.reference.count==17 && !c.compute_buffers[0].buffer);
     ps5_set_shader_buffers(&c.base,MESA_SHADER_FRAGMENT,0,16,bindings,65535);
@@ -632,7 +632,7 @@ static void fragment_contract(void) {
     }
     *m=good;
     ps5_set_shader_buffers(&c.base,MESA_SHADER_FRAGMENT,0,16,NULL,0);
-    assert(data.base.reference.count==1 && !ps5_prepare_fragment_storage(&c,userdata,16));
+    assert(data.base.reference.count==1 && ps5_prepare_fragment_storage(&c,userdata,16));
     nir.info.num_ssbos=0; nir.info.num_images=8;
     m->descriptor_binding_count=2;
     m->descriptor_bindings[1]=(PsbcDescriptorBinding){.binding=PSBC_GALLIUM_IMAGE_ARRAY_BINDING(PSBC_STAGE_FRAGMENT),
@@ -696,7 +696,7 @@ static void geometry_storage_contract(void) {
     assert(srd[2]==64 && srd[3]==0x31016fac);
     assert(userdata[0]==(uint32_t)(uintptr_t)descriptors);
     ps5_set_shader_buffers(&c.base,MESA_SHADER_GEOMETRY,0,1,NULL,0);
-    assert(data.base.reference.count==1 && !ps5_prepare_geometry_storage(&c,m,userdata,16));
+    assert(data.base.reference.count==1 && ps5_prepare_geometry_storage(&c,m,userdata,16));
     fragment_mode=false;
 }
 static void preraster_image_contract(void) {

@@ -25,6 +25,7 @@
 #include <dlfcn.h>
 #include <exception>
 #include <signal.h>
+#include <ucontext.h>
 #include <unistd.h>
 #include <unwind.h>
 #include <pthread.h>
@@ -236,8 +237,104 @@ void installCrashHandlers(void) {
   });
 }
 
+// Per-case watchdog (control key watchdog=<seconds>): a case that makes no
+// progress gets a backtrace of the main thread in klog instead of a silent
+// hang, then the process exits so the host can resume after it.
+volatile time_t g_lastCaseStart = 0;
+int g_watchdogSeconds = 0;
+pthread_t g_mainThread;
+const uintptr_t *g_mainStackBase = nullptr;
+
+void watchdogSignal(int, siginfo_t *, void *raw) {
+  // The unwinder stops at the signal frame: report the interrupted PC and the
+  // code addresses on the interrupted stack (return addresses, innermost first).
+  const ucontext_t *context = static_cast<const ucontext_t *>(raw);
+  const uintptr_t text = (uintptr_t)&main & ~(uintptr_t)0x3fffff;
+  char line[96];
+  std::snprintf(line, sizeof(line), "[ps5-opengl-cts] crash watchdog main=0x%lx\n",
+                (unsigned long)(uintptr_t)&main);
+  sceKernelDebugOutText(0, line);
+  std::snprintf(line, sizeof(line), "[ps5-opengl-cts] frame 0 0x%lx\n",
+                (unsigned long)context->uc_mcontext.mc_rip);
+  sceKernelDebugOutText(0, line);
+  const uintptr_t *stack = (const uintptr_t *)context->uc_mcontext.mc_rsp;
+  int frames = 1;
+  for (int i = 0; i < 4096 && frames < 40; ++i) {
+    const uintptr_t value = stack[i];
+    if (value >= text && value < text + 0x8000000u) {
+      std::snprintf(line, sizeof(line), "[ps5-opengl-cts] frame %d 0x%lx\n", frames++,
+                    (unsigned long)value);
+      sceKernelDebugOutText(0, line);
+    }
+  }
+  std::fflush(stdout);
+  _exit(142);
+}
+
+void *watchdogThread(void *) {
+  // Keep the signal off this thread so the stuck main thread reports itself.
+  sigset_t blocked;
+  sigemptyset(&blocked);
+  sigaddset(&blocked, SIGUSR1);
+  pthread_sigmask(SIG_BLOCK, &blocked, nullptr);
+  for (;;) {
+    sleep(5);
+    const time_t last = g_lastCaseStart;
+    if (last && time(nullptr) - last > g_watchdogSeconds) {
+      sceKernelDebugOutText(0, "[ps5-opengl-cts] watchdog expired\n");
+      // Driver diagnostics up to the stall are still in the stdout buffer.
+      std::fflush(stdout);
+      // Signals land on this thread here, so read the stuck main thread's
+      // stack directly: code addresses from its base downward are the live
+      // call chain (outermost first), followed by stale deeper frames.
+      {
+        const uintptr_t text = (uintptr_t)&main & ~(uintptr_t)0x3fffff;
+        char line[96];
+        std::snprintf(line, sizeof(line), "[ps5-opengl-cts] crash watchdog-stack main=0x%lx\n",
+                      (unsigned long)(uintptr_t)&main);
+        sceKernelDebugOutText(0, line);
+        int frames = 0;
+        for (const uintptr_t *slot = g_mainStackBase;
+             frames < 160 && slot > g_mainStackBase - 32768; --slot) {
+          const uintptr_t value = *slot;
+          if (value >= text && value < text + 0x8000000u) {
+            std::snprintf(line, sizeof(line), "[ps5-opengl-cts] frame %d 0x%lx\n", frames++,
+                          (unsigned long)value);
+            sceKernelDebugOutText(0, line);
+          }
+        }
+      }
+      kill(getpid(), SIGUSR1);
+      sleep(5);
+      _exit(143);
+    }
+  }
+  return nullptr;
+}
+
+void startWatchdog(int seconds) {
+  if (seconds <= 0)
+    return;
+  struct sigaction action;
+  std::memset(&action, 0, sizeof(action));
+  action.sa_sigaction = watchdogSignal;
+  action.sa_flags = SA_SIGINFO;
+  sigaction(SIGUSR1, &action, nullptr);
+  g_watchdogSeconds = seconds;
+  g_mainThread = pthread_self();
+  g_mainStackBase = (const uintptr_t *)__builtin_frame_address(0);
+  pthread_t thread;
+  pthread_create(&thread, nullptr, watchdogThread, nullptr);
+}
+
+void noteCaseStart(const char *message) {
+  if (std::strstr(message, "Test case '"))
+    g_lastCaseStart = time(nullptr);
+}
+
 // dEQP's own output (per-case lines, tcu::die messages) goes to klog.
 bool klogOut(int, const char *message) {
+  noteCaseStart(message);
   sceKernelDebugOutText(0, message);
   return false; // handled: skip the stdout copy
 }
@@ -245,6 +342,7 @@ bool klogOut(int, const char *message) {
 bool klogOutFormat(int, const char *format, va_list args) {
   char line[1024];
   std::vsnprintf(line, sizeof(line), format, args);
+  noteCaseStart(line);
   sceKernelDebugOutText(0, line);
   return false;
 }
@@ -280,6 +378,7 @@ struct Control {
   bool dumpNir = false;
   bool computeSync = false;
   bool logImages = false;
+  int watchdog = 0;
 };
 
 struct Session {
@@ -340,6 +439,8 @@ Control readControl(void) {
       control.computeSync = value == "1";
     else if (key == "log_images")
       control.logImages = value == "1";
+    else if (key == "watchdog")
+      control.watchdog = std::atoi(value.c_str());
   }
   return control;
 }
@@ -467,6 +568,7 @@ int runConformance(void) {
     // The runner's own output (per-case lines, tcu::die messages) goes to a
     // file next to the logs; klog carries only the progress markers.
     redirectToKlog();
+    startWatchdog(control.watchdog);
     if (control.dumpNir)
       setenv("PSBC_DUMP_NIR", "1", 1);
     if (control.computeSync)
