@@ -29,7 +29,8 @@ GL/EGL interfaces and the platform integration appropriate to your application.
 - [Example validation](example-validation.md): acceptance criteria and benchmark procedures for the examples.
 - [CTS campaign](cts-campaign.md): efficient batching and submission prerequisites.
 - [CTS release qualification](cts-qualification.md): measured prerequisite results and current blockers.
-- [Validation](validation.md): frozen full-campaign results and evidence boundaries.
+- [OpenGL 4.6 conformance test run](gl46-conformance-run.md): the complete Khronos run of SDK 1.0.0 and its evidence.
+- [Validation](validation.md): frozen OpenGL 3.3 campaign results and evidence boundaries.
 - [Capability audit](development/capability-audit.md): version reporting and source checks.
 - [SDK build provenance](sdk-path-free-derivative.md): retained linker-metadata exception.
 - [Contributing](../CONTRIBUTING.md) and [third-party notices](../THIRD_PARTY_NOTICES.md).

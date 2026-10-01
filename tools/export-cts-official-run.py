@@ -181,7 +181,7 @@ def main() -> int:
     totals_out["warnings"] = totals.get("QualityWarning", 0) + totals.get("CompatibilityWarning", 0)
     data = {
         "schema": 1, "date": args.date, "directory": args.evidence.name,
-        "cts_release": args.cts, "runner": "cts-runner --type=gl46, one session per launch group",
+        "cts_release": args.cts, "runner": "the sessions of cts-runner --type=gl46",
         "source_commit": args.commit, "eboot_sha256": sha256(args.eboot),
         "sessions": sessions, "totals": totals_out,
     }

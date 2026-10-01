@@ -5,15 +5,15 @@ the historical development pin `cf7edb26d3be2d8763595ed08fdc41f3c1b1966f` and th
 official `opengl-cts-4.6.8.1` release, commit
 `067e8832315e79817ede1c4863804e440f5d1c80`.
 
-The six recorded patches cover build/package routing, portable stdio, and one
-test correction: desktop compute-shader templates require GLSL 4.30 rather
+The seven recorded patches cover build/package routing, the runner target,
+portable stdio, and one test correction: desktop compute-shader templates require GLSL 4.30 rather
 than every desktop GLSL version (`0005-gl33-negative-compute-guard.patch`).
 This is a locally adapted CTS runner, not an untouched upstream executable.
 The exhaustive swizzle and LOD-bias test bodies remain unchanged. A 2026-09-05
 source comparison verified upstream plus exactly these patches and the seven
 byte-identical platform-overlay files, with no other tracked-source changes.
 
-The release path applies only patches 0001–0004 and 0006. It deliberately leaves
+The release path applies patches 0001–0004, 0006 and 0007. It deliberately leaves
 the negative-shader test unchanged, including the known compute-stage issue.
 The separately [validated local correction](../../docs/cts-qualification.md#validated-local-correction)
 does not change this default or establish upstream acceptance.
@@ -21,8 +21,13 @@ does not change this default or establish upstream acceptance.
 prescribed patches, and checks all seven platform overlay files byte-for-byte.
 The adapter queries actual default-framebuffer bits/samples, checks them against
 EGL, and rejects unsupported surface/config requests rather than substituting
-a fixed target description. It still provides only pbuffer contexts; this is
-not a completed Khronos submission port.
+a fixed target description. It provides pbuffer contexts; with
+`PS5_CTS_OFFSCREEN_WINDOW=1` a case that insists on a window surface gets the
+same offscreen surface. This is not a completed Khronos submission port.
+
+Built with `PS5_CTS_RUNNER=1`, the application runs the sessions of
+`cts-runner --type=gl46` under the control of `tools/cts-console-run.sh`; see the
+[conformance run procedure](../../docs/testing.md#opengl-46-conformance-run).
 
 Prepare a separate release checkout and build stage, preserving historical data:
 

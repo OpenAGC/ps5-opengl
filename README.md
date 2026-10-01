@@ -30,6 +30,8 @@ and video show 60 FPS.*
 
 - **OpenGL 4.6 Core / GLSL 4.60:** all 657 core commands are exported by the static SDK,
   with Mesa state tracking and runtime shader compilation to native GPU code.
+- **Tested with the Khronos suite:** SDK 1.0.0 passes the complete OpenGL 4.6
+  conformance test run on a PS5 ([report](docs/gl46-conformance-run.md)).
 - **One SDK for every display:** choose 1080p, 1440p or 4K at 60 or 120 Hz at runtime;
   the PS5 scales the picture to whatever the TV accepts.
 - **Modern GPU features:** compute shaders, SSBOs, image load/store, indirect and
@@ -129,20 +131,25 @@ These are workload measurements, not general game FPS. See
 
 ## Validation
 
-The OpenGL 4.6 development inventory accounts for **19,714 Khronos CTS cases**:
-15,233 pass, 4,480 reviewed `NotSupported` and one legal compatibility warning
-([report](docs/gl46-development-validation.md)). The frozen OpenGL 3.3 campaign
-accounts for 39,544 results: 37,404 pass and 2,140 reviewed `NotSupported`
-([report](docs/validation.md)). Machine-readable evidence is checked by `make test`.
+SDK 1.0.0 passes the complete Khronos OpenGL 4.6 conformance test run on a PS5:
+`cts-runner --type=gl46` of VK-GL-CTS 4.6.8.1, **122,799 results with 98,590
+passes, 24,205 justified `NotSupported`, 4 compatibility warnings and no failure**
+([report](docs/gl46-conformance-run.md),
+[evidence](validation/2026-10-01-gl46-conformance/README.md)). The earlier
+OpenGL 3.3 campaign accounts for 39,544 results: 37,404 pass and 2,140 reviewed
+`NotSupported` ([report](docs/validation.md)). `make test` verifies the
+machine-readable evidence of both.
 
-This is engineering validation, not Khronos certification; newer binaries carry
-focused regressions rather than inheriting a full campaign. Hardware results cover
-one firmware-6.02 console. See [supported boundaries](docs/limitations.md).
+The results were not submitted to Khronos: this is the project's own run of the
+test suite, not Khronos certification. They belong to the tested binary, the
+test application built from the 1.0.0 source, and to one console. See
+[supported boundaries](docs/limitations.md).
 
 ## Releases
 
 | SDK | Highlights |
 | --- | --- |
+| [1.0.0](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/v1.0.0) | Passes the complete Khronos OpenGL 4.6 conformance test run ([report](docs/gl46-conformance-run.md)); robust-access and no-error contexts |
 | [0.6.0](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/v0.6.0) | Queued compute: about 15-35 us of CPU per dispatch instead of 1.1 ms; showcase demo app |
 | [0.5.0](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/v0.5.0) | One SDK for every display: 1080p/1440p/4K at 60/120 Hz chosen at runtime |
 | [0.4.1](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/v0.4.1) | Presentation, native preparation and descriptor publication fixes |

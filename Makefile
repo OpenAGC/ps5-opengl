@@ -143,6 +143,7 @@ test:
 	python3 tools/summarize-cubes.py --self-test
 	python3 tools/verify-cts-candidate.py --self-test
 	python3 tools/verify-published-validation.py
+	python3 tools/verify-cts-official-run.py validation/2026-10-01-gl46-conformance
 test-imgui:
 	bash tools/test-imgui-host.sh
 	bash tools/test-imgui-host.sh --tv-demo

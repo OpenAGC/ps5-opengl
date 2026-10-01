@@ -21,6 +21,8 @@ automatic acceptance for every SDK version.
 Eligible rendering, transfer, clear and subresource paths are accelerated.
 Other operations retain CPU fallbacks, conversion or synchronous waits.
 A CPU fallback is not inherently missing OpenGL functionality.
+A draw that combines tessellation with a geometry shader runs in two passes
+through transform feedback.
 
 The [benchmarks](performance.md) demonstrate specific workloads, not general
 game FPS, maximum GPU throughput or perfect pacing. Offscreen completed frames
@@ -48,9 +50,11 @@ counters exclude process RSS, foreign heaps and module-internal allocations.
 
 ## Verification scope
 
-- The OpenGL 4.6 inventory accounts for 15,233 passes, 4,480 reviewed
-  `NotSupported` results and one legal compatibility warning. This engineering
-  disposition is not Khronos certification or an acceptance waiver.
+- SDK 1.0.0 passed the complete [OpenGL 4.6 conformance test run](gl46-conformance-run.md):
+  98,590 passes, 24,205 justified `NotSupported` results and 4 compatibility
+  warnings. The results were not submitted to Khronos; this is not certification.
+  The conformant EGL configuration renders to pbuffers; the fullscreen window
+  configuration is not part of that run.
 - The [full campaign](validation.md) belongs to one frozen runtime: 37,404 passes
   plus 2,140 reviewed exclusions, not 39,544 passes.
 - [SDK 0.2.0](release-g62.md) has a 202-execution sample and 82 focused GPU cases

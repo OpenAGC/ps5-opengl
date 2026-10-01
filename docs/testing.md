@@ -115,6 +115,30 @@ A full campaign still requires all 9,886 cases in each of four configurations,
 no required-case failures, reviewed optional exclusions and clean renderer/
 lifecycle checks. A timeout is incomplete, not an automatic kernel panic.
 
+## OpenGL 4.6 conformance run
+
+The [conformance test run](gl46-conformance-run.md) executes the sessions of
+`cts-runner --type=gl46` in the CTS application built with `PS5_CTS_RUNNER=1`:
+
+```sh
+CTS_LOG_FLUSH=0 bash tools/cts-campaign-loop.sh <run> <app-dist-dir>
+python3 tools/cts-runner-results.py status build/cts-runs/<run> --mustpass <app-dist-dir>
+python3 tools/cts-runner-results.py summary build/cts-runs/<run> \
+    --output build/cts-runs/<run>/cts-run-summary.xml
+python3 tools/cts-notsupported-report.py build/cts-runs/<run>
+CTS_ENV="PS5_CTS_OFFSCREEN_WINDOW=1" CTS_LOG_FLUSH=0 \
+    bash tools/cts-console-run.sh launch <run>-window sessions 3 6
+python3 tools/export-cts-official-run.py build/cts-runs/<run> \
+    validation/<date>-gl46-conformance --mustpass <app-dist-dir> --commit <sha> \
+    --eboot <eboot.bin> --cts opengl-cts-4.6.8.1 --date <date> \
+    --window-run build/cts-runs/<run>-window
+```
+
+The export refuses an incomplete session, a missing or unexpected case, any
+failure, a recorded crash and a NotSupported result without a rule. A changed
+driver needs a new complete run. The second launch is the supplementary run of
+the cases that insist on a window surface.
+
 ## Reporting and public evidence
 
 Report exact identities, selection, ordered results, rendering/ownership,
