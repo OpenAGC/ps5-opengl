@@ -55,6 +55,27 @@ extern "C" size_t ps5_opengl_heap_live_bytes(void);
 // Test case objects (and their buffers) live as long as the package, which
 // needs far more than the default native-app heap.
 extern "C" const size_t ps5_opengl_heap_size = size_t(1) << 30;
+// Zero-filled heap memory: some test cases delete object names held in members
+// they never initialized (KHR-GL46.fragment_shading_rate.render_target.* when
+// the extension is not supported). With heap garbage those deletes hit
+// unrelated live objects and change the result of later cases at random.
+extern "C" const int ps5_opengl_heap_zero_fill = 1;
+
+// Whether operator new really returns zero-filled memory for a recycled block.
+bool heapZeroFilled() {
+  for (int round = 0; round < 64; ++round) {
+    volatile unsigned char *block = new unsigned char[256];
+    bool zero = true;
+    for (int i = 0; i < 256; ++i) {
+      zero &= block[i] == 0;
+      block[i] = 0xa5;
+    }
+    delete[] block;
+    if (!zero)
+      return false;
+  }
+  return true;
+}
 
 tcu::Platform *createPlatform(void);
 int main(void);
@@ -591,6 +612,9 @@ int runConformance(void) {
     std::atexit([] { runner::klog("[ps5-opengl-cts] exit() called\n"); });
     klog("[ps5-opengl-cts] runner mode=%s run=%s first=%d last=%d\n",
          control.mode.c_str(), control.run.c_str(), control.first, control.last);
+    if (!heapZeroFilled())
+      throw std::runtime_error("heap memory is not zero-filled");
+    klog("[ps5-opengl-cts] heap zero-fill verified\n");
 
     glcts::registerPackages();
     tcu::DirArchive archive("/app0");

@@ -12,6 +12,8 @@ tail_start = source.index('    failure_phase = "release";', source.index('    dr
 tail = source[tail_start:source.index('    final_words =', tail_start)]
 assert tail.index('completion_offset = draw_words - PS5_AGC_POST_DRAW_BARRIER_WORDS') < tail.index('release_mem(&command, 45, 12')
 assert tail.index('release_mem(&command, 45, 12') < tail.index('if (!completion_offset)') < tail.index('runtime_release_completion(&agc, &command, completion_marker,')
+# Depth and stencil reach memory before completion: CPU clears and readbacks wait only for the marker.
+assert tail.index('if (!completion_offset)') < tail.index('release_mem(&command, 43, 12') < tail.index('runtime_release_completion(&agc, &command, completion_marker,')
 assert 'if (command.down >= command.up && command.down <= command.top)' in source
 assert 'entry.command_capacity = (uint32_t)(command.down - words);' in source
 code = r'''
@@ -155,6 +157,7 @@ print("PASS: command groups preserve bodies/barriers, bound capacity, retire all
 # former drops only the post-draw release/wait, never the draw/query/state body.
 tail_code = r'''
 #include <assert.h>
+#include <stdarg.h>
 #include <stdint.h>
 #include <stddef.h>
 #define AGC_TRIANGLE_SUBMIT 1
@@ -162,7 +165,10 @@ tail_code = r'''
 #define PS5_MULTIDRAW_BATCH 1
 #define PS5_AGC_POST_DRAW_BARRIER_WORDS barrier_words
 struct command { uint32_t *up; };
-static uint32_t *release(void *p, ...) { struct command *c=p; *c->up++=45; return c->up; }
+static uint32_t *release(void *p, ...) {
+    struct command *c=p; va_list args; va_start(args,p);
+    *c->up++=(uint32_t)va_arg(args,int); va_end(args); return c->up;
+}
 static const struct { uint32_t *(*release_mem)(void *, ...); } agc={release};
 static uint32_t *runtime_release_completion(const void *a, struct command *c,
                                            void *marker, uint32_t expected) {
@@ -178,7 +184,7 @@ static unsigned check(int active, int fixed, unsigned barrier_words) {
 ''' + tail + r'''
 receipt:
     (void)failure_phase;
-    assert(command.up==words+34 && words[32]==45 && words[33]==101);
+    assert(command.up==words+35 && words[32]==45 && words[33]==43 && words[34]==101);
     return completion_offset;
 }
 int main(void) {

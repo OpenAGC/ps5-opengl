@@ -61,11 +61,21 @@ static int test_unmap(void *p,size_t n) { assert(p == pool); ++unmaps; return mu
 ''' + wrappers + r'''
 #undef mmap
 #undef munmap
-void *__real_malloc(size_t n) { ++real_calls[0]; return malloc(n); }
+/* Fresh blocks hold garbage, as recycled heap memory does. The foreign heap
+ * reports 16 usable bytes for every block, so none is smaller. */
+static void *dirty(void *p,size_t n) { if (p) memset(p,0xcc,n); return p; }
+static size_t foreign(size_t n) { return n < 16 ? 16 : n; }
+void *__real_malloc(size_t n) { ++real_calls[0]; return dirty(malloc(foreign(n)),foreign(n)); }
 void *__real_calloc(size_t n,size_t s) { ++real_calls[1]; return calloc(n,s); }
-void *__real_realloc(void *p,size_t n) { ++real_calls[2]; return realloc(p,n); }
+void *__real_realloc(void *p,size_t n) {
+    ++real_calls[2];
+    char *q=dirty(malloc(foreign(n)),foreign(n)); assert(q); memcpy(q,p,16); free(p); return q;
+}
 void __real_free(void *p) { ++real_calls[3]; assert(!ps5_heap_owns(p)); free(p); }
-int __real_posix_memalign(void **p,size_t a,size_t n) { ++real_calls[4]; return posix_memalign(p,a,n); }
+int __real_posix_memalign(void **p,size_t a,size_t n) {
+    ++real_calls[4];
+    int result=posix_memalign(p,a,foreign(n)); if (!result) dirty(*p,foreign(n)); return result;
+}
 size_t __real_malloc_usable_size(const void *p) { assert(p && !ps5_heap_owns(p)); ++real_calls[5]; return 16; }
 void *sceLibcMspaceCreate(const char *name,void *base,size_t n,unsigned flags) {
     assert(!strcmp(name,"PS5-OpenGL") && base == pool && n == PS5_OPENGL_HEAP_SIZE && !flags);
@@ -82,7 +92,7 @@ static void *allocate(size_t n,size_t alignment) {
     memcpy((char *)p-sizeof(size_t),&n,sizeof(n));
     return p;
 }
-void *sceLibcMspaceMalloc(void *space,size_t n) { assert(space == pool); ++owned_calls[0]; return allocate(n,16); }
+void *sceLibcMspaceMalloc(void *space,size_t n) { assert(space == pool); ++owned_calls[0]; return dirty(allocate(n,16),n); }
 void *sceLibcMspaceCalloc(void *space,size_t n,size_t s) {
     assert(space == pool); ++owned_calls[1];
     if (s && n > SIZE_MAX/s) return NULL;
@@ -91,7 +101,7 @@ void *sceLibcMspaceCalloc(void *space,size_t n,size_t s) {
 void *sceLibcMspaceRealloc(void *space,void *p,size_t n) {
     assert(space == pool && ps5_heap_owns(p)); ++owned_calls[2];
     if (allocation_failure || !n) return NULL;
-    void *q=allocate(n,16);
+    void *q=dirty(allocate(n,16),n);
     if (q) {
         size_t before=sceLibcMspaceMallocUsableSize(p);
         memcpy(q,p,before<n ? before : n);
@@ -102,7 +112,7 @@ void sceLibcMspaceFree(void *space,void *p) { assert(space == pool && ps5_heap_o
 int sceLibcMspacePosixMemalign(void *space,void **p,size_t a,size_t n) {
     assert(space == pool); ++owned_calls[4];
     if (a < sizeof(void *) || (a&(a-1))) return EINVAL;
-    void *q=allocate(n,a); if (!q) return ENOMEM; *p=q; return 0;
+    void *q=dirty(allocate(n,a),n); if (!q) return ENOMEM; *p=q; return 0;
 }
 size_t sceLibcMspaceMallocUsableSize(const void *p) {
     assert(ps5_heap_owns(p)); ++owned_calls[5];
@@ -111,6 +121,9 @@ size_t sceLibcMspaceMallocUsableSize(const void *p) {
 int main(int argc,char **argv) {
     assert(argc == 2); mode=atoi(argv[1]);
     void *p=__wrap_malloc(16); assert(p);
+    const unsigned char fresh = ps5_opengl_heap_zero_fill ? 0 : 0xcc;
+#define FRESH(q,first,last) for (unsigned i=first;i<last;++i) assert(((unsigned char *)(q))[i] == fresh)
+    FRESH(p,0,16);
     const int owned = mode == 0 || mode >= 3;
     const unsigned expected_maps = mode == 3 ? 0 : mode == 4 ? 3 : 1;
     assert(ps5_heap_owns(p) == owned);
@@ -119,6 +132,7 @@ int main(int argc,char **argv) {
     if (owned) assert(PS5_OPENGL_HEAP_SIZE == (mode == 3 ? 512u*MIB : 128u*MIB));
     memset(p,0xa5,16);
     void *q=__wrap_realloc(p,32); assert(q);
+    FRESH(q,16,32);
     if (owned) {
         assert(q != p && atomic_load(&ps5_heap_live_bytes) == 32);
         for (unsigned i=0;i<16;++i) assert(((unsigned char *)q)[i] == 0xa5);
@@ -129,12 +143,13 @@ int main(int argc,char **argv) {
     for (unsigned i=0;i<16;++i) assert(((unsigned char *)q)[i] == 0);
     __wrap_free(q);
     assert(!__wrap_posix_memalign(&q,64,16) && !((uintptr_t)q%64));
+    FRESH(q,0,16);
     assert(__wrap_malloc_usable_size(q) == 16); __wrap_free(q);
     q=__wrap_realloc(NULL,8); assert(q); __wrap_free(q); __wrap_free(NULL);
     /* Foreign allocations keep their original realloc/free/usable-size owner. */
     p=__real_malloc(16); assert(p && !ps5_heap_owns(p));
     assert(__wrap_malloc_usable_size(p) == 16);
-    p=__wrap_realloc(p,32); assert(p); __wrap_free(p);
+    p=__wrap_realloc(p,32); assert(p); FRESH(p,16,32); __wrap_free(p);
     if (owned) {
         assert(!atomic_load(&ps5_heap_live_bytes) && !atomic_load(&ps5_heap_blocks));
         assert(atomic_load(&ps5_heap_peak_bytes) == 32);
@@ -146,15 +161,18 @@ int main(int argc,char **argv) {
          * still freed and resized by the heap that owns its address. */
         q=__wrap_malloc(16);
         assert(q && !ps5_heap_owns(q) && real_calls[0] == real_malloc+1);
+        FRESH(q,0,16);
         __wrap_free(q);
         q=__wrap_realloc(p,32); /* moves the owned block to the libc heap */
         assert(q && !ps5_heap_owns(q) && real_calls[0] == real_malloc+2);
         for (unsigned i=0;i<16;++i) assert(((unsigned char *)q)[i] == 0x5a);
+        FRESH(q,16,32);
         assert(!atomic_load(&ps5_heap_live_bytes) && !atomic_load(&ps5_heap_blocks));
         __wrap_free(q);
         q=NULL;
         assert(!__wrap_posix_memalign(&q,64,16) && q && !ps5_heap_owns(q));
         assert(!((uintptr_t)q%64) && real_calls[4] == real_memalign+1);
+        FRESH(q,0,16);
         __wrap_free(q);
         assert(atomic_load(&ps5_heap_failures) == 3);
         allocation_failure=0;
@@ -180,8 +198,13 @@ default_size = "const size_t ps5_opengl_heap_size = 128u * 1024u * 1024u;"
 assert code.count(default_size) == 1
 # A title that reserves more than the flexible-memory budget, as the CTS runner does.
 large = code.replace(default_size, "const size_t ps5_opengl_heap_size = 512u * 1024u * 1024u;")
+default_fill = "const int ps5_opengl_heap_zero_fill = 0;"
+assert code.count(default_fill) == 1
+# A title that asks for zero-filled heap memory, as the CTS runner does.
+zero = code.replace(default_fill, "const int ps5_opengl_heap_zero_fill = 1;")
 with tempfile.TemporaryDirectory() as temporary:
-    for name, program, modes in (("app-heap", code, (0, 1, 2)), ("app-heap-large", large, (3, 4))):
+    for name, program, modes in (("app-heap", code, (0, 1, 2)), ("app-heap-large", large, (3, 4)),
+                                 ("app-heap-zero", zero, (0, 1, 2))):
         executable = str(Path(temporary) / name)
         subprocess.run(["cc", "-std=c11", "-Wall", "-Wextra", "-Werror",
                         "-fsanitize=address,undefined", "-g", "-x", "c", "-o", executable, "-"],

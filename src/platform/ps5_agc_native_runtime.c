@@ -4747,6 +4747,12 @@ int main(void)
     if (!completion_offset)
         completion_offset = (uint32_t)(command.up - words);
 #endif
+    /* Completion is what CPU clears and readbacks of the attachments wait for.
+     * Event 43 is FLUSH_AND_INV_DB_DATA_TS: without it depth and stencil written
+     * by these draws can stay in the DB cache and replace a later CPU clear. */
+    if (!agc.release_mem(&command, 43, 12, 1, 0, NULL, 0, 0,
+                         0, 1, 0, 0))
+        goto receipt;
     if (!runtime_release_completion(&agc, &command, completion_marker,
                                      (uint32_t)render_marker))
         goto receipt;
