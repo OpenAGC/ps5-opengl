@@ -48,6 +48,12 @@
 #ifndef SHOWCASE_SECONDS
 #define SHOWCASE_SECONDS 0 /* 0 runs until the application is closed */
 #endif
+#ifndef SHOWCASE_CAPTURE_FRAME
+#define SHOWCASE_CAPTURE_FRAME 0 /* validation: write this frame to SHOWCASE_CAPTURE_PATH */
+#endif
+#ifndef SHOWCASE_CAPTURE_PATH
+#define SHOWCASE_CAPTURE_PATH "/app0/showcase.ppm"
+#endif
 
 enum {
    PARTICLES = SHOWCASE_PARTICLES,
@@ -79,6 +85,26 @@ say(const char *format, ...)
    fputs(line, stdout);
    if (sceKernelDebugOutText)
       sceKernelDebugOutText(0, line);
+}
+
+/* Validation builds: the rendered frame, before it is presented, as a PPM. */
+static void
+capture_frame(int width, int height)
+{
+   unsigned char *rgb = malloc((size_t)width * height * 3);
+   FILE *ppm = fopen(SHOWCASE_CAPTURE_PATH, "wb");
+   if (rgb && ppm) {
+      glBindFramebuffer(GL_READ_FRAMEBUFFER, 0);
+      glPixelStorei(GL_PACK_ALIGNMENT, 1);
+      glReadPixels(0, 0, width, height, GL_RGB, GL_UNSIGNED_BYTE, rgb);
+      fprintf(ppm, "P6 %d %d 255\n", width, height);
+      for (int y = height - 1; y >= 0; --y)
+         fwrite(rgb + (size_t)y * width * 3, 1, (size_t)width * 3, ppm);
+   }
+   say(TAG " capture %s gl=%x", rgb && ppm ? SHOWCASE_CAPTURE_PATH : "failed", glGetError());
+   if (ppm)
+      fclose(ppm);
+   free(rgb);
 }
 
 /* ps5-opengl 0.5.0 runtime display modes; absent (NULL) in fixed-profile SDKs. */
@@ -1189,6 +1215,8 @@ main(void)
          dt = 1.0f / 60.0f;
       update_frame(&s, t, width, height, frames);
       render(&s, dt, width, height);
+      if (SHOWCASE_CAPTURE_FRAME > 0 && frames == SHOWCASE_CAPTURE_FRAME)
+         capture_frame(width, height);
       stage_mark = now_ns();
       if (!check(eglSwapBuffers(display, surface), "present"))
          break;

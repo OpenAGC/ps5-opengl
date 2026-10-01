@@ -7,8 +7,8 @@ The project's demo app. Every SDK release attaches it, built against that SDK, a
 (`sce_sys/` in this directory).
 
 A GPU-driven scene that exercises the modern OpenGL 4.6 feature set at
-**3840x2160 and 120 FPS** on a 120 Hz display (119.9 FPS measured on PS5 with
-SDK 0.5.0), using only public OpenGL/EGL interfaces:
+**3840x2160 and 120 FPS** on a display that takes 4K at 120 Hz (119.9 FPS
+measured on PS5 with SDK 1.0.0), using only public OpenGL/EGL interfaces:
 
 - **Compute particles:** 262,144 particles in a shader storage buffer, advected by
   a flow field in a compute shader and respawned along a glowing torus knot, drawn
@@ -59,8 +59,13 @@ PS5_OPENGL_PREFIX=/path/to/ps5-opengl-sdk-0.5.0/sdk make showcase
 Deploy `build/native-app/PPSA99005/dist/PPSA99005` and launch it as a registered
 title. It runs until closed and logs `[ps5-gl46-showcase] ... fps=...` every five
 seconds. Compile-time options: `SHOWCASE_WIDTH`/`SHOWCASE_HEIGHT` (display mode),
-`SHOWCASE_PARTICLES`, `SHOWCASE_SECONDS` (0 runs until closed) and
-`SHOWCASE_COMPUTE_BLOOM`, passed through `SHOWCASE_CFLAGS`.
+`SHOWCASE_PARTICLES`, `SHOWCASE_SECONDS` (0 runs until closed),
+`SHOWCASE_COMPUTE_BLOOM` and `SHOWCASE_CAPTURE_FRAME` (writes that frame to
+`SHOWCASE_CAPTURE_PATH`, `/app0/showcase.ppm` by default, to check the picture
+without looking at the display), passed through `SHOWCASE_CFLAGS`.
+
+On a connection that carries 120 Hz only at 1080p the console scales the 4K
+picture down and the frame rate drops to about 95 FPS.
 
 ## Host preview
 
