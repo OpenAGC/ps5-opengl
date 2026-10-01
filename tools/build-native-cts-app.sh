@@ -43,7 +43,7 @@ if [[ ! -f "$cts_build/build.ninja" ]]; then
         -DSELECTED_BUILD_TARGETS=ps5-gl33-runner \
         -DDEQP_DISABLE_VK_VIDEO_TESTS=ON
 fi
-cmake --build "$cts_build" --target ps5-gl33-runner -j8
+cmake --build "$cts_build" --target ps5-gl33-runner -j"$(nproc)"
 
 runner="$cts_build/external/openglcts/modules/libps5-gl33-runner.a"
 test -s "$runner"
@@ -54,7 +54,7 @@ if [[ -n ${PS5_OPENGL_PREFIX:-} ]]; then
     (cd "$prefix" && sha256sum --check --strict manifest.sha256 >/dev/null)
     opengl_libraries=("$prefix/lib/libPS5OpenGLCore33.a")
 else
-    make -C "$root/tests/ps5" --no-print-directory -f native-app.mk -j8 \
+    make -C "$root/tests/ps5" --no-print-directory -f native-app.mk -j"$(nproc)" \
         PS5_PAYLOAD_SDK="$sdk" runtime
     mapfile -t opengl_libraries < <(
     make -C "$root/tests/ps5" --no-print-directory -s -f native-app.mk \
@@ -95,7 +95,7 @@ sed -i "s/$heap_default/write_u64(result.data, result.heap_size, 0x10000000ULL);
 link_script="$app/tools/build.sh"
 link_marker='--eh-frame-hdr \'
 test "$(grep -Fc -- "$link_marker" "$link_script")" = 1
-sed -i 's/--eh-frame-hdr \\/--eh-frame-hdr --wrap=malloc --wrap=calloc --wrap=realloc --wrap=free --wrap=posix_memalign --wrap=malloc_usable_size \\/' \
+sed -i 's/--eh-frame-hdr \\/--eh-frame-hdr --wrap=fopen --wrap=malloc --wrap=calloc --wrap=realloc --wrap=free --wrap=posix_memalign --wrap=malloc_usable_size \\/' \
     "$link_script"
 cp "$template/tooling/native/ps5-pie.ld" \
     "$app/tooling/native/ps5-pie-base.ld"
@@ -161,7 +161,18 @@ make -C "$app" --no-print-directory -j8 app
 
 dist="$app/dist/PPSA99005"
 cp "$root/conformance/vk-gl-cts/native/cts-args.txt" "$dist/cts-args.txt"
+rm -rf "${dist:?}/gl_cts"
 cp -a "$cts/external/openglcts/data/gl_cts" "$dist/gl_cts"
+if [[ ${PS5_CTS_RUNNER:-0} == 1 ]]; then
+    # The cts-runner session list also runs dEQP-GL45-ES3/ES31, whose data
+    # directories match upstream add_data_dir (graphicsfuzz merges into gles3).
+    for data in gles2 gles3 gles31; do
+        rm -rf "${dist:?}/$data"
+        cp -a "$cts/data/$data" "$dist/$data"
+    done
+    cp -a "$cts/external/graphicsfuzz/data/gles3/." "$dist/gles3/"
+    printf 'cts-runner\n' > "$dist/cts-runner.txt"
+fi
 
 printf 'Native CTS app: %s\n' "$dist"
 printf 'VK-GL-CTS commit: %s\n' "$(git -C "$cts" rev-parse HEAD)"

@@ -772,7 +772,7 @@ static void api_tests(const struct radv_compiler_info* ci,bool cross,
                 assert(G_028B54_DYNAMIC_HS(pair[i]->metadata.linkage_stages_en.value));
                 assert(G_028B54_ES_EN(pair[i]->metadata.linkage_stages_en.value)==V_028B54_ES_STAGE_DS);
                 assert(G_028B54_PRIMGEN_EN(pair[i]->metadata.linkage_stages_en.value));
-                assert(G_03096C_VERT_GRP_SIZE(pair[i]->metadata.linkage_ge_cntl.value)==0);
+                assert(G_03096C_VERT_GRP_SIZE(pair[i]->metadata.linkage_ge_cntl.value)!=0);
                 printf("TES metadata stages=%08x ge=%08x context=%u shader=%u ngg-lds=%u/%u\n",
                        pair[i]->metadata.linkage_stages_en.value,
                        pair[i]->metadata.linkage_ge_cntl.value,
@@ -848,7 +848,7 @@ int main(int argc,char **argv) {
     ac.hs_offchip_workgroup_dw_size=8192; /* Hypothetical host capacity; see ac_fill_tess_info. */
     struct radv_compiler_info ci={.ac=&ac};
     ci.key.family=ci.debug.family=CHIP_NAVI21;
-    ci.key.ge_wave_size=64; ci.key.ps_wave_size=32; ci.key.use_ngg=true;
+    ci.key.ge_wave_size=64; ci.key.ps_wave_size=32; ci.key.use_ngg=true; ci.key.ps5_offchip_se_bias=true;
     ci.hw.address32_hi=2; radv_get_nir_options(&ci);
     wide_io_tests(&ci,false);
     wide_io_tests(&ci,true);

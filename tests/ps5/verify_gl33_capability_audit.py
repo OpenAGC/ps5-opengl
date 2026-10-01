@@ -1668,7 +1668,7 @@ require("caps->texture_multisample = PS5_ENABLE_MSAA4_CANDIDATE" in SCREEN and
         MSAA4 and
         "ps5_agc_gate2_set_multisample_state" in SCREEN and
         "UINT32_C(0x00132202)" in BACKEND and
-        "UINT32_C(0x00132222)" in BACKEND and
+        "UINT32_C(0x00132202) | ps_iter" in BACKEND and
         "ps5_agc_sample_shading" in BACKEND and
         "0x0293u" in BACKEND and
         "0x01b8u" in BACKEND and

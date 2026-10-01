@@ -8,6 +8,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 
 void *__real_malloc(size_t size);
@@ -26,10 +27,20 @@ void sceLibcMspaceFree(void *mspace, void *address);
 int sceLibcMspacePosixMemalign(void *mspace, void **address, size_t alignment,
                               size_t size);
 size_t sceLibcMspaceMallocUsableSize(const void *address);
+int64_t sceKernelGetDirectMemorySize(void);
+int32_t sceKernelAllocateDirectMemory(int64_t search_start, int64_t search_end,
+                                     size_t length, size_t alignment,
+                                     int memory_type, int64_t *physical_start);
+int32_t sceKernelMapDirectMemory(void **address, size_t length, int protection,
+                                int flags, int64_t physical_start, size_t alignment);
 
-/* ponytail: fixed 128 MiB, process-lifetime heap; revisit the budget only for
- * measured application needs. Do not unmap underneath late C++ destructors. */
-#define PS5_OPENGL_HEAP_SIZE (128u * 1024u * 1024u)
+/* ponytail: 128 MiB process-lifetime heap by default; revisit the budget only
+ * for measured application needs. Do not unmap underneath late C++ destructors.
+ * A title may define ps5_opengl_heap_size to reserve more (the CTS runner keeps
+ * every test case object alive); smaller sizes are tried if mapping fails. */
+__attribute__((weak)) const size_t ps5_opengl_heap_size = 128u * 1024u * 1024u;
+static size_t ps5_heap_size;
+#define PS5_OPENGL_HEAP_SIZE ps5_heap_size
 
 static atomic_int ps5_heap_state;
 static void *ps5_heap_base;
@@ -50,12 +61,24 @@ static void ps5_heap_resize_stats(size_t before, size_t after) {
       &ps5_heap_peak_bytes, &peak, live, memory_order_relaxed, memory_order_relaxed)) {}
 }
 
-static void *ps5_heap_record_allocation(void *address, int nonzero) {
+/* Weak: host builds of this file have no libkernel. */
+int sceKernelDebugOutText(int channel, const char *text) __attribute__((weak));
+void __wrap_free(void *address);
+
+static void *ps5_heap_record_allocation(void *address, size_t size) {
+  const int nonzero = size != 0;
   if (address) {
     ps5_heap_resize_stats(0, sceLibcMspaceMallocUsableSize(address));
     atomic_fetch_add_explicit(&ps5_heap_blocks, 1, memory_order_relaxed);
   } else if (nonzero) {
-    atomic_fetch_add_explicit(&ps5_heap_failures, 1, memory_order_relaxed);
+    if (atomic_fetch_add_explicit(&ps5_heap_failures, 1, memory_order_relaxed) < 8 &&
+        sceKernelDebugOutText) {
+      char line[128];
+      snprintf(line, sizeof(line),
+               "[ps5-opengl-heap] mspace refused %zu bytes (live %zu); using the libc heap\n",
+               size, atomic_load_explicit(&ps5_heap_live_bytes, memory_order_relaxed));
+      sceKernelDebugOutText(0, line);
+    }
   }
   return address;
 }
@@ -73,8 +96,28 @@ static int ps5_heap_ready(void) {
           memory_order_acquire))
     return expected == 2;
 
-  void *base = mmap(NULL, PS5_OPENGL_HEAP_SIZE, PROT_READ | PROT_WRITE,
-                    MAP_PRIVATE | MAP_ANON, -1, 0);
+  void *base = MAP_FAILED;
+  /* Flexible memory holds only a few hundred MiB; a larger heap comes from
+   * CPU-cached direct memory (the driver's own memory type), mapped CPU-only. */
+  if (ps5_opengl_heap_size > (128u << 20)) {
+    int64_t physical = 0;
+    void *mapped = NULL;
+    const size_t alignment = 2u << 20;
+    const size_t size = (ps5_opengl_heap_size + alignment - 1) & ~(alignment - 1);
+    if (sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), size, alignment,
+                                      12, &physical) == 0 &&
+        sceKernelMapDirectMemory(&mapped, size, PROT_READ | PROT_WRITE, 0, physical,
+                                 alignment) == 0 && mapped) {
+      base = mapped;
+      ps5_heap_size = size;
+    }
+  }
+  for (size_t size = ps5_opengl_heap_size; base == MAP_FAILED && size >= (128u << 20);
+       size /= 2) {
+    base = mmap(NULL, size, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    if (base != MAP_FAILED)
+      ps5_heap_size = size;
+  }
   if (base == MAP_FAILED) {
     atomic_store_explicit(&ps5_heap_state, -1, memory_order_release);
     return 0;
@@ -103,17 +146,21 @@ static int ps5_heap_owns(const void *address) {
   return value >= base && value - base < PS5_OPENGL_HEAP_SIZE;
 }
 
+/* When the owned heap is exhausted, allocations continue from the libc heap;
+ * free/realloc route by address, so both heaps can hold live blocks. */
 void *__wrap_malloc(size_t size) {
-  return ps5_heap_ready()
-      ? ps5_heap_record_allocation(sceLibcMspaceMalloc(ps5_heap_mspace, size), size != 0)
-      : __real_malloc(size);
+  void *result = ps5_heap_ready()
+      ? ps5_heap_record_allocation(sceLibcMspaceMalloc(ps5_heap_mspace, size), size)
+      : NULL;
+  return result ? result : __real_malloc(size);
 }
 
 void *__wrap_calloc(size_t count, size_t size) {
-  return ps5_heap_ready()
+  void *result = ps5_heap_ready()
       ? ps5_heap_record_allocation(sceLibcMspaceCalloc(ps5_heap_mspace, count, size),
-                                   count != 0 && size != 0)
-      : __real_calloc(count, size);
+                                   count * size)
+      : NULL;
+  return result ? result : __real_calloc(count, size);
 }
 
 void *__wrap_realloc(void *address, size_t size) {
@@ -125,9 +172,15 @@ void *__wrap_realloc(void *address, size_t size) {
   void *result = sceLibcMspaceRealloc(ps5_heap_mspace, address, size);
   if (result)
     ps5_heap_resize_stats(before, sceLibcMspaceMallocUsableSize(result));
-  else if (size)
+  else if (size) {
     atomic_fetch_add_explicit(&ps5_heap_failures, 1, memory_order_relaxed);
-  else
+    /* Move the block to the libc heap; the original stays valid on failure. */
+    result = __real_malloc(size);
+    if (result) {
+      memcpy(result, address, before < size ? before : size);
+      __wrap_free(address);
+    }
+  } else
     /* Preserve platform realloc(p,0) behavior; NULL does not tell us whether
      * p was freed. Mark the counters inconclusive instead of guessing. */
     atomic_fetch_add_explicit(&ps5_heap_ambiguous_zero_reallocs, 1, memory_order_relaxed);
@@ -148,9 +201,11 @@ int __wrap_posix_memalign(void **address, size_t alignment, size_t size) {
     return __real_posix_memalign(address, alignment, size);
   int result = sceLibcMspacePosixMemalign(ps5_heap_mspace, address, alignment, size);
   if (result == 0)
-    ps5_heap_record_allocation(*address, size != 0);
-  else if (result == ENOMEM)
+    ps5_heap_record_allocation(*address, size);
+  else if (result == ENOMEM) {
     atomic_fetch_add_explicit(&ps5_heap_failures, 1, memory_order_relaxed);
+    return __real_posix_memalign(address, alignment, size);
+  }
   return result;
 }
 
@@ -159,11 +214,16 @@ size_t __wrap_malloc_usable_size(const void *address) {
                                 : __real_malloc_usable_size(address);
 }
 
+/* Owned-heap usable bytes, for leak diagnostics in long-running titles. */
+size_t ps5_opengl_heap_live_bytes(void) {
+  return atomic_load_explicit(&ps5_heap_live_bytes, memory_order_relaxed);
+}
+
 void ps5_opengl_heap_stats_print(unsigned iteration) {
   if (iteration == 0) {
     int state = atomic_load_explicit(&ps5_heap_state, memory_order_acquire);
-    printf("[ps5-opengl-cts] mspace state=%d base=%p size=%u\n",
-           state, state == 2 ? ps5_heap_base : NULL, PS5_OPENGL_HEAP_SIZE);
+    printf("[ps5-opengl-cts] mspace state=%d base=%p size=%zu\n",
+           state, state == 2 ? ps5_heap_base : NULL, (size_t)PS5_OPENGL_HEAP_SIZE);
   }
 }
 

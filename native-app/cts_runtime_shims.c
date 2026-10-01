@@ -401,3 +401,18 @@ int backtrace_symbols_fd(void *const *addresses, size_t count, int descriptor) {
   (void)descriptor;
   return 0;
 }
+
+// Native titles cannot chdir, but cts-runner names its case-list files relative
+// to its data directory. Resolve relative fopen paths against /app0 as if the
+// title had started there.
+FILE *__real_fopen(const char *path, const char *mode);
+
+FILE *__wrap_fopen(const char *path, const char *mode) {
+  char resolved[1024];
+  if (path != NULL && path[0] != '\0' && path[0] != '/') {
+    int length = snprintf(resolved, sizeof(resolved), "/app0/%s", path);
+    if (length > 0 && (size_t)length < sizeof(resolved))
+      return __real_fopen(resolved, mode);
+  }
+  return __real_fopen(path, mode);
+}

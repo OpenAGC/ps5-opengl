@@ -87,7 +87,8 @@ struct ps5_agc_backend_draw_state {
    unsigned mrt_count, mrt_samples;
    uint32_t sample_mask;
    bool multisample_enable, alpha_to_coverage, poly_line_smooth;
-   bool sample_shading, dual_source_blend;
+   bool dual_source_blend;
+   uint8_t sample_shading; /* PS invocations per pixel (0 = per pixel) */
    const uint8_t *streamout_package;
    uint32_t streamout_mask;
    void *occlusion_query;
@@ -475,7 +476,9 @@ ps5_agc_set_cx_mrt_uncached(void *command, const void *table, uint32_t count,
    if (initial_graphics_table) {
       bool msaa4 = ps5_agc_mrt_samples == 4 &&
                    ps5_agc_multisample_enable;
-      bool sample_shading4 = msaa4 && ps5_agc_sample_shading;
+      bool sample_shading4 = msaa4 && ps5_agc_sample_shading > 1;
+      /* DB_EQAA.PS_ITER_SAMPLES is log2 of the invocations per pixel. */
+      uint32_t ps_iter = ps5_agc_sample_shading == 2 ? UINT32_C(0x10) : UINT32_C(0x20);
       bool smooth4 = ps5_agc_mrt_samples == 1 &&
                      ps5_agc_poly_line_smooth;
       bool raster4 = msaa4 || smooth4;
@@ -493,7 +496,7 @@ ps5_agc_set_cx_mrt_uncached(void *command, const void *table, uint32_t count,
 
       if (ps5_agc_replace_or_append_register(
              records, &count, 0x0201u,
-             sample_shading4 ? UINT32_C(0x00132222) :
+             sample_shading4 ? UINT32_C(0x00132202) | ps_iter :
              msaa4 ? UINT32_C(0x00132202) :
              smooth4 ? UINT32_C(0x02130000) :
                        UINT32_C(0x00130000)) != 0 ||
@@ -1407,7 +1410,7 @@ ps5_agc_gate2_set_multisample_state(unsigned samples, uint32_t sample_mask,
 {
    if ((samples != 1 && samples != 4) || enabled > 1u ||
        alpha_to_coverage > 1u || poly_line_smooth > 1u ||
-       sample_shading > 1u ||
+       (sample_shading != 0 && sample_shading != 2 && sample_shading != 4) ||
        (samples != 1 && poly_line_smooth))
       return -1;
    ps5_agc_mrt_samples = samples;
@@ -1416,7 +1419,7 @@ ps5_agc_gate2_set_multisample_state(unsigned samples, uint32_t sample_mask,
    ps5_agc_multisample_enable = enabled != 0;
    ps5_agc_alpha_to_coverage = alpha_to_coverage != 0;
    ps5_agc_poly_line_smooth = poly_line_smooth != 0;
-   ps5_agc_sample_shading = sample_shading != 0;
+   ps5_agc_sample_shading = (uint8_t)sample_shading;
    return 0;
 }
 

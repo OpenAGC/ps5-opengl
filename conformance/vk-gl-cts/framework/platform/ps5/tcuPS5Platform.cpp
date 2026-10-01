@@ -124,8 +124,9 @@ private:
 
 class ContextFactory : public glu::ContextFactory {
 public:
+  // Named "egl": cts-runner selects EGL configs with --deqp-gl-context-type=egl.
   ContextFactory(void)
-      : glu::ContextFactory("ps5", "PS5 public EGL pbuffer context") {}
+      : glu::ContextFactory("egl", "PS5 public EGL pbuffer context") {}
 
   glu::RenderContext *
   createContext(const glu::RenderConfig &config, const tcu::CommandLine &,
@@ -149,10 +150,11 @@ RenderContext::RenderContext(const glu::RenderConfig &config,
   try {
     const int major = m_type.getMajorVersion();
     const int minor = m_type.getMinorVersion();
-    if (!glu::isContextTypeGLCore(m_type) ||
-        !((major == 3 && minor == 3) || (major == 4 && minor == 6)))
+    if (glu::isContextTypeES(m_type))
+      throw tcu::NotSupportedError("PS5 EGL provides desktop OpenGL only");
+    if (major < 3 || major * 10 + minor > 46)
       throw tcu::NotSupportedError(
-          "PS5 CTS target supports OpenGL 3.3 and 4.6 core only");
+          "PS5 CTS target supports OpenGL 3.0 through 4.6");
 
     const glu::ContextFlags unsupported =
         glu::ContextFlags(glu::CONTEXT_ROBUST | glu::CONTEXT_NO_ERROR);
@@ -203,6 +205,13 @@ RenderContext::RenderContext(const glu::RenderConfig &config,
                "eglChooseConfig failed");
     if (configCount != 1)
       throw tcu::NotSupportedError("No matching PS5 EGL pbuffer config");
+    // A specific --deqp-gl-config-id selects that config alone, since EGL
+    // then ignores the other attributes; it still needs pbuffer support.
+    EGLint configSurfaces = 0;
+    requireEGL(eglGetConfigAttrib(m_display, eglConfig, EGL_SURFACE_TYPE, &configSurfaces),
+               "eglGetConfigAttrib failed");
+    if ((configSurfaces & EGL_PBUFFER_BIT) == 0)
+      throw tcu::NotSupportedError("Selected PS5 EGL config has no pbuffer support");
 
     const EGLint surfaceAttributes[] = {
         EGL_WIDTH, m_width, EGL_HEIGHT, m_height, EGL_NONE,
@@ -223,7 +232,8 @@ RenderContext::RenderContext(const glu::RenderConfig &config,
         EGL_CONTEXT_MINOR_VERSION_KHR,
         minor,
         EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR,
-        EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR,
+        glu::isContextTypeGLCore(m_type) ? EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR
+                                         : EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT_KHR,
         EGL_CONTEXT_FLAGS_KHR,
         contextFlags,
         EGL_NONE,

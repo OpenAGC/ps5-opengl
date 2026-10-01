@@ -59,6 +59,7 @@ struct ps5_egl_surface {
    EGLint width;
    EGLint height;
    EGLint swap_interval;
+   EGLint config_id;
    bool window;
    bool used;
    bool current;
@@ -91,6 +92,22 @@ int ps5_agc_gate2_display_idle(void) __attribute__((weak));
 
 static struct ps5_egl_display ps5_display;
 static struct ps5_egl_config ps5_config;
+
+/* Both configs share one visual. Config 1 also renders to the TV, whose window
+ * surface is the fixed-size display, so it stays non-conformant. Config 2 is
+ * the same buffers for pbuffers only and is the conformant OpenGL config. */
+struct ps5_egl_config_desc {
+   EGLint id;
+   EGLint surface_type;
+   EGLint conformant;
+   EGLint caveat;
+};
+
+static const struct ps5_egl_config_desc ps5_configs[] = {
+   { 1, EGL_WINDOW_BIT | EGL_PBUFFER_BIT, 0, EGL_NON_CONFORMANT_CONFIG },
+   { 2, EGL_PBUFFER_BIT, EGL_OPENGL_BIT, EGL_NONE },
+};
+#define PS5_EGL_CONFIG_COUNT ((EGLint)(sizeof(ps5_configs) / sizeof(ps5_configs[0])))
 static _Thread_local EGLint ps5_last_error = EGL_SUCCESS;
 static _Thread_local EGLenum ps5_bound_api = EGL_OPENGL_ES_API;
 static _Thread_local struct ps5_egl_context *ps5_current_context;
@@ -156,10 +173,19 @@ ps5_valid_display(EGLDisplay display, bool initialized)
           (!initialized || ps5_display.initialized);
 }
 
+static const struct ps5_egl_config_desc *
+ps5_config_desc(EGLConfig config)
+{
+   for (EGLint i = 0; i < PS5_EGL_CONFIG_COUNT; i++)
+      if (config == (EGLConfig)&ps5_configs[i])
+         return &ps5_configs[i];
+   return NULL;
+}
+
 static bool
 ps5_valid_config(EGLConfig config)
 {
-   return config == (EGLConfig)&ps5_config;
+   return ps5_config_desc(config) != NULL;
 }
 
 static struct ps5_egl_surface *
@@ -264,6 +290,7 @@ ps5_init_surface(struct ps5_egl_surface *surface, EGLint width,
    surface->height = height;
    surface->swap_interval = 1;
    surface->window = window;
+   surface->config_id = 1;
    surface->visual = ps5_config.visual;
    surface->drawable.stamp = 1;
    surface->drawable.ID = ps5_display.next_drawable_id++;
@@ -296,8 +323,24 @@ ps5_create_depth_stencil(EGLint width, EGLint height)
 }
 
 static bool
-ps5_match_config(const EGLint *attributes, bool *bad_attribute)
+ps5_match_config(const struct ps5_egl_config_desc *desc,
+                 const EGLint *attributes, bool *bad_attribute)
 {
+   /* EGL defaults EGL_SURFACE_TYPE to EGL_WINDOW_BIT. */
+   EGLint surface_type = EGL_WINDOW_BIT;
+
+   if (attributes) {
+      /* A specific EGL_CONFIG_ID ignores every other attribute. */
+      for (const EGLint *a = attributes; *a != EGL_NONE; a += 2)
+         if (a[0] == EGL_CONFIG_ID && a[1] != EGL_DONT_CARE)
+            return a[1] == desc->id;
+      for (const EGLint *a = attributes; *a != EGL_NONE; a += 2)
+         if (a[0] == EGL_SURFACE_TYPE)
+            surface_type = a[1];
+   }
+   if (surface_type != EGL_DONT_CARE &&
+       (surface_type & desc->surface_type) != surface_type)
+      return false;
    if (!attributes)
       return true;
 
@@ -332,24 +375,18 @@ ps5_match_config(const EGLint *attributes, bool *bad_attribute)
             return false;
          break;
       case EGL_SURFACE_TYPE:
-         if (value != EGL_DONT_CARE &&
-             (value & ~(EGL_WINDOW_BIT | EGL_PBUFFER_BIT)))
-            return false;
+      case EGL_CONFIG_ID:
          break;
       case EGL_RENDERABLE_TYPE:
          if (value != EGL_DONT_CARE && (value & ~EGL_OPENGL_BIT))
             return false;
          break;
       case EGL_CONFORMANT:
-         if (value != EGL_DONT_CARE && value != 0)
-            return false;
-         break;
-      case EGL_CONFIG_ID:
-         if (value != EGL_DONT_CARE && value != 1)
+         if (value != EGL_DONT_CARE && (value & desc->conformant) != value)
             return false;
          break;
       case EGL_CONFIG_CAVEAT:
-         if (value != EGL_DONT_CARE && value != EGL_NON_CONFORMANT_CONFIG)
+         if (value != EGL_DONT_CARE && value != desc->caveat)
             return false;
          break;
       case EGL_NATIVE_RENDERABLE:
@@ -601,9 +638,15 @@ eglGetConfigs(EGLDisplay display, EGLConfig *configs, EGLint config_size,
       ps5_set_error(EGL_BAD_PARAMETER);
       return EGL_FALSE;
    }
-   *num_config = 1;
-   if (configs && config_size)
-      configs[0] = (EGLConfig)&ps5_config;
+   EGLint count = 0;
+   for (EGLint i = 0; i < PS5_EGL_CONFIG_COUNT; i++) {
+      if (configs && count == config_size)
+         break;
+      if (configs)
+         configs[count] = (EGLConfig)&ps5_configs[i];
+      count++;
+   }
+   *num_config = count;
    return EGL_TRUE;
 }
 
@@ -621,15 +664,24 @@ eglChooseConfig(EGLDisplay display, const EGLint *attributes,
       ps5_set_error(EGL_BAD_PARAMETER);
       return EGL_FALSE;
    }
-   bool bad_attribute = false;
-   bool match = ps5_match_config(attributes, &bad_attribute);
-   if (bad_attribute) {
-      ps5_set_error(EGL_BAD_ATTRIBUTE);
-      return EGL_FALSE;
+   /* Sorted by EGL_CONFIG_CAVEAT: the conformant config comes first. */
+   static const int order[] = { 1, 0 };
+   EGLint count = 0;
+   for (unsigned i = 0; i < sizeof(order) / sizeof(order[0]); i++) {
+      bool bad_attribute = false;
+      bool match = ps5_match_config(&ps5_configs[order[i]], attributes,
+                                    &bad_attribute);
+      if (bad_attribute) {
+         ps5_set_error(EGL_BAD_ATTRIBUTE);
+         return EGL_FALSE;
+      }
+      if (!match || (configs && count == config_size))
+         continue;
+      if (configs)
+         configs[count] = (EGLConfig)&ps5_configs[order[i]];
+      count++;
    }
-   *num_config = match ? 1 : 0;
-   if (match && configs && config_size)
-      configs[0] = (EGLConfig)&ps5_config;
+   *num_config = count;
    return EGL_TRUE;
 }
 
@@ -651,6 +703,7 @@ eglGetConfigAttrib(EGLDisplay display, EGLConfig config, EGLint attribute,
       ps5_set_error(EGL_BAD_PARAMETER);
       return EGL_FALSE;
    }
+   const struct ps5_egl_config_desc *desc = ps5_config_desc(config);
    switch (attribute) {
    case EGL_BUFFER_SIZE: *value = 32; break;
    case EGL_RED_SIZE:
@@ -670,16 +723,16 @@ eglGetConfigAttrib(EGLDisplay display, EGLConfig config, EGLint attribute,
    case EGL_BIND_TO_TEXTURE_RGB:
    case EGL_BIND_TO_TEXTURE_RGBA:
    case EGL_LUMINANCE_SIZE:
-   case EGL_ALPHA_MASK_SIZE:
-   case EGL_CONFORMANT: *value = 0; break;
+   case EGL_ALPHA_MASK_SIZE: *value = 0; break;
+   case EGL_CONFORMANT: *value = desc->conformant; break;
    case EGL_MAX_PBUFFER_WIDTH: *value = PS5_EGL_WIDTH; break;
    case EGL_MAX_PBUFFER_HEIGHT: *value = PS5_EGL_HEIGHT; break;
    case EGL_MAX_PBUFFER_PIXELS: *value = PS5_EGL_WIDTH * PS5_EGL_HEIGHT; break;
-   case EGL_CONFIG_ID: *value = 1; break;
-   case EGL_CONFIG_CAVEAT: *value = EGL_NON_CONFORMANT_CONFIG; break;
+   case EGL_CONFIG_ID: *value = desc->id; break;
+   case EGL_CONFIG_CAVEAT: *value = desc->caveat; break;
    case EGL_NATIVE_RENDERABLE: *value = EGL_FALSE; break;
    case EGL_RENDERABLE_TYPE: *value = EGL_OPENGL_BIT; break;
-   case EGL_SURFACE_TYPE: *value = EGL_WINDOW_BIT | EGL_PBUFFER_BIT; break;
+   case EGL_SURFACE_TYPE: *value = desc->surface_type; break;
    case EGL_TRANSPARENT_TYPE: *value = EGL_NONE; break;
    case EGL_COLOR_BUFFER_TYPE: *value = EGL_RGB_BUFFER; break;
    case EGL_MIN_SWAP_INTERVAL: *value = 0; break;
@@ -722,6 +775,10 @@ eglCreateWindowSurface(EGLDisplay display, EGLConfig config,
    }
    if (!ps5_valid_config(config)) {
       ps5_set_error(EGL_BAD_CONFIG);
+      return EGL_NO_SURFACE;
+   }
+   if (!(ps5_config_desc(config)->surface_type & EGL_WINDOW_BIT)) {
+      ps5_set_error(EGL_BAD_MATCH);
       return EGL_NO_SURFACE;
    }
    if ((uintptr_t)window != 0) {
@@ -845,6 +902,9 @@ eglCreateContext(EGLDisplay display, EGLConfig config, EGLContext share,
 #endif
    (void)es1;
    (void)es2;
+   /* EGL_KHR_create_context: the profile mask is ignored below OpenGL 3.2. */
+   if (requested_major && requested_major * 10 + requested_minor < 32)
+      profile_mask = 0;
    if (profile_mask == EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR) {
       if (core <= 0 || requested_major < 3 ||
           (requested_major == 3 && requested_minor < 2)) {
@@ -899,7 +959,7 @@ eglCreateContext(EGLDisplay display, EGLConfig config, EGLContext share,
       printf("[ps5-egl] glthread=%u\n", context->st->ctx->GLThread.enabled);
    }
    context->magic = PS5_EGL_CONTEXT_MAGIC;
-   context->config_id = config == EGL_NO_CONFIG_KHR ? 0 : 1;
+   context->config_id = config == EGL_NO_CONFIG_KHR ? 0 : ps5_config_desc(config)->id;
    context->major = major;
    context->minor = minor;
    context->profile_mask = profile_mask;
@@ -1253,7 +1313,7 @@ eglQuerySurface(EGLDisplay display, EGLSurface surface_handle,
    switch (attribute) {
    case EGL_WIDTH: *value = surface->width; break;
    case EGL_HEIGHT: *value = surface->height; break;
-   case EGL_CONFIG_ID: *value = 1; break;
+   case EGL_CONFIG_ID: *value = surface->config_id; break;
    case EGL_RENDER_BUFFER: *value = EGL_BACK_BUFFER; break;
    case EGL_SWAP_BEHAVIOR: *value = EGL_BUFFER_DESTROYED; break;
    case EGL_LARGEST_PBUFFER: *value = EGL_FALSE; break;
@@ -1393,7 +1453,9 @@ eglCreatePbufferSurface(EGLDisplay display, EGLConfig config,
    }
    memset(&resource, 0, sizeof(resource));
    resource.target = PIPE_TEXTURE_2D;
-   resource.format = PIPE_FORMAT_B8G8R8A8_UNORM;
+   /* Pbuffers are never scanned out: use RGBA order, so the preferred
+    * glReadPixels format is GL_RGBA/GL_UNSIGNED_BYTE as OpenGL ES expects. */
+   resource.format = PIPE_FORMAT_R8G8B8A8_UNORM;
    resource.width0 = width;
    resource.height0 = height;
    resource.depth0 = 1;
@@ -1416,6 +1478,8 @@ eglCreatePbufferSurface(EGLDisplay display, EGLConfig config,
       return EGL_NO_SURFACE;
    }
    ps5_init_surface(surface, width, height, false);
+   surface->visual.color_format = PIPE_FORMAT_R8G8B8A8_UNORM;
+   surface->config_id = ps5_config_desc(config)->id;
    return (EGLSurface)surface;
 }
 

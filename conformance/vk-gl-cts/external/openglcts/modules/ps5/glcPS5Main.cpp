@@ -5,6 +5,10 @@
 #include "glcPS5GL33PackageEntry.hpp"
 
 #include "deUniquePtr.hpp"
+#include "qpDebugOut.h"
+#include "glcTestPackageRegistry.hpp"
+#include "glcTestRunner.hpp"
+#include "gluRenderContext.hpp"
 #include "tcuApp.hpp"
 #include "tcuCommandLine.hpp"
 #include "tcuPlatform.hpp"
@@ -12,12 +16,25 @@
 #include "tcuTestLog.hpp"
 #include "tcuTestPackage.hpp"
 
+#include <algorithm>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <dlfcn.h>
 #include <exception>
+#include <signal.h>
+#include <unistd.h>
+#include <unwind.h>
+#include <pthread.h>
+#include <fstream>
+#include <sstream>
+#include <stdexcept>
+#include <string>
+#include <sys/stat.h>
+#include <time.h>
+#include <vector>
 
 extern "C" int sceKernelDebugOutText(int channel, const char *text);
 struct LibcMallocManagedSize {
@@ -33,13 +50,19 @@ extern "C" void malloc_stats_fast(LibcMallocManagedSize *stats);
 extern "C" void psbc_glsl_type_cache_print_stats(unsigned iteration);
 extern "C" void ps5_opengl_heap_stats_print(unsigned iteration);
 extern "C" void ps5_opengl_heap_snapshot(const char *phase, unsigned iteration);
+extern "C" size_t ps5_opengl_heap_live_bytes(void);
+// Test case objects (and their buffers) live as long as the package, which
+// needs far more than the default native-app heap.
+extern "C" const size_t ps5_opengl_heap_size = size_t(1) << 30;
 
 tcu::Platform *createPlatform(void);
+int main(void);
 
 namespace {
 
 constexpr const char *kArgumentsPath = "/app0/cts-args.txt";
 constexpr const char *kStatusPath = "/download0/ps5-opengl-cts.status";
+constexpr const char *kRunnerMarkerPath = "/app0/cts-runner.txt";
 constexpr int kMaxArguments = 64;
 constexpr int kMaxArgumentLength = 512;
 
@@ -172,6 +195,347 @@ bool loadArguments(Arguments &arguments) {
   return hasCaseSelection;
 }
 
+// Crash evidence for klog: signal, fault address and return addresses, with
+// the address of main so the frames can be symbolized against the eboot.
+_Unwind_Reason_Code printFrame(struct _Unwind_Context *context, void *depth) {
+  int &frames = *static_cast<int *>(depth);
+  char line[64];
+  std::snprintf(line, sizeof(line), "[ps5-opengl-cts] frame %d 0x%lx\n", frames,
+                (unsigned long)_Unwind_GetIP(context));
+  sceKernelDebugOutText(0, line);
+  return ++frames < 48 ? _URC_NO_REASON : _URC_END_OF_STACK;
+}
+
+void printBacktrace(const char *reason) {
+  char line[160];
+  std::snprintf(line, sizeof(line), "[ps5-opengl-cts] crash %s main=0x%lx\n", reason,
+                (unsigned long)(uintptr_t)&main);
+  sceKernelDebugOutText(0, line);
+  int frames = 0;
+  _Unwind_Backtrace(printFrame, &frames);
+}
+
+void crashSignal(int signal, siginfo_t *info, void *) {
+  char reason[64];
+  std::snprintf(reason, sizeof(reason), "signal=%d addr=0x%lx", signal,
+                (unsigned long)(uintptr_t)(info ? info->si_addr : nullptr));
+  printBacktrace(reason);
+  _exit(128 + signal);
+}
+
+void installCrashHandlers(void) {
+  struct sigaction action;
+  std::memset(&action, 0, sizeof(action));
+  action.sa_sigaction = crashSignal;
+  action.sa_flags = SA_SIGINFO;
+  for (int signal : {SIGSEGV, SIGBUS, SIGILL, SIGFPE, SIGABRT})
+    sigaction(signal, &action, nullptr);
+  std::set_terminate([] {
+    printBacktrace("terminate");
+    _exit(134);
+  });
+}
+
+// dEQP's own output (per-case lines, tcu::die messages) goes to klog.
+bool klogOut(int, const char *message) {
+  sceKernelDebugOutText(0, message);
+  return false; // handled: skip the stdout copy
+}
+
+bool klogOutFormat(int, const char *format, va_list args) {
+  char line[1024];
+  std::vsnprintf(line, sizeof(line), format, args);
+  sceKernelDebugOutText(0, line);
+  return false;
+}
+
+void redirectToKlog(void) { qpRedirectOut(klogOut, klogOutFormat); }
+
+// Conformance runner mode, enabled by /app0/cts-runner.txt. The host writes
+// /app0/cts-results/control.txt (FTP: /data/homebrew/PPSA99005/cts-results):
+//   run=<name>                  output directory below /app0/cts-results
+//   mode=official|sessions      official: upstream cts-runner in one launch
+//   first=<n> last=<n>          sessions: 1-based session range (default all)
+//   logflush=0                  buffered QPA logs (--deqp-log-flush=disable)
+//   only_caselists=1            run only sessions with a host-written case list
+//   shader_sources=1            log shader sources (diagnostic reruns only)
+// Official mode runs glcts::TestRunner unchanged, as `cts-runner --type=gl46
+// --logdir=<run>` does. Sessions mode first asks the same runner for its
+// session list (--summary), then runs each session with exactly those
+// arguments, skipping sessions that already have a .status file, so a run can
+// be batched over several launches. A host-written <log>.caselist replaces the
+// session's case list to resume after a crash; that log goes to <log>.resume.
+namespace runner {
+
+constexpr const char *kRoot = "/app0/cts-results";
+
+struct Control {
+  std::string run = "default";
+  std::string mode = "sessions";
+  int first = 1;
+  int last = 1 << 30;
+  bool logFlush = true;
+  bool onlyCaseLists = false;
+  bool shaderSources = false;
+  bool dumpNir = false;
+  bool computeSync = false;
+  bool logImages = false;
+};
+
+struct Session {
+  std::string fileName;
+  std::vector<std::string> args;
+};
+
+void klog(const char *format, ...) {
+  char line[512];
+  va_list args;
+  va_start(args, format);
+  std::vsnprintf(line, sizeof(line), format, args);
+  va_end(args);
+  sceKernelDebugOutText(0, line);
+}
+
+bool fileExists(const std::string &path) {
+  struct stat info;
+  return stat(path.c_str(), &info) == 0;
+}
+
+std::string readFile(const std::string &path) {
+  std::ifstream stream(path.c_str(), std::ios::binary);
+  std::stringstream text;
+  text << stream.rdbuf();
+  return text.str();
+}
+
+Control readControl(void) {
+  Control control;
+  std::istringstream text(readFile(std::string(kRoot) + "/control.txt"));
+  std::string line;
+  while (std::getline(text, line)) {
+    const size_t equals = line.find('=');
+    if (equals == std::string::npos)
+      continue;
+    const std::string key = line.substr(0, equals);
+    std::string value = line.substr(equals + 1);
+    while (!value.empty() && (value.back() == '\r' || value.back() == ' '))
+      value.pop_back();
+    if (key == "run")
+      control.run = value;
+    else if (key == "mode")
+      control.mode = value;
+    else if (key == "first")
+      control.first = std::atoi(value.c_str());
+    else if (key == "last")
+      control.last = std::atoi(value.c_str());
+    else if (key == "logflush")
+      control.logFlush = value != "0";
+    else if (key == "only_caselists")
+      control.onlyCaseLists = value == "1";
+    else if (key == "shader_sources")
+      control.shaderSources = value == "1";
+    else if (key == "dump_nir")
+      control.dumpNir = value == "1";
+    else if (key == "compute_sync")
+      control.computeSync = value == "1";
+    else if (key == "log_images")
+      control.logImages = value == "1";
+  }
+  return control;
+}
+
+std::string attribute(const std::string &element, const char *name) {
+  const std::string key = std::string(name) + "=\"";
+  const size_t start = element.find(key);
+  if (start == std::string::npos)
+    return std::string();
+  const size_t end = element.find('"', start + key.size());
+  return element.substr(start + key.size(), end - start - key.size());
+}
+
+// Sessions in the order and with the arguments of the upstream run summary.
+std::vector<Session> readPlan(const std::string &summaryPath) {
+  std::vector<Session> sessions;
+  const std::string xml = readFile(summaryPath);
+  size_t position = 0;
+  while ((position = xml.find("<TestRun ", position)) != std::string::npos) {
+    const size_t end = xml.find('>', position);
+    const std::string element = xml.substr(position, end - position);
+    Session session;
+    session.fileName = attribute(element, "FileName");
+    std::istringstream words(attribute(element, "CmdLine"));
+    std::string word;
+    while (words >> word)
+      session.args.push_back(word);
+    sessions.push_back(session);
+    position = end;
+  }
+  return sessions;
+}
+
+void writeSessionStatus(const std::string &path, const tcu::TestRunStatus &result,
+                        double seconds) {
+  FILE *file = std::fopen(path.c_str(), "w");
+  if (file == nullptr)
+    return;
+  std::fprintf(file,
+               "complete=%d executed=%d passed=%d failed=%d not_supported=%d "
+               "warnings=%d waived=%d device_lost=%d seconds=%.1f\n",
+               result.isComplete ? 1 : 0, result.numExecuted, result.numPassed,
+               result.numFailed, result.numNotSupported, result.numWarnings,
+               result.numWaived, result.numDeviceLost, seconds);
+  std::fclose(file);
+}
+
+double now(void) {
+  struct timespec value;
+  clock_gettime(CLOCK_MONOTONIC, &value);
+  return value.tv_sec + value.tv_nsec * 1e-9;
+}
+
+// One session, as glcts::TestRunner::initSession builds it without verbose flags.
+void runSession(tcu::Platform &platform, tcu::Archive &archive, const std::string &dir,
+                const Session &session, int index, int count, bool logFlush,
+                bool shaderSources, bool logImages) {
+  std::vector<std::string> args = session.args;
+  std::string logName = session.fileName;
+  const std::string caseList = dir + "/" + session.fileName + ".caselist";
+  if (fileExists(caseList)) {
+    for (std::string &arg : args)
+      if (arg.rfind("--deqp-caselist-resource=", 0) == 0 ||
+          arg.rfind("--deqp-caselist-file=", 0) == 0)
+        arg = "--deqp-caselist-file=" + caseList;
+    logName += ".resume";
+  }
+  args.push_back("--deqp-log-filename=" + dir + "/" + logName);
+  if (!logImages)
+    args.push_back("--deqp-log-images=disable");
+  // Shader sources help diagnose compiler failures in focused reruns.
+  if (!shaderSources)
+    args.push_back("--deqp-log-shader-sources=disable");
+  // Flushing every QPA line costs ~30 ms on the title folder; per-case progress
+  // is in klog either way.
+  if (!logFlush)
+    args.push_back("--deqp-log-flush=disable");
+
+  std::vector<const char *> argv;
+  argv.push_back("cts-runner");
+  for (const std::string &arg : args)
+    argv.push_back(arg.c_str());
+
+  klog("[ps5-opengl-cts] session %d/%d start %s\n", index, count, logName.c_str());
+  const double start = now();
+  tcu::CommandLine commandLine((int)argv.size(), argv.data());
+  tcu::TestLog log(commandLine.getLogFileName(), commandLine.getLogFlags());
+  log.writeSessionInfo(std::string("#sessionInfo commandLineParameters \"") +
+                       commandLine.getInitialCmdLine() + "\"\n");
+  tcu::App app(platform, archive, log, commandLine);
+  // Report cases that grow the owned heap: klog pairs this with the case name.
+  size_t heap = ps5_opengl_heap_live_bytes();
+  int executed = 0;
+  while (app.iterate()) {
+    const int done = app.getResult().numExecuted;
+    if (done != executed) {
+      executed = done;
+      const size_t now_bytes = ps5_opengl_heap_live_bytes();
+      if (now_bytes > heap + (8u << 20))
+        klog("[ps5-opengl-cts] heap grew %zu KiB to %zu KiB\n", (now_bytes - heap) >> 10,
+             now_bytes >> 10);
+      heap = now_bytes;
+    }
+  }
+  const tcu::TestRunStatus result = app.getResult();
+  const double seconds = now() - start;
+  writeSessionStatus(dir + "/" + logName + ".status", result, seconds);
+  klog("[ps5-opengl-cts] session %d/%d done executed=%d passed=%d failed=%d "
+       "not_supported=%d warnings=%d complete=%d seconds=%.0f\n",
+       index, count, result.numExecuted, result.numPassed, result.numFailed,
+       result.numNotSupported, result.numWarnings, result.isComplete ? 1 : 0, seconds);
+}
+
+} // namespace runner
+
+int runConformance(void) {
+  using namespace runner;
+  installCrashHandlers();
+  setvbuf(stdout, nullptr, _IOLBF, 0);
+  try {
+    const Control control = readControl();
+    const std::string dir = std::string(kRoot) + "/" + control.run;
+    mkdir(kRoot, 0777);
+    mkdir(dir.c_str(), 0777);
+    // The runner's own output (per-case lines, tcu::die messages) goes to a
+    // file next to the logs; klog carries only the progress markers.
+    redirectToKlog();
+    if (control.dumpNir)
+      setenv("PSBC_DUMP_NIR", "1", 1);
+    if (control.computeSync)
+      setenv("PS5_COMPUTE_SYNC", "1", 1);
+    // Driver diagnostics (printf) go to a buffered file next to the logs.
+    if (std::freopen((dir + "/stdout.txt").c_str(), "a", stdout) != nullptr)
+      setvbuf(stdout, nullptr, _IOFBF, 1 << 16);
+    // Unbuffered: compiler diagnostics must survive the abort that follows them.
+    if (std::freopen((dir + "/stderr.txt").c_str(), "a", stderr) != nullptr)
+      setvbuf(stderr, nullptr, _IONBF, 0);
+    std::atexit([] { runner::klog("[ps5-opengl-cts] exit() called\n"); });
+    klog("[ps5-opengl-cts] runner mode=%s run=%s first=%d last=%d\n",
+         control.mode.c_str(), control.run.c_str(), control.first, control.last);
+
+    glcts::registerPackages();
+    tcu::DirArchive archive("/app0");
+    de::UniquePtr<tcu::Platform> platform(createPlatform());
+    klog("[ps5-opengl-cts] runner platform ready\n");
+
+    if (control.mode == "official") {
+      glcts::TestRunner official(*platform, archive, "", dir.c_str(),
+                                 glu::ApiType::core(4, 6), 0);
+      while (official.iterate()) {
+      }
+      klog("[ps5-opengl-cts] official run finished\n");
+      return finish("runner_finished", 0);
+    }
+
+    const std::string planDir = dir + "/plan";
+    const std::string planPath = planDir + "/cts-run-summary.xml";
+    if (!fileExists(planPath)) {
+      mkdir(planDir.c_str(), 0777);
+      klog("[ps5-opengl-cts] runner writing plan\n");
+      glcts::TestRunner summary(*platform, archive, "", planDir.c_str(),
+                                glu::ApiType::core(4, 6),
+                                glcts::TestRunner::PRINT_SUMMARY);
+      while (summary.iterate()) {
+      }
+    }
+    const std::vector<Session> sessions = readPlan(planPath);
+    klog("[ps5-opengl-cts] plan sessions=%d\n", (int)sessions.size());
+    const int count = (int)sessions.size();
+    // cts-runner's first run lists the EGL configs; it is not a summary TestRun.
+    if (control.first <= 1 && !control.onlyCaseLists && !fileExists(dir + "/configs.qpa.status")) {
+      Session configs;
+      configs.fileName = "configs.qpa";
+      configs.args.push_back("--deqp-case=CTS-Configs.*");
+      runSession(*platform, archive, dir, configs, 0, count, control.logFlush,
+                 control.shaderSources, control.logImages);
+    }
+    for (int index = std::max(control.first, 1);
+         index <= std::min(control.last, count); ++index) {
+      const Session &session = sessions[index - 1];
+      const std::string caseList = dir + "/" + session.fileName + ".caselist";
+      const std::string status = dir + "/" + session.fileName +
+                                 (fileExists(caseList) ? ".resume" : "") + ".status";
+      if (fileExists(status) || (control.onlyCaseLists && !fileExists(caseList)))
+        continue;
+      runSession(*platform, archive, dir, session, index, count, control.logFlush,
+                 control.shaderSources, control.logImages);
+    }
+    klog("[ps5-opengl-cts] sessions finished\n");
+    return finish("runner_finished", 0);
+  } catch (const std::exception &error) {
+    runner::klog("[ps5-opengl-cts] runner fatal: %s\n", error.what());
+    return finish("fatal", 3);
+  }
+}
+
 } // anonymous namespace
 
 int main(void) {
@@ -181,6 +545,10 @@ int main(void) {
   // Mesa's stderr duplicates; glGetError, debug callbacks and QPA stay enabled.
   if (setenv("MESA_DEBUG", "silent", 1) != 0)
     return finish("logging_setup_error", 2);
+  if (FILE *marker = std::fopen(kRunnerMarkerPath, "r")) {
+    std::fclose(marker);
+    return runConformance();
+  }
 
   try {
     Arguments arguments;

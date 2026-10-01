@@ -14,6 +14,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 #include <string.h>
 #include <sys/mman.h>
 #if defined(PS5_ASYNC_NATIVE_PREP) && \
@@ -722,13 +723,13 @@ int ps5_agc_gate2_set_point_coord_input(uint32_t enabled)
 #define AGC_INDEX_SIZE_32 1u
 #define TEXTURE_WIDTH 64u
 #define TEXTURE_HEIGHT 64u
-#define TESS_OFFCHIP_WORKGROUPS 160u
+#define TESS_OFFCHIP_WORKGROUPS 144u
 /* Driver-assigned slots can exceed the requested buffering count (CTS used
  * slot 166 with 160 requested). Back the full GFX10.3 ten-bit slot range. */
 #define TESS_OFFCHIP_SLOT_COUNT 1024u
 #define TESS_OFFCHIP_SLOT_BYTES 32768u
 #define TESS_OFFCHIP_BYTES (TESS_OFFCHIP_SLOT_COUNT * TESS_OFFCHIP_SLOT_BYTES)
-#define TESS_FACTOR_BYTES 0x4000u
+#define TESS_FACTOR_BYTES 0x1b000u
 #define NATIVE_COLOR_FORMAT_RGBA8_UNORM 1u
 #define NATIVE_COLOR_SWIZZLE_64KB_R_X 27u
 
@@ -2601,6 +2602,14 @@ static uint32_t float_bits(float value)
     uint32_t bits;
     memcpy(&bits, &value, sizeof(bits));
     return bits;
+}
+
+static float bits_to_float(uint32_t bits)
+{
+    float value;
+
+    memcpy(&value, &bits, sizeof(value));
+    return value;
 }
 
 static uint32_t fnv1a32(const void *data, size_t bytes)
@@ -4505,6 +4514,55 @@ int main(void)
                     (uint16_t)(0x0280u + index), 0,
                     runtime_point_line[index]
                 };
+        }
+        {
+            /* Guard band as in radeonsi: clip only where screen coordinates
+             * would leave the rasterizer range, and keep wide points/lines
+             * whose centre lies outside the viewport (discard band grows by
+             * the largest half point size / line width). */
+            const float range = 16383.0f;
+            const float point_half =
+                (float)(runtime_point_line[1] >> 16) / 16.0f;
+            const float line_half =
+                (float)(runtime_point_line[2] & 0xffffu) / 16.0f;
+            const float pixels = point_half > line_half ? point_half
+                                                        : line_half;
+            float clip_x = range, clip_y = range;
+            float disc_x = range, disc_y = range;
+
+            for (unsigned viewport = 0; viewport < runtime_viewport_count;
+                 ++viewport) {
+                const float sx = fabsf(bits_to_float(runtime_viewport[viewport][0]));
+                const float tx = fabsf(bits_to_float(runtime_viewport[viewport][1]));
+                const float sy = fabsf(bits_to_float(runtime_viewport[viewport][2]));
+                const float ty = fabsf(bits_to_float(runtime_viewport[viewport][3]));
+                float gx = 1.0f, gy = 1.0f;
+
+                if (sx > 0.0f && tx < range)
+                    gx = (range - tx) / sx;
+                if (sy > 0.0f && ty < range)
+                    gy = (range - ty) / sy;
+                if (gx < 1.0f)
+                    gx = 1.0f;
+                if (gy < 1.0f)
+                    gy = 1.0f;
+                clip_x = gx < clip_x ? gx : clip_x;
+                clip_y = gy < clip_y ? gy : clip_y;
+                gx = sx > 0.0f ? 1.0f + pixels / sx : 1.0f;
+                gy = sy > 0.0f ? 1.0f + pixels / sy : 1.0f;
+                disc_x = gx < disc_x ? gx : disc_x;
+                disc_y = gy < disc_y ? gy : disc_y;
+            }
+            disc_x = disc_x < clip_x ? disc_x : clip_x;
+            disc_y = disc_y < clip_y ? disc_y : clip_y;
+            graphics_state[graphics_count++] =
+                (agc_register_t){0x02fa, 0, float_bits(clip_y)};
+            graphics_state[graphics_count++] =
+                (agc_register_t){0x02fb, 0, float_bits(disc_y)};
+            graphics_state[graphics_count++] =
+                (agc_register_t){0x02fc, 0, float_bits(clip_x)};
+            graphics_state[graphics_count++] =
+                (agc_register_t){0x02fd, 0, float_bits(disc_x)};
         }
         if (runtime_interp_control_valid)
             graphics_state[graphics_count++] = (agc_register_t){

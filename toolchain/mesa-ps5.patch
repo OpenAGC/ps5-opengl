@@ -701,3 +701,248 @@ diff --git a/src/mesa/main/glthread.h b/src/mesa/main/glthread.h
  
  /* We need to leave 1 slot at the end to insert the END marker for unmarshal
   * calls that look ahead to know where the batch ends.
+diff --git a/src/mesa/state_tracker/st_extensions.c b/src/mesa/state_tracker/st_extensions.c
+--- a/src/mesa/state_tracker/st_extensions.c
++++ b/src/mesa/state_tracker/st_extensions.c
+@@ -367,11 +367,13 @@
+     * It will fail for driver with max 16 per shader texture image
+     * units (i.e. freedreno) if we use the GL way for GLES.
+     */
+-   c->MaxCombinedTextureImageUnits = _mesa_is_api_gles2(api) ?
++   /* PS5: desktop contexts also run the ES 3.1 tests (dEQP-GL45-ES31), which
++    * require 96. Texture units are binding points the state tracker maps
++    * per stage, so the all-stage sum is valid for GL as well (minimum 80).
++    */
++   c->MaxCombinedTextureImageUnits =
+       vertex_pipeline_max_combined_texture_image_units +
+-      compute_pipeline_max_combined_texture_image_units :
+-      MAX2(vertex_pipeline_max_combined_texture_image_units,
+-           compute_pipeline_max_combined_texture_image_units);
++      compute_pipeline_max_combined_texture_image_units;
+ 
+    unsigned mesh_pipeline_max_combined_texture_image_units =
+       c->Program[MESA_SHADER_TASK].MaxTextureImageUnits +
+diff --git a/src/mesa/main/blit.c b/src/mesa/main/blit.c
+--- a/src/mesa/main/blit.c
++++ b/src/mesa/main/blit.c
+@@ -277,6 +277,39 @@
+ }
+ 
+ 
++/* The driver may store several depth formats in one native format (PS5
++ * keeps DEPTH24_STENCIL8 as Z32F_S8). Blit compatibility is defined on the
++ * formats the application requested, so compare those as well. */
++static bool
++requested_depth_format(GLenum internal_format, GLuint *bits, GLenum *type)
++{
++   switch (internal_format) {
++   case GL_DEPTH_COMPONENT16:
++      *bits = 16; *type = GL_UNSIGNED_NORMALIZED; return true;
++   case GL_DEPTH_COMPONENT24:
++   case GL_DEPTH24_STENCIL8:
++      *bits = 24; *type = GL_UNSIGNED_NORMALIZED; return true;
++   case GL_DEPTH_COMPONENT32:
++      *bits = 32; *type = GL_UNSIGNED_NORMALIZED; return true;
++   case GL_DEPTH_COMPONENT32F:
++   case GL_DEPTH32F_STENCIL8:
++      *bits = 32; *type = GL_FLOAT; return true;
++   default:
++      return false;
++   }
++}
++
++static bool
++requested_depth_formats_differ(const struct gl_renderbuffer *read,
++                               const struct gl_renderbuffer *draw)
++{
++   GLuint read_bits, draw_bits;
++   GLenum read_type, draw_type;
++   return requested_depth_format(read->InternalFormat, &read_bits, &read_type) &&
++          requested_depth_format(draw->InternalFormat, &draw_bits, &draw_type) &&
++          (read_bits != draw_bits || read_type != draw_type);
++}
++
+ static bool
+ validate_stencil_buffer(struct gl_context *ctx, struct gl_framebuffer *readFb,
+                         struct gl_framebuffer *drawFb, const char *func)
+@@ -314,7 +347,8 @@
+    if (read_z_bits > 0 && draw_z_bits > 0 &&
+        (read_z_bits != draw_z_bits ||
+         _mesa_get_format_datatype(readRb->Format) !=
+-        _mesa_get_format_datatype(drawRb->Format))) {
++        _mesa_get_format_datatype(drawRb->Format) ||
++        requested_depth_formats_differ(readRb, drawRb))) {
+       _mesa_error(ctx, GL_INVALID_OPERATION,
+                   "%s(stencil attachment depth format mismatch)", func);
+       return false;
+@@ -343,7 +377,8 @@
+    if ((_mesa_get_format_bits(readRb->Format, GL_DEPTH_BITS) !=
+         _mesa_get_format_bits(drawRb->Format, GL_DEPTH_BITS)) ||
+        (_mesa_get_format_datatype(readRb->Format) !=
+-        _mesa_get_format_datatype(drawRb->Format))) {
++        _mesa_get_format_datatype(drawRb->Format)) ||
++       requested_depth_formats_differ(readRb, drawRb)) {
+       _mesa_error(ctx, GL_INVALID_OPERATION,
+                   "%s(depth attachment format mismatch)", func);
+       return false;
+diff --git a/src/gallium/auxiliary/indices/u_primconvert.c b/src/gallium/auxiliary/indices/u_primconvert.c
+--- a/src/gallium/auxiliary/indices/u_primconvert.c
++++ b/src/gallium/auxiliary/indices/u_primconvert.c
+@@ -183,8 +183,14 @@
+ 
+          /* Concatenating multiple restart-separated strips or fans would
+           * reconnect them. Force each range to independent primitives.
++          * List primitives stay independent and keep their own type.
+           */
+-         if (num_direct_draws > 1) {
++         if (num_direct_draws > 1 &&
++             info->mode != MESA_PRIM_POINTS && info->mode != MESA_PRIM_LINES &&
++             info->mode != MESA_PRIM_TRIANGLES &&
++             info->mode != MESA_PRIM_LINES_ADJACENCY &&
++             info->mode != MESA_PRIM_TRIANGLES_ADJACENCY &&
++             info->mode != MESA_PRIM_PATCHES) {
+             primtypes_mask &= ~BITFIELD_BIT(info->mode);
+             new_info->mode = u_index_prim_type_convert(primtypes_mask,
+                                                        info->mode, true);
+diff --git a/src/gallium/auxiliary/indices/u_primconvert.c b/src/gallium/auxiliary/indices/u_primconvert.c
+--- a/src/gallium/auxiliary/indices/u_primconvert.c
++++ b/src/gallium/auxiliary/indices/u_primconvert.c
+@@ -198,12 +198,16 @@
+          /* step 2: get a translator function which does nothing but handle any index size conversions
+           * which may or may not occur (8bit -> 16bit)
+           */
+-         u_index_translator(0xffff,
+-                            info->mode, index_size, total_index_count,
+-                            pc->api_pv, pc->api_pv,
+-                            PR_DISABLE,
+-                            &mode, &index_size, &new_draw->count,
+-                            &direct_draw_func);
++         if (u_index_translator(0xffff,
++                                info->mode, index_size, total_index_count,
++                                pc->api_pv, pc->api_pv,
++                                PR_DISABLE,
++                                &mode, &index_size, &new_draw->count,
++                                &direct_draw_func) == U_TRANSLATE_ERROR) {
++            printf("[primconvert] no index-size translator mode=%u size=%u\n",
++                   info->mode, index_size);
++            goto fail;
++         }
+          /* this should always be a direct translation */
+          assert(new_draw->count == total_index_count);
+          /* step 3: allocate a temp buffer for an intermediate rewrite step
+@@ -218,12 +222,16 @@
+          }
+       }
+       /* (step 4: get the actual primitive conversion translator function) */
+-      u_index_translator(primtypes_mask,
+-                         info->mode, index_size, total_index_count,
+-                         pc->api_pv, pc->api_pv,
+-                         new_info->primitive_restart ? PR_ENABLE : PR_DISABLE,
+-                         &mode, &index_size, &new_draw->count,
+-                         &trans_func);
++      if (u_index_translator(primtypes_mask,
++                             info->mode, index_size, total_index_count,
++                             pc->api_pv, pc->api_pv,
++                             new_info->primitive_restart ? PR_ENABLE : PR_DISABLE,
++                             &mode, &index_size, &new_draw->count,
++                             &trans_func) == U_TRANSLATE_ERROR) {
++         printf("[primconvert] no translator mode=%u restart=%u mask=%x size=%u\n",
++                info->mode, new_info->primitive_restart, primtypes_mask, index_size);
++         goto fail;
++      }
+       assert(new_info->mode == mode);
+       assert(new_info->index_size == index_size);
+ 
+diff --git a/src/gallium/auxiliary/indices/u_primconvert.c b/src/gallium/auxiliary/indices/u_primconvert.c
+--- a/src/gallium/auxiliary/indices/u_primconvert.c
++++ b/src/gallium/auxiliary/indices/u_primconvert.c
+@@ -164,6 +164,11 @@
+          offset = 0;
+          draw.start = 0;
+       }
++      if (!src) {
++         fprintf(stderr, "[primconvert] index buffer map failed mode=%u count=%u size=%u\n",
++                 info->mode, draw.count, info->index_size);
++         return false;
++      }
+       const void *restart_src = (const uint8_t *)src  + offset;
+ 
+       /* if the resulting primitive type is not supported by the driver for primitive restart,
+@@ -178,6 +183,8 @@
+           */
+          direct_draws = util_prim_restart_convert_to_direct(restart_src, info, &draw, &num_direct_draws,
+                                                             &new_info->min_index, &new_info->max_index, &total_index_count);
++         fprintf(stderr, "[primconvert] restart split mode=%u count=%u ranges=%u indices=%u draws=%p\n",
++                 info->mode, draw.count, num_direct_draws, total_index_count, (void *)direct_draws);
+          new_info->primitive_restart = false;
+          new_info->was_primitive_restart = true;
+ 
+@@ -204,7 +211,7 @@
+                                 PR_DISABLE,
+                                 &mode, &index_size, &new_draw->count,
+                                 &direct_draw_func) == U_TRANSLATE_ERROR) {
+-            printf("[primconvert] no index-size translator mode=%u size=%u\n",
++            fprintf(stderr, "[primconvert] no index-size translator mode=%u size=%u\n",
+                    info->mode, index_size);
+             goto fail;
+          }
+@@ -228,7 +235,7 @@
+                              new_info->primitive_restart ? PR_ENABLE : PR_DISABLE,
+                              &mode, &index_size, &new_draw->count,
+                              &trans_func) == U_TRANSLATE_ERROR) {
+-         printf("[primconvert] no translator mode=%u restart=%u mask=%x size=%u\n",
++         fprintf(stderr, "[primconvert] no translator mode=%u restart=%u mask=%x size=%u\n",
+                 info->mode, new_info->primitive_restart, primtypes_mask, index_size);
+          goto fail;
+       }
+diff --git a/src/gallium/auxiliary/indices/u_primconvert.c b/src/gallium/auxiliary/indices/u_primconvert.c
+--- a/src/gallium/auxiliary/indices/u_primconvert.c
++++ b/src/gallium/auxiliary/indices/u_primconvert.c
+@@ -113,8 +113,8 @@
+    struct pipe_draw_start_count_bias *direct_draws = NULL;
+    unsigned num_direct_draws = 0;
+    struct pipe_transfer *src_transfer = NULL;
+-   u_translate_func trans_func, direct_draw_func;
+-   u_generate_func gen_func;
++   u_translate_func trans_func = NULL, direct_draw_func = NULL;
++   u_generate_func gen_func = NULL;
+    const void *src = NULL;
+    void *dst;
+    unsigned ib_offset;
+@@ -266,6 +266,12 @@
+       new_info->index_size = index_size;
+    }
+ 
++   if (info->index_size ? (!trans_func || (num_direct_draws && !direct_draw_func)) : !gen_func) {
++      fprintf(stderr, "[primconvert] missing converter mode=%u restart=%u mask=%x/%x size=%u ranges=%u\n",
++              info->mode, info->primitive_restart, primtypes_mask,
++              pc->cfg.restart_primtypes_mask, info->index_size, num_direct_draws);
++      goto fail;
++   }
+    /* (step 5: allocate gpu memory sized for the FINAL index count) */
+    uint64_t new_size = (uint64_t)new_info->index_size * new_draw->count;
+    if (new_size > UINT_MAX)
+diff --git a/src/gallium/auxiliary/indices/u_primconvert.c b/src/gallium/auxiliary/indices/u_primconvert.c
+--- a/src/gallium/auxiliary/indices/u_primconvert.c
++++ b/src/gallium/auxiliary/indices/u_primconvert.c
+@@ -183,8 +183,6 @@
+           */
+          direct_draws = util_prim_restart_convert_to_direct(restart_src, info, &draw, &num_direct_draws,
+                                                             &new_info->min_index, &new_info->max_index, &total_index_count);
+-         fprintf(stderr, "[primconvert] restart split mode=%u count=%u ranges=%u indices=%u draws=%p\n",
+-                 info->mode, draw.count, num_direct_draws, total_index_count, (void *)direct_draws);
+          new_info->primitive_restart = false;
+          new_info->was_primitive_restart = true;
+ 
+diff --git a/src/gallium/auxiliary/indices/u_indices.c b/src/gallium/auxiliary/indices/u_indices.c
+--- a/src/gallium/auxiliary/indices/u_indices.c
++++ b/src/gallium/auxiliary/indices/u_indices.c
+@@ -55,6 +55,8 @@
+    case MESA_PRIM_TRIANGLES:
+    case MESA_PRIM_TRIANGLE_STRIP:
+    case MESA_PRIM_TRIANGLE_FAN:
++      /* Only quad primitives have quad translators. */
++      return MESA_PRIM_TRIANGLES;
+    case MESA_PRIM_QUADS:
+    case MESA_PRIM_QUAD_STRIP:
+       if ((hw_mask & (1<<MESA_PRIM_QUADS)) && pv_matches)

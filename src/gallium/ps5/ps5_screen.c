@@ -9,6 +9,7 @@
 #include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -45,6 +46,7 @@ ps5_runtime_printf(const char *format, ...)
 #include "util/format/u_format.h"
 #include "util/format/u_formats.h"
 #include "util/os_time.h"
+#include "util/u_sampler.h"
 #include "util/u_sample_positions.h"
 #include "util/simple_mtx.h"
 #include "util/u_draw.h"
@@ -287,6 +289,7 @@ ps5_draw_batch_submit(void)
 #endif
 }
 
+
 #define PS5_MAX_TEXTURE_UNITS 16u
 #define PS5_MERGED_TEXTURE_UNITS (2u * PS5_MAX_TEXTURE_UNITS)
 #define PS5_MAX_CONSTANT_BUFFERS 15u
@@ -387,6 +390,7 @@ struct ps5_context {
    struct ps5_shader *tessellation_tes;
    struct ps5_shader *tessellation_gs;
    bool tessellation_streamout;
+   unsigned tessellation_patch_vertices;
    struct ps5_vertex_layout *tessellation_layout;
    PsbcTessellationOutput tessellation_output;
    uint8_t *tessellation_hs_package;
@@ -445,6 +449,8 @@ struct ps5_context {
       *active_streamout_overflow_query[PIPE_MAX_VERTEX_STREAMS + 1];
    struct ps5_query *render_condition_query;
    unsigned sample_mask;
+   unsigned min_samples; /* pipe_context::set_min_samples */
+   void *fbfetch_sampler; /* nearest sampler for the framebuffer-fetch unit */
    bool queries_enabled;
    bool render_condition_inverted;
    struct ps5_compute_shader *cs;
@@ -486,6 +492,8 @@ struct ps5_context {
 struct ps5_shader {
    PsbcStage stage;
    nir_shader *nir;
+   /* Framebuffer fetch reads color buffer 0 through this texture unit + 1. */
+   unsigned fbfetch_unit;
    struct pipe_stream_output_info stream_output;
    struct ps5_shader_variant *variants;
    struct ps5_shader_variant *active;
@@ -502,6 +510,7 @@ struct ps5_fragment_exports {
    uint32_t int10_mask;
    uint32_t color_mask;
    unsigned rasterization_samples;
+   unsigned ps_iter_samples; /* fragment invocations per pixel; 1 = per pixel */
    bool ignore_sample_mask;
 };
 
@@ -1504,6 +1513,13 @@ ps5_texel_buffer_format(enum pipe_format format)
    case PIPE_FORMAT_R32G32B32A32_FLOAT:
    case PIPE_FORMAT_R32G32B32A32_UINT:
    case PIPE_FORMAT_R32G32B32A32_SINT:
+   /* Buffer images also use the SNORM image formats (rgba8/rgba16_snorm). */
+   case PIPE_FORMAT_R8_SNORM:
+   case PIPE_FORMAT_R8G8_SNORM:
+   case PIPE_FORMAT_R8G8B8A8_SNORM:
+   case PIPE_FORMAT_R16_SNORM:
+   case PIPE_FORMAT_R16G16_SNORM:
+   case PIPE_FORMAT_R16G16B16A16_SNORM:
       return true;
    default:
       return false;
@@ -2106,7 +2122,10 @@ ps5_encode_blend_state(const struct pipe_blend_state *state,
       *color_control = UINT32_C(0x00cc0011);
       return true;
    }
-   if (state->advanced_blend_func || state->max_rt >= target_count)
+   /* Advanced blend equations are computed by the fragment shader through
+    * framebuffer fetch (KHR_blend_equation_advanced lowering); the state
+    * tracker leaves fixed-function blending disabled for them. */
+   if (state->max_rt >= target_count)
       return false;
 
    for (unsigned i = 0; i < target_count; ++i) {
@@ -2209,7 +2228,7 @@ ps5_encode_rasterizer_state(const struct pipe_rasterizer_state *state,
                   1u << 12 : 0u) |
               (state->offset_point || state->offset_line ?
                   1u << 13 : 0u) |
-              (state->flatshade_first ? 1u << 19 : 0u) |
+              (!state->flatshade_first ? 1u << 19 : 0u) | /* PROVOKING_VTX_LAST */
               (polygon_mode ? 1u << 24 : 0u);
    *valid = 1;
    return true;
@@ -3061,6 +3080,7 @@ ps5_shader_uses_storage(const struct ps5_shader *shader)
    return shader && (shader->nir->info.num_ssbos || shader->nir->info.num_images);
 }
 
+
 static bool
 ps5_image_view_incomplete(const struct pipe_image_view *view)
 {
@@ -3365,7 +3385,9 @@ ps5_prepare_constant(struct ps5_context *context,
                                                        metadata);
    merged_geometry_storage = merged_geometry &&
       (ps5_shader_uses_storage(context->vs) ||
-       ps5_shader_uses_storage(context->gs));
+       ps5_shader_uses_storage(context->gs) ||
+       ps5_metadata_has_indirect_ubo(metadata, PSBC_STAGE_VERTEX) ||
+       ps5_metadata_has_indirect_ubo(metadata, PSBC_STAGE_GEOMETRY));
    resource_bindings = (shader->nir->info.num_ssbos != 0) +
                        (shader->nir->info.num_images != 0);
    if (merged_geometry)
@@ -3816,7 +3838,9 @@ ps5_prepare_texture(struct ps5_context *context,
                                                        metadata);
    merged_geometry_storage = merged_geometry &&
       (ps5_shader_uses_storage(context->vs) ||
-       ps5_shader_uses_storage(context->gs));
+       ps5_shader_uses_storage(context->gs) ||
+       ps5_metadata_has_indirect_ubo(metadata, PSBC_STAGE_VERTEX) ||
+       ps5_metadata_has_indirect_ubo(metadata, PSBC_STAGE_GEOMETRY));
    resource_bindings = (shader->nir->info.num_ssbos != 0) +
                        (shader->nir->info.num_images != 0);
    if (merged_geometry)
@@ -5649,6 +5673,20 @@ ps5_resource_storage_image_descriptor_owned(struct pipe_resource *base,
       if (!view.u.tex.single_layer_view && descriptor[4] >= base->array_size - first)
          return -1;
       view.u.tex.last_layer = first + (view.u.tex.single_layer_view ? 0 : descriptor[4]);
+   } else if (base->target == PIPE_TEXTURE_3D && (descriptor[3] >> 28) == 9) {
+      /* A 2D view of one 3D slice (glBindImageTexture layered=GL_FALSE). */
+      const uintptr_t address = ((uint64_t)descriptor[0] << 8) |
+                                ((uint64_t)(descriptor[1] & 255u) << 40);
+      const uintptr_t start = (uintptr_t)resource->data;
+      if (address < start || !resource->layer_stride ||
+          address - start >= resource->size || (address - start) % resource->layer_stride)
+         return -1;
+      const size_t first = (address - start) / resource->layer_stride;
+      if (first > view.u.tex.last_layer)
+         return -1;
+      view.u.tex.first_layer = view.u.tex.last_layer = first;
+      view.u.tex.single_layer_view = true;
+      view.u.tex.is_2d_view_of_3d = true;
    }
    uint32_t expected[8];
    return ps5_storage_image_view_descriptor(&view, expected) ||
@@ -5858,8 +5896,11 @@ ps5_is_format_supported(struct pipe_screen *screen, enum pipe_format format,
        !PS5_ENABLE_PACKED_DEPTH_STENCIL)
       return false;
 
+   /* BGRA8 renders (the display order) but is not a sampled format: Mesa
+    * stores sampled BGRA textures as RGBA8 and swizzles on upload. */
    if (PS5_ENABLE_CORE_RENDER_FORMATS_CANDIDATE &&
        !(bindings & PIPE_BIND_DISPLAY_TARGET) &&
+       !(format == PIPE_FORMAT_B8G8R8A8_UNORM && (bindings & PIPE_BIND_SAMPLER_VIEW)) &&
        ps5_core_render_target_format(format)) {
       const unsigned allowed = PIPE_BIND_RENDER_TARGET |
                                PIPE_BIND_SAMPLER_VIEW;
@@ -7249,7 +7290,15 @@ ps5_resolve_color_msaa4(struct pipe_context *context,
           info->dst.resource->width0 ||
        (unsigned)info->dst.box.y + (unsigned)info->dst.box.height >
           info->dst.resource->height0) {
-      printf("[ps5-gallium] msaa4-resolve rejected\n");
+      printf("[ps5-gallium] msaa4-resolve rejected mask=%x fmt=%u/%u res=%u/%u samples=%u/%u "
+             "filter=%u src=%d,%d,%d %dx%d dst=%d,%d %dx%d dstsize=%ux%u scissor=%u alpha=%u\n",
+             info->mask, info->src.format, info->dst.format, info->src.resource->format,
+             info->dst.resource->format, info->src.resource->nr_samples,
+             info->dst.resource->nr_samples, info->filter, info->src.box.x, info->src.box.y,
+             info->src.box.z, info->src.box.width, info->src.box.height, info->dst.box.x,
+             info->dst.box.y, info->dst.box.width, info->dst.box.height,
+             info->dst.resource->width0, info->dst.resource->height0, info->scissor_enable,
+             info->alpha_blend);
       return;
    }
    src_width = (unsigned)abs(info->src.box.width);
@@ -7779,15 +7828,26 @@ ps5_blit_gpu_color(struct ps5_context *context, const struct pipe_blit_info *inf
           r->allocation_size > UINTPTR_MAX - (uintptr_t)r->data ||
           !r->base.width0 || !r->base.height0 ||
           r->base.width0 > PS5_MAX_COLOR_WIDTH || r->base.height0 > PS5_MAX_COLOR_HEIGHT ||
-          b->x < 0 || b->y < 0 || b->z < 0 ||
+          (i == 0 && (b->x < 0 || b->y < 0)) || b->z < 0 ||
           (unsigned)b->z >= r->base.array_size || b->depth != 1)
          return false;
       unsigned width = MAX2(r->base.width0 >> levels[i], 1u);
       unsigned height = MAX2(r->base.height0 >> levels[i], 1u);
-      if ((unsigned)b->x > width || (unsigned)b->y > height ||
-          (int64_t)b->x + b->width < 0 || (int64_t)b->y + b->height < 0 ||
-          (int64_t)b->x + b->width > width || (int64_t)b->y + b->height > height)
+      /* The destination may extend past the surface (GL clips it with a
+       * scissor); the blitter's quad is clipped to the scissor below. */
+      if (i == 0 &&
+          ((unsigned)b->x > width || (unsigned)b->y > height ||
+           (int64_t)b->x + b->width < 0 || (int64_t)b->y + b->height < 0 ||
+           (int64_t)b->x + b->width > width || (int64_t)b->y + b->height > height))
          return false;
+      if (i == 1) {
+         left = MAX2(left, 0);
+         bottom = MAX2(bottom, 0);
+         right = MIN2(right, (int64_t)width);
+         top = MIN2(top, (int64_t)height);
+         if (right <= left || top <= bottom)
+            return false;
+      }
       struct pipe_surface selected = {
          .texture = (struct pipe_resource *)&r->base, .format = r->base.format,
          .level = levels[i], .first_layer = b->z, .last_layer = b->z,
@@ -7858,10 +7918,13 @@ ps5_blit_gpu_color(struct ps5_context *context, const struct pipe_blit_info *inf
     * both textures and uploader storage, and its normal GPU barriers order
     * sampling after those producers. CPU fallbacks still drain below. */
    context->deferred_blitter_draw = true;
+   const struct pipe_scissor_state clip = {
+      .minx = (uint16_t)left, .miny = (uint16_t)bottom,
+      .maxx = (uint16_t)right, .maxy = (uint16_t)top,
+   };
    util_blitter_blit_generic(blitter, &surface, &info->dst.box, view, &info->src.box,
                              info->src.resource->width0, info->src.resource->height0,
-                             info->mask, info->filter,
-                             info->scissor_enable ? &info->scissor : NULL,
+                             info->mask, info->filter, &clip,
                              false, false, 0, NULL);
    context->deferred_blitter_draw = false;
    pipe_sampler_view_reference(&view, NULL);
@@ -9173,6 +9236,20 @@ ps5_streamout_record_compare(const void *a, const void *b)
    return (x->invocation > y->invocation) - (x->invocation < y->invocation);
 }
 
+/* Canonical tessellation records: reserved[1] = first patch (TES) or GS
+ * input primitive, invocation = GS instance, primitive = normalized ordinal.
+ * The ordinal only orders subgroups that share one patch on one engine. */
+static int
+ps5_tess_streamout_record_compare(const void *a, const void *b)
+{
+   const struct ps5_streamout_record *x = a, *y = b;
+   if (x->reserved[1] != y->reserved[1])
+      return x->reserved[1] < y->reserved[1] ? -1 : 1;
+   if (x->invocation != y->invocation)
+      return x->invocation < y->invocation ? -1 : 1;
+   return (x->primitive > y->primitive) - (x->primitive < y->primitive);
+}
+
 static bool
 ps5_prepare_primitive_query(struct ps5_context *context,
                             const PsbcShaderMetadata *metadata,
@@ -9245,16 +9322,21 @@ ps5_prepare_streamout(struct ps5_context *context,
       record_capacity = ps5_draw_primitive_count(primitive_type, draw_count);
       record_capacity *= MAX2(context->gs->nir->info.gs.invocations, 1);
       staging_primitives = record_capacity * context->gs->nir->info.gs.vertices_out;
-   } else if (context->tes && !context->gs) {
+   } else if (context->tes) {
       if (!context->patch_vertices)
          return false;
       /* Maximum tessellation level is 64: quads produce at most 2*64*64
        * triangles, with fewer primitives for the other tessellation modes. */
       staging_primitives = (uint64_t)(draw_count / context->patch_vertices) * 8192u;
+      if (context->gs)
+         staging_primitives *= (uint64_t)MAX2(context->gs->nir->info.gs.invocations, 1) *
+                               context->gs->nir->info.gs.vertices_out;
+      if (staging_primitives > (UINT64_C(1) << 24))
+         return false;
       /* ponytail: a full hardware ordinal cycle needs a wider ordering key. */
       record_capacity = MIN2(staging_primitives, PS5_TESS_STREAMOUT_ORDINAL_COUNT - 1u);
    }
-   if ((context->gs != NULL) != (context->tes != NULL)) {
+   if (context->gs || context->tes) {
       if (!record_capacity || record_capacity > (UINT32_MAX - 64u) / 64u ||
           !ps5_streamout_storage(context, &context->streamout_records,
                                  64u + record_capacity * 64u))
@@ -9372,7 +9454,7 @@ ps5_collect_geometry_streamout(
    unsigned vertices_per_primitive =
       ps5_streamout_vertices_per_primitive(context->stream_output_primitive);
 
-   if ((context->gs != NULL) != (context->tes != NULL)) {
+   if (context->gs || context->tes) {
       struct ps5_resource *storage = (struct ps5_resource *)context->streamout_records;
       if (!storage || storage->size < sizeof(*control))
          return false;
@@ -9387,6 +9469,17 @@ ps5_collect_geometry_streamout(
          return false;
       }
       struct ps5_streamout_record *records = (void *)(control + 1);
+      if (context->tes) {
+         /* Raw TES: (ordinal, patch); raw TES+GS: (GS primitive, instance, ordinal). */
+         for (unsigned i = 0; i < count; ++i) {
+            const uint32_t ordinal = context->gs ? records[i].reserved[0] : records[i].primitive;
+            records[i].reserved[1] = context->gs ? records[i].primitive : records[i].invocation;
+            if (!context->gs)
+               records[i].invocation = 0;
+            records[i].primitive = ordinal;
+            records[i].reserved[0] = 0;
+         }
+      }
       qsort(records, count, sizeof(*records), ps5_streamout_record_compare);
       if (context->tes && count) {
          /* ponytail: fewer than one cycle identifies one complete ordinal
@@ -9397,7 +9490,7 @@ ps5_collect_geometry_streamout(
          unsigned origin = 0, boundaries = 0;
          for (unsigned i = 0; i < count; ++i) {
             unsigned next = (i + 1) % count;
-            if (records[i].primitive >= modulus || records[i].invocation)
+            if (records[i].primitive >= modulus)
                return false;
             unsigned gap = next ? records[next].primitive - records[i].primitive :
                modulus + records[0].primitive - records[i].primitive;
@@ -9415,7 +9508,7 @@ ps5_collect_geometry_streamout(
             return false;
          for (unsigned i = 0; i < count; ++i)
             records[i].primitive = (records[i].primitive + modulus - origin) % modulus;
-         qsort(records, count, sizeof(*records), ps5_streamout_record_compare);
+         qsort(records, count, sizeof(*records), ps5_tess_streamout_record_compare);
       }
       uint64_t capacity[4] = {UINT64_MAX, UINT64_MAX, UINT64_MAX, UINT64_MAX};
       uint64_t generated[4] = {0}, emitted[4] = {0};
@@ -9452,14 +9545,16 @@ ps5_collect_geometry_streamout(
       }
       /* Validate the complete receipt before changing any application buffer. */
       for (unsigned i = 0; i < count; ++i) {
-         if (context->tes && (count >= PS5_TESS_STREAMOUT_ORDINAL_COUNT || records[i].primitive != i ||
-                             records[i].invocation != 0)) {
+         /* TES ordinals were proven contiguous above; patch keys set the order. */
+         if (context->tes && (count >= PS5_TESS_STREAMOUT_ORDINAL_COUNT ||
+                              records[i].primitive >= count)) {
             printf("[ps5-gallium] tess-streamout-order-rejected count=%u index=%u key=%u invocation=%u first=%u last=%u\n",
                    count, i, records[i].primitive, records[i].invocation,
                    records[0].primitive, records[count - 1].primitive);
             return false;
          }
-         if (i && !ps5_streamout_record_compare(&records[i - 1], &records[i]))
+         if (i && !(context->tes ? ps5_tess_streamout_record_compare :
+                                   ps5_streamout_record_compare)(&records[i - 1], &records[i]))
             return false;
          for (unsigned stream = 0; stream < 4; ++stream) {
             if (records[i].emitted[stream] != records[i].generated[stream])
@@ -9887,6 +9982,15 @@ ps5_draw_vbo_locked(struct pipe_context *base,
    fragment_exports.ignore_sample_mask |= !context->rasterizer || !context->rasterizer->multisample;
    if (fragment_exports.ignore_sample_mask)
       fragment_exports.rasterization_samples = 0;
+   /* glMinSampleShading: invocations per pixel, a power of two up to the
+    * sample count. A shader reading sample inputs always runs per sample. */
+   fragment_exports.ps_iter_samples = 1;
+   if (fragment_exports.rasterization_samples > 1) {
+      const unsigned samples = fragment_exports.rasterization_samples;
+      fragment_exports.ps_iter_samples =
+         context->fs->nir->info.fs.uses_sample_shading ? samples :
+         MIN2(util_next_power_of_two(MAX2(context->min_samples, 1u)), samples);
+   }
    if (!pixel_descriptor_resource || !fragment_primitive_type ||
        !ps5_select_shader_variant(
           context->fs,
@@ -10397,7 +10501,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
            sample_count, context->sample_mask,
            context->rasterizer && context->rasterizer->multisample,
            graphics.alpha_to_coverage, poly_line_smooth,
-           context->fs->nir->info.fs.uses_sample_shading) != 0) ||
+           fragment_exports.ps_iter_samples > 1 ? fragment_exports.ps_iter_samples : 0) != 0) ||
        (PS5_ENABLE_DUAL_SOURCE_BLEND_CANDIDATE &&
         ps5_agc_gate2_set_dual_source_blend(
            graphics.dual_source_blend) != 0) ||
@@ -10546,6 +10650,7 @@ ps5_draw_vbo_locked(struct pipe_context *base,
                                   PIPE_BIND_SAMPLER_VIEW)) ==
             (PIPE_BIND_RENDER_TARGET | PIPE_BIND_SAMPLER_VIEW);
          color_to_texture_barrier |= target->base.nr_samples == 4;
+         color_to_texture_barrier |= context->fs && context->fs->fbfetch_unit;
       }
       if (PS5_ENABLE_DYNAMIC_COLOR_TARGET_CANDIDATE) {
          struct ps5_resource *scanout = screen->render_pool
@@ -11987,6 +12092,86 @@ ps5_prepare_default_tcs(struct ps5_context *context)
    context->default_tcs_vertices = context->patch_vertices;
    memcpy(context->default_tcs_levels, context->tess_levels, sizeof(context->tess_levels));
    return true;
+}
+
+#ifndef PS5_KLOG
+#define PS5_KLOG(...) do { \
+      int sceKernelDebugOutText(int channel, const char *text) __attribute__((weak)); \
+      static unsigned ps5_klog_reported; \
+      char ps5_klog_message[256]; \
+      if (sceKernelDebugOutText && ps5_klog_reported++ < 32) { \
+         snprintf(ps5_klog_message, sizeof(ps5_klog_message), __VA_ARGS__); \
+         sceKernelDebugOutText(0, ps5_klog_message); \
+      } \
+   } while (0)
+#define PS5_COMPUTE_REJECT() do { \
+      PS5_KLOG("[ps5-gallium] compute dispatch dropped at ps5_screen.c:%u\n", __LINE__); \
+      return; \
+   } while (0)
+#endif
+
+
+static void
+ps5_draw_vbo(struct pipe_context *base, const struct pipe_draw_info *info,
+             unsigned drawid_offset,
+             const struct pipe_draw_indirect_info *indirect,
+             const struct pipe_draw_start_count_bias *draws,
+             unsigned num_draws);
+
+/* A rejected draw renders nothing; report the status of the first ones. */
+static void
+ps5_draw_vbo_reported(struct pipe_context *base, const struct pipe_draw_info *info,
+                      unsigned drawid_offset,
+                      const struct pipe_draw_indirect_info *indirect,
+                      const struct pipe_draw_start_count_bias *draws,
+                      unsigned num_draws)
+{
+   struct ps5_context *context = (struct ps5_context *)base;
+   struct pipe_sampler_view *fbfetch_saved = NULL;
+   void *fbfetch_saved_sampler = NULL;
+   const unsigned fbfetch_unit = context->fs ? context->fs->fbfetch_unit : 0;
+   context->last_draw_status = 0;
+   if (fbfetch_unit) {
+      const struct pipe_surface *color = &context->framebuffer.cbufs[0];
+      struct pipe_sampler_view *view = NULL;
+      if (color->texture) {
+         struct pipe_sampler_view templ;
+         u_sampler_view_default_template(&templ, color->texture, color->format);
+         templ.target = PIPE_TEXTURE_2D;
+         templ.u.tex.first_level = templ.u.tex.last_level = color->level;
+         templ.u.tex.first_layer = templ.u.tex.last_layer = color->first_layer;
+         view = base->create_sampler_view(base, color->texture, &templ);
+      }
+      pipe_sampler_view_reference(&fbfetch_saved,
+                                  context->sampler_views[1][fbfetch_unit - 1]);
+      base->set_sampler_views(base, MESA_SHADER_FRAGMENT, fbfetch_unit - 1, 1, 0,
+                              &view);
+      pipe_sampler_view_reference(&view, NULL);
+      /* Texture binding requires a sampler per unit, even for texel fetches. */
+      if (!context->fbfetch_sampler) {
+         const struct pipe_sampler_state nearest = {
+            .wrap_s = PIPE_TEX_WRAP_CLAMP_TO_EDGE, .wrap_t = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
+            .wrap_r = PIPE_TEX_WRAP_CLAMP_TO_EDGE,
+            .min_img_filter = PIPE_TEX_FILTER_NEAREST, .mag_img_filter = PIPE_TEX_FILTER_NEAREST,
+            .min_mip_filter = PIPE_TEX_MIPFILTER_NONE,
+         };
+         context->fbfetch_sampler = base->create_sampler_state(base, &nearest);
+      }
+      fbfetch_saved_sampler = context->samplers[1][fbfetch_unit - 1];
+      base->bind_sampler_states(base, MESA_SHADER_FRAGMENT, fbfetch_unit - 1, 1,
+                                &context->fbfetch_sampler);
+   }
+   ps5_draw_vbo(base, info, drawid_offset, indirect, draws, num_draws);
+   if (fbfetch_unit) {
+      base->set_sampler_views(base, MESA_SHADER_FRAGMENT, fbfetch_unit - 1, 1, 0,
+                              &fbfetch_saved);
+      pipe_sampler_view_reference(&fbfetch_saved, NULL);
+      base->bind_sampler_states(base, MESA_SHADER_FRAGMENT, fbfetch_unit - 1, 1,
+                                &fbfetch_saved_sampler);
+   }
+   if (context->last_draw_status < 0)
+      PS5_KLOG("[ps5-gallium] draw dropped status=%d mode=%u\n",
+                context->last_draw_status, info ? (unsigned)info->mode : 0u);
 }
 
 static void
@@ -13533,6 +13718,20 @@ ps5_shader_has_indirect_ubo(const struct ps5_shader *shader)
    return false;
 }
 
+/* Merged VS+GS pipelines address buffers through per-stage descriptor arrays
+ * when either stage uses storage or indexes a UBO array dynamically; the
+ * compiler requires constant UBO slots otherwise. */
+static bool
+ps5_geometry_uses_buffer_arrays(const struct ps5_context *context)
+{
+   return ps5_shader_uses_storage(context->vs) ||
+          ps5_shader_uses_storage(context->gs) ||
+          (context->vs && context->vs->nir->info.num_ubos &&
+           ps5_shader_has_indirect_ubo(context->vs)) ||
+          (context->gs && context->gs->nir->info.num_ubos &&
+           ps5_shader_has_indirect_ubo(context->gs));
+}
+
 static bool
 ps5_shader_compile_options(const struct ps5_shader *shader,
                            uint32_t address32_hi,
@@ -13903,6 +14102,7 @@ ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
           variant->exports.color_mask == exports->color_mask &&
           variant->exports.ignore_sample_mask == exports->ignore_sample_mask &&
           variant->exports.rasterization_samples == exports->rasterization_samples &&
+          variant->exports.ps_iter_samples == exports->ps_iter_samples &&
           !memcmp(&variant->layout, layout, sizeof(*layout))) {
          shader->active = variant;
          return true;
@@ -13934,8 +14134,10 @@ ps5_select_shader_variant(struct ps5_shader *shader, uint32_t address32_hi,
    options.flat_input_vertex = flat_input_vertex >= 0 ? flat_input_vertex : 0;
    options.color_is_int8 = exports->int8_mask;
    options.color_is_int10 = exports->int10_mask;
-   if (shader->stage == PSBC_STAGE_FRAGMENT)
+   if (shader->stage == PSBC_STAGE_FRAGMENT) {
       options.rasterization_samples = poly_line_smooth ? 4 : exports->rasterization_samples;
+      options.ps_iter_samples = exports->ps_iter_samples;
+   }
    package_nir = shader->nir;
    if (shader->stage == PSBC_STAGE_FRAGMENT || alpha_to_one || poly_line_smooth) {
       if (shader->stage != PSBC_STAGE_FRAGMENT ||
@@ -14097,6 +14299,7 @@ ps5_release_tessellation_pipeline(struct ps5_context *context)
    context->tessellation_tes = NULL;
    context->tessellation_gs = NULL;
    context->tessellation_streamout = false;
+   context->tessellation_patch_vertices = 0;
 }
 
 static bool
@@ -14153,6 +14356,7 @@ ps5_select_tessellation_pipeline(struct ps5_context *context,
        context->tessellation_tes == context->tes &&
        context->tessellation_gs == context->gs &&
        context->tessellation_streamout == streamout &&
+       context->tessellation_patch_vertices == context->patch_vertices &&
        context->tessellation_layout &&
        !memcmp(context->tessellation_layout, layout, sizeof(*layout)))
       return true;
@@ -14235,6 +14439,7 @@ ps5_select_tessellation_pipeline(struct ps5_context *context,
    context->tessellation_tes = context->tes;
    context->tessellation_gs = context->gs;
    context->tessellation_streamout = streamout;
+   context->tessellation_patch_vertices = context->patch_vertices;
    context->tessellation_layout = saved_layout;
    output.runtime.tf_param = ps5_tessellation_gl_tf_param(output.runtime.tf_param);
    context->tessellation_output = output;
@@ -14258,6 +14463,14 @@ ps5_geometry_ring_itemsize(const PsbcShaderMetadata *metadata,
          return true;
       }
    }
+   return false;
+}
+
+/* Say which check refused a geometry pipeline (the draw is dropped). */
+static bool
+ps5_geometry_reject(unsigned line)
+{
+   printf("[ps5-gallium] geometry-select reject at ps5_screen.c:%u\n", line);
    return false;
 }
 
@@ -14297,7 +14510,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
    if (!context->gs)
       return true;
    if (!PS5_ENABLE_GEOMETRY_CANDIDATE)
-      return false;
+      return ps5_geometry_reject(__LINE__);
    if (context->geometry_vs == context->vs &&
        context->geometry_gs == context->gs && context->geometry_layout &&
        context->geometry_primitive_type == primitive_type &&
@@ -14310,7 +14523,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
       printf("[ps5-gallium] geometry-select reject=vertex-options textures=%u ubos=%u\n",
              context->vs->nir->info.num_textures,
              context->vs->nir->info.num_ubos);
-      return false;
+      return ps5_geometry_reject(__LINE__);
    }
    vertex_ubos = context->vs->nir->info.num_ubos;
    geometry_ubos = context->gs->nir->info.num_ubos;
@@ -14318,8 +14531,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
    geometry_ssbos = context->gs->nir->info.num_ssbos;
    vertex_images = context->vs->nir->info.num_images;
    geometry_images = context->gs->nir->info.num_images;
-   merged_storage = vertex_ssbos || geometry_ssbos ||
-                    vertex_images || geometry_images;
+   merged_storage = ps5_geometry_uses_buffer_arrays(context);
    vertex_ubo_bindings = vertex_ubos
       ? ((vertex_ssbos || vertex_images ||
           ps5_shader_has_indirect_ubo(context->vs))
@@ -14328,15 +14540,15 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
    if (geometry_images > PS5_COMPUTE_IMAGE_SLOTS ||
        geometry_ssbos > PS5_COMPUTE_STORAGE_SLOTS ||
        vertex_ubos + geometry_ubos > 2u * PS5_MAX_CONSTANT_BUFFERS)
-      return false;
+      return ps5_geometry_reject(__LINE__);
    if (merged_storage) {
       if (options.descriptor_binding_count < vertex_ubo_bindings)
-         return false;
+         return ps5_geometry_reject(__LINE__);
       options.descriptor_binding_count -= vertex_ubo_bindings;
       options.gallium_buffer_arrays = true;
       if (geometry_ssbos) {
          if (options.descriptor_binding_count >= PSBC_MAX_DESCRIPTOR_BINDINGS)
-            return false;
+            return ps5_geometry_reject(__LINE__);
          options.descriptor_bindings[options.descriptor_binding_count++] =
             (PsbcDescriptorBinding){
                .binding =
@@ -14349,7 +14561,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
       }
       if (geometry_images) {
          if (options.descriptor_binding_count >= PSBC_MAX_DESCRIPTOR_BINDINGS)
-            return false;
+            return ps5_geometry_reject(__LINE__);
          options.descriptor_bindings[options.descriptor_binding_count++] =
             (PsbcDescriptorBinding){
                .binding =
@@ -14369,7 +14581,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
                                          PS5_MAX_TEXTURE_UNITS + binding, 0)) {
          printf("[ps5-gallium] geometry-select reject=texture-descriptor binding=%u\n",
                 binding);
-         return false;
+         return ps5_geometry_reject(__LINE__);
       }
       merged_textures++;
    }
@@ -14384,12 +14596,12 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
              context->vs->nir->info.num_textures,
              context->gs->nir->info.num_textures, merged_textures,
              options.descriptor_binding_count);
-      return false;
+      return ps5_geometry_reject(__LINE__);
    }
    if (merged_storage) {
       if (options.descriptor_binding_count + (vertex_ubos != 0) +
              (geometry_ubos != 0) > PSBC_MAX_DESCRIPTOR_BINDINGS)
-         return false;
+         return ps5_geometry_reject(__LINE__);
       if (vertex_ubos)
          options.descriptor_bindings[options.descriptor_binding_count++] =
             (PsbcDescriptorBinding){
@@ -14413,12 +14625,12 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
       printf("[ps5-gallium] geometry-select reject=descriptors vertex-ubos=%u geometry-ubos=%u descriptors=%u\n",
              vertex_ubos, geometry_ubos,
              options.descriptor_binding_count);
-      return false;
+      return ps5_geometry_reject(__LINE__);
    }
    geometry_nir = nir_shader_clone(NULL, context->gs->nir);
    if (!geometry_nir) {
       printf("[ps5-gallium] geometry-select reject=clone\n");
-      return false;
+      return ps5_geometry_reject(__LINE__);
    }
    nir_shader_instructions_pass(geometry_nir, ps5_offset_geometry_texture,
                                 nir_metadata_control_flow,
@@ -14426,7 +14638,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
    if (!texture_offset.valid) {
       printf("[ps5-gallium] geometry-select reject=texture-remap\n");
       ralloc_free(geometry_nir);
-      return false;
+      return ps5_geometry_reject(__LINE__);
    }
    if (geometry_nir->info.num_textures)
       geometry_nir->info.num_textures += PS5_MAX_TEXTURE_UNITS;
@@ -14449,7 +14661,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
    if (!ubo_offset.valid) {
       printf("[ps5-gallium] geometry-select reject=ubo-remap\n");
       ralloc_free(geometry_nir);
-      return false;
+      return ps5_geometry_reject(__LINE__);
    }
    options.stage = PSBC_STAGE_GEOMETRY;
    options.ngg = true;
@@ -14459,7 +14671,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
       carrier_nir = ps5_stream_output_carrier_nir(geometry_nir);
       if (!carrier_nir) {
          ralloc_free(geometry_nir);
-         return false;
+         return ps5_geometry_reject(__LINE__);
       }
       package_nir = carrier_nir;
    }
@@ -14486,7 +14698,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
       ralloc_free(geometry_nir);
       free(package);
       psbc_free_output(&output);
-      return false;
+      return ps5_geometry_reject(__LINE__);
    }
    if (context->gs->stream_output.num_outputs) {
       options.ps5_global_streamout = true;
@@ -14513,7 +14725,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
          free(streamout_package);
          psbc_free_output(&output);
          psbc_free_output(&streamout_output);
-         return false;
+         return ps5_geometry_reject(__LINE__);
       }
    }
    ralloc_free(geometry_nir);
@@ -14524,7 +14736,7 @@ ps5_select_geometry_pipeline(struct ps5_context *context,
       free(streamout_package);
       psbc_free_output(&output);
       psbc_free_output(&streamout_output);
-      return false;
+      return ps5_geometry_reject(__LINE__);
    }
    *context->geometry_layout = *layout;
    context->geometry_vs = context->vs;
@@ -14652,6 +14864,31 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
             const unsigned dimensions = tex->sampler_dim == GLSL_SAMPLER_DIM_1D ? 1 :
                tex->sampler_dim == GLSL_SAMPLER_DIM_2D ? 2 :
                (volume || tex->sampler_dim == GLSL_SAMPLER_DIM_CUBE) ? 3 : 0;
+            /* Sampler arrays indexed by a (dynamically) uniform value carry
+             * texture/sampler offsets; bound them like texel-buffer arrays. */
+            unsigned index_sources = 0, array_size = 1;
+            for (unsigned i = 0; i < tex->num_srcs; ++i) {
+               if (tex->src[i].src_type != nir_tex_src_texture_offset &&
+                   tex->src[i].src_type != nir_tex_src_sampler_offset)
+                  continue;
+               nir_src source = tex->src[i].src;
+               if (source.ssa->num_components != 1 || source.ssa->bit_size != 32)
+                  return false;
+               ++index_sources;
+               unsigned ceiling;
+               if (nir_src_is_const(source)) {
+                  ceiling = nir_src_as_uint(source);
+               } else {
+                  struct hash_table *ranges = _mesa_pointer_hash_table_create(NULL);
+                  if (!ranges) return false;
+                  ceiling = nir_unsigned_upper_bound(nir, ranges,
+                     nir_get_scalar(source.ssa, 0));
+                  _mesa_hash_table_destroy(ranges, NULL);
+               }
+               if (ceiling >= PS5_COMPUTE_TEXTURE_SLOTS - tex->texture_index)
+                  return false;
+               array_size = MAX2(array_size, ceiling + 1);
+            }
             if ((tex->op != nir_texop_txf && tex->op != nir_texop_txs &&
                  tex->op != nir_texop_txl && !gather && !gradient) ||
                 !dimensions || (volume && tex->is_array) ||
@@ -14663,7 +14900,7 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                 tex->def.bit_size != 32 ||
                 tex->num_srcs != (tex->op == nir_texop_txs || gather ? 1 :
                                   gradient ? 3 : 2) +
-                   shadow_compare)
+                   shadow_compare + index_sources)
                return false;
             if ((tex->op == nir_texop_txl || gather || gradient) &&
                 (tex->sampler_index != tex->texture_index ||
@@ -14719,7 +14956,8 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                       tex->src[i].src.ssa->bit_size != 32)
                      return false;
                   ++gradients;
-               } else {
+               } else if (tex->src[i].src_type != nir_tex_src_texture_offset &&
+                          tex->src[i].src_type != nir_tex_src_sampler_offset) {
                   return false;
                }
             }
@@ -14727,16 +14965,20 @@ ps5_compute_texture_usage(nir_shader *nir, unsigned *used, unsigned *buffers,
                 lods != (!gather && !gradient) || gradients != 2u * gradient ||
                 coords != (tex->op == nir_texop_txs ? 0u : 1u))
                return false;
-            if ((*used & (1u << tex->texture_index)) &&
-                (((*arrays & (1u << tex->texture_index)) != 0) != tex->is_array))
+            const unsigned mask = BITFIELD_RANGE(tex->texture_index, array_size);
+            if ((*used & mask) &&
+                ((binding_size[tex->texture_index] != array_size) ||
+                 (((*arrays & mask) != 0) != tex->is_array)))
                return false;
-            *used |= 1u << tex->texture_index;
-            binding_size[tex->texture_index] = 1;
-            if (tex->is_array) *arrays |= 1u << tex->texture_index;
+            *used |= mask;
+            binding_size[tex->texture_index] = array_size;
+            if (tex->is_array) *arrays |= mask;
             if (gradient)
                max_lod[tex->texture_index] = UINT_MAX;
+            for (unsigned element = 1; element < array_size; ++element)
+               max_lod[tex->texture_index + element] = max_lod[tex->texture_index];
             if (tex->op == nir_texop_txl || gather || gradient)
-               *filtered |= 1u << tex->texture_index;
+               *filtered |= mask;
          }
       }
    }
@@ -15285,6 +15527,24 @@ ps5_publish_compute_resource(struct pipe_resource *base, size_t offset, size_t b
    resource->texture_published_bytes = resource->allocation_size;
 }
 
+
+
+#ifndef PS5_KLOG
+#define PS5_KLOG(...) do { \
+      int sceKernelDebugOutText(int channel, const char *text) __attribute__((weak)); \
+      static unsigned ps5_klog_reported; \
+      char ps5_klog_message[256]; \
+      if (sceKernelDebugOutText && ps5_klog_reported++ < 32) { \
+         snprintf(ps5_klog_message, sizeof(ps5_klog_message), __VA_ARGS__); \
+         sceKernelDebugOutText(0, ps5_klog_message); \
+      } \
+   } while (0)
+#define PS5_COMPUTE_REJECT() do { \
+      PS5_KLOG("[ps5-gallium] compute dispatch dropped at ps5_screen.c:%u\n", __LINE__); \
+      return; \
+   } while (0)
+#endif
+
 static void
 ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
 {
@@ -15304,7 +15564,7 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
        (context->cs->filtered_textures && context->compute_samplers_invalid) || !grid ||
        grid->work_dim > 3 || grid->variable_shared_mem || grid->num_globals ||
        grid->draw_count || grid->indirect_draw_count) {
-      printf("[ps5-gallium] compute rejected cs=%u descriptors=%u buffers=%u constants=%x images=%u views=%u samplers=%u grid=%u\n",
+      PS5_KLOG("[ps5-gallium] compute rejected cs=%u descriptors=%u buffers=%u constants=%x images=%u views=%u samplers=%u grid=%u\n",
              context->cs != NULL, context->compute_descriptors != NULL,
              context->compute_bindings_invalid, context->compute_constants_invalid,
              context->compute_images_invalid, context->compute_views_invalid,
@@ -15314,7 +15574,7 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
    for (unsigned i = 0; i < 3; ++i) {
       if (grid->block[i] != context->cs->output.metadata.compute_workgroup_size[i] ||
           grid->grid_base[i] || (grid->last_block[i] && grid->last_block[i] != grid->block[i]))
-         return;
+         PS5_COMPUTE_REJECT();
    }
    if (!ps5_render_condition_passes(context)) {
       context->last_compute_status = 0;
@@ -15328,20 +15588,20 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
       if (command->screen != base->screen || command->target != PIPE_BUFFER ||
           (grid->indirect_offset & 3u) || grid->indirect_offset > command->width0 ||
           sizeof(groups) > command->width0 - grid->indirect_offset)
-         return;
+         PS5_COMPUTE_REJECT();
       /* ponytail: CPU argument readback waits for queued writers and
        * invalidates their results. Native indirect packets need a GPU grid-size ABI. */
       ps5_draw_batch_drain_buffer(grid->indirect);
       if (ps5_resource_gpu_info(grid->indirect, &address, &size, NULL) || !address ||
           grid->indirect_offset > size || sizeof(groups) > size - grid->indirect_offset)
-         return;
+         PS5_COMPUTE_REJECT();
       const uint8_t *arguments = (const uint8_t *)address + grid->indirect_offset;
       ps5_flush_gpu_data(arguments, sizeof(groups));
       memcpy(groups, arguments, sizeof(groups));
    }
    for (unsigned i = 0; i < 3; ++i)
       if (groups[i] > 65535)
-         return;
+         PS5_COMPUTE_REJECT();
    if (!groups[0] || !groups[1] || !groups[2]) {
       context->last_compute_status = 0; /* A zero-sized dispatch has no work. */
       return;
@@ -15378,7 +15638,7 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
           !ps5_image_buffer_descriptor(view, context->cs->output.metadata.address32_hi,
                                        descriptor) :
           ps5_storage_image_view_descriptor(view, descriptor))
-         return;
+         PS5_COMPUTE_REJECT();
       written[written_count++] = resource;
       offsets[buffer_count] = resource->target == PIPE_BUFFER ? view->u.buf.offset : 0;
       sizes[buffer_count] = resource->target == PIPE_BUFFER ? view->u.buf.size : 0;
@@ -15395,11 +15655,11 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
       if (!view && (context->cs->buffer_textures & (1u << i)))
          continue;
       if (!view)
-         return;
+         PS5_COMPUTE_REJECT();
       if (context->cs->buffer_textures & (1u << i)) {
          if (!ps5_texel_buffer_descriptor(view, context->cs->output.metadata.address32_hi,
                                           descriptor))
-            return;
+            PS5_COMPUTE_REJECT();
          offsets[buffer_count] = view->u.buf.offset;
          sizes[buffer_count] = view->u.buf.size;
          buffers[buffer_count++] = view->texture;
@@ -15414,13 +15674,13 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
                view->u.tex.first_level, view->u.tex.last_level, descriptor) :
             ps5_resource_sampled_image_descriptor(view->texture,
                view->u.tex.first_level, view->u.tex.last_level, descriptor))
-         return;
+         PS5_COMPUTE_REJECT();
       const unsigned swizzles[] = {view->swizzle_r, view->swizzle_g,
                                    view->swizzle_b, view->swizzle_a};
       for (unsigned channel = 0; channel < 4; ++channel) {
          uint32_t selector;
          if (!ps5_texture_descriptor_swizzle(swizzles[channel], view->format, &selector))
-            return;
+            PS5_COMPUTE_REJECT();
          descriptor[3] = (descriptor[3] & ~(7u << (channel * 3))) |
                          (selector << (channel * 3));
       }
@@ -15432,23 +15692,23 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
             ++full_last_level;
          if (view->u.tex.first_level ||
              view->u.tex.last_level < full_last_level)
-            return;
+            PS5_COMPUTE_REJECT();
       } else if (context->cs->texture_lod[i] >
                  view->u.tex.last_level - view->u.tex.first_level) {
-         return;
+         PS5_COMPUTE_REJECT();
       }
       if ((view->target == PIPE_TEXTURE_1D_ARRAY ||
            view->target == PIPE_TEXTURE_2D_ARRAY ||
            view->target == PIPE_TEXTURE_CUBE_ARRAY) !=
           ((context->cs->array_textures & (1u << i)) != 0))
-         return;
+         PS5_COMPUTE_REJECT();
       if (context->cs->filtered_textures & (1u << i)) {
          if (!(context->compute_sampler_mask & (1u << i)) ||
              !ps5_texture_format_size(view->format) ||
              (util_format_is_pure_integer(view->format) &&
               (context->compute_samplers[i][2] &
                ((UINT32_C(3) << 20) | (UINT32_C(3) << 22)))))
-            return;
+            PS5_COMPUTE_REJECT();
          memcpy(table->data + PS5_COMPUTE_TEXTURE_OFFSET + i * 48 + 32,
                 context->compute_samplers[i], 16);
       }
@@ -15465,7 +15725,12 @@ ps5_launch_grid(struct pipe_context *base, const struct pipe_grid_info *grid)
    simple_mtx_unlock(&ps5_deferred_mutex);
 #endif
 #if defined(PS5_NATIVE_TITLE_RUNTIME) && defined(PS5_DEFERRED_DRAW_BATCH)
-   if (ps5_queue_compute(context, buffers, buffer_count, written, written_count, groups)) {
+   /* Diagnostics: PS5_COMPUTE_SYNC=1 runs every dispatch synchronously. */
+   static int compute_sync = -1;
+   if (compute_sync < 0)
+      compute_sync = getenv("PS5_COMPUTE_SYNC") != NULL;
+   if (!compute_sync &&
+       ps5_queue_compute(context, buffers, buffer_count, written, written_count, groups)) {
       context->last_compute_status = 0;
       ++context->dispatches;
       return;
@@ -15504,6 +15769,74 @@ ps5_lower_default_uniforms(nir_shader *nir)
    /* Sampler lowering also leaves dead dereferences when there is no UBO. */
    nir_opt_dce(nir);
    nir_remove_dead_variables(nir, nir_var_uniform, NULL);
+}
+
+/* Framebuffer fetch (KHR_blend_equation_advanced, non-coherent): a fragment
+ * output read becomes a texel fetch of the pixel from color buffer 0, which the
+ * draw binds to a free texture unit behind a color-to-texture barrier. */
+static bool
+ps5_lower_fbfetch_instr(nir_builder *b, nir_intrinsic_instr *intr, void *data)
+{
+   const unsigned unit = *(const unsigned *)data;
+   if (intr->intrinsic != nir_intrinsic_load_output)
+      return false;
+   b->cursor = nir_before_instr(&intr->instr);
+   /* Integer pixel position; the backend has no whole-vector load_frag_coord. */
+   nir_def *coord = nir_u2u32(b, nir_load_pixel_coord(b));
+   nir_tex_instr *tex = nir_tex_instr_create(b->shader, 2);
+   tex->op = nir_texop_txf;
+   tex->sampler_dim = GLSL_SAMPLER_DIM_2D;
+   tex->coord_components = 2;
+   tex->dest_type = nir_type_float32;
+   tex->texture_index = unit;
+   tex->sampler_index = unit;
+   tex->src[0] = nir_tex_src_for_ssa(nir_tex_src_coord, coord);
+   tex->src[1] = nir_tex_src_for_ssa(nir_tex_src_lod, nir_imm_int(b, 0));
+   nir_def_init(&tex->instr, &tex->def, 4, 32);
+   nir_builder_instr_insert(b, &tex->instr);
+   nir_def *value = nir_trim_vector(b, &tex->def, intr->def.num_components);
+   if (intr->def.bit_size != 32)
+      value = nir_f2fN(b, value, intr->def.bit_size);
+   nir_def_replace(&intr->def, value);
+   return true;
+}
+
+static bool
+ps5_lower_fbfetch(struct ps5_shader *shader)
+{
+   nir_shader *nir = shader->nir;
+   if (nir->info.stage != MESA_SHADER_FRAGMENT)
+      return true;
+   /* Shader info may predate the output reads; look at the instructions. */
+   uint64_t fetched = 0;
+   nir_foreach_function_impl(impl, nir) {
+      nir_foreach_block(block, impl) {
+         nir_foreach_instr(instr, block) {
+            if (instr->type != nir_instr_type_intrinsic)
+               continue;
+            nir_intrinsic_instr *intr = nir_instr_as_intrinsic(instr);
+            if (intr->intrinsic == nir_intrinsic_load_output)
+               fetched |= BITFIELD64_BIT(nir_intrinsic_io_semantics(intr).location);
+         }
+      }
+   }
+   if (!fetched)
+      return true;
+   /* Only color attachment 0 can be fetched (pipe caps.fbfetch = 1). */
+   if (fetched & ~(BITFIELD64_BIT(FRAG_RESULT_DATA0) | BITFIELD64_BIT(FRAG_RESULT_COLOR)))
+      return false;
+   unsigned unit = 0;
+   while (unit < PS5_MAX_TEXTURE_UNITS && BITSET_TEST(nir->info.textures_used, unit))
+      ++unit;
+   if (unit >= PS5_MAX_TEXTURE_UNITS)
+      return false;
+   nir_shader_intrinsics_pass(nir, ps5_lower_fbfetch_instr, nir_metadata_control_flow, &unit);
+   nir_shader_gather_info(nir, nir_shader_get_entrypoint(nir));
+   BITSET_SET(nir->info.textures_used, unit);
+   BITSET_SET(nir->info.textures_used_by_txf, unit);
+   nir->info.num_textures = MAX2(nir->info.num_textures, unit + 1);
+   shader->fbfetch_unit = unit + 1;
+   return true;
 }
 
 static void *
@@ -15579,6 +15912,11 @@ ps5_create_shader_state(struct pipe_screen *screen,
    shader->stage = stage;
    shader->nir = templ->ir.nir;
    shader->stream_output = templ->stream_output;
+   if (!ps5_lower_fbfetch(shader)) {
+      ralloc_free(shader->nir);
+      free(shader);
+      return NULL;
+   }
    if (stage == PSBC_STAGE_VERTEX) {
       if (!ps5_default_vertex_layout(shader->nir, &layout)) {
          ralloc_free(shader->nir);
@@ -16165,6 +16503,12 @@ ps5_set_stencil_ref(struct pipe_context *base,
                     const struct pipe_stencil_ref ref)
 {
    ((struct ps5_context *)base)->stencil_ref = ref;
+}
+
+static void
+ps5_set_min_samples(struct pipe_context *base, unsigned min_samples)
+{
+   ((struct ps5_context *)base)->min_samples = min_samples;
 }
 
 static void
@@ -16809,7 +17153,7 @@ ps5_context_create(struct pipe_screen *screen, void *priv, unsigned flags)
    context->base.set_shader_images = ps5_set_shader_images;
    context->base.launch_grid = ps5_launch_grid;
 #endif
-   context->base.draw_vbo = ps5_draw_vbo;
+   context->base.draw_vbo = ps5_draw_vbo_reported;
    context->base.memory_barrier = ps5_memory_barrier;
    context->base.texture_barrier = ps5_texture_barrier;
    context->base.create_query = ps5_create_query;
@@ -16862,6 +17206,7 @@ ps5_context_create(struct pipe_screen *screen, void *priv, unsigned flags)
    context->base.set_blend_color = ps5_set_blend_color;
    context->base.set_stencil_ref = ps5_set_stencil_ref;
    context->base.set_sample_mask = ps5_set_sample_mask;
+   context->base.set_min_samples = ps5_set_min_samples;
    context->base.get_sample_position = u_default_get_sample_position;
    context->base.set_scissor_states = ps5_set_scissor_states;
    context->base.set_viewport_states = ps5_set_viewport_states;
@@ -17142,6 +17487,8 @@ ps5_screen_create(void)
    caps->fs_fine_derivative = PS5_ENABLE_GLSL_450_CANDIDATE;
    caps->texture_query_samples = PS5_ENABLE_GLSL_450_CANDIDATE;
    caps->texture_barrier = PS5_ENABLE_GLSL_450_CANDIDATE;
+   /* Non-coherent fetch of color buffer 0: KHR_blend_equation_advanced. */
+   caps->fbfetch = PS5_ENABLE_GLSL_450_CANDIDATE;
    caps->gl_spirv = PS5_ENABLE_GLSL_460_CANDIDATE;
    caps->multi_draw_indirect = PS5_ENABLE_GLSL_460_CANDIDATE;
    caps->multi_draw_indirect_params = PS5_ENABLE_GLSL_460_CANDIDATE;
