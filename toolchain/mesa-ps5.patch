@@ -946,3 +946,30 @@ diff --git a/src/gallium/auxiliary/indices/u_indices.c b/src/gallium/auxiliary/i
     case MESA_PRIM_QUADS:
     case MESA_PRIM_QUAD_STRIP:
        if ((hw_mask & (1<<MESA_PRIM_QUADS)) && pv_matches)
+diff --git a/src/mesa/main/texstore.c b/src/mesa/main/texstore.c
+--- a/src/mesa/main/texstore.c
++++ b/src/mesa/main/texstore.c
+@@ -541,9 +541,10 @@
+ _mesa_texstore_z32f_x24s8(TEXSTORE_PARAMS)
+ {
+    GLint img, row;
++   /* Byte stride: stencil-only rows (GL_STENCIL_INDEX, GL_UNSIGNED_BYTE) are
++    * not a multiple of four bytes for most widths. */
+    const GLint srcRowStride
+-      = _mesa_image_row_stride(srcPacking, srcWidth, srcFormat, srcType)
+-         / sizeof(int32_t);
++      = _mesa_image_row_stride(srcPacking, srcWidth, srcFormat, srcType);
+ 
+    assert(dstFormat == MESA_FORMAT_Z32_FLOAT_S8X24_UINT);
+    assert(srcFormat == GL_DEPTH_STENCIL ||
+@@ -556,8 +557,8 @@
+    /* In case we only upload depth we need to preserve the stencil */
+    for (img = 0; img < srcDepth; img++) {
+       uint64_t *dstRow = (uint64_t *) dstSlices[img];
+-      const int32_t *src
+-         = (const int32_t *) _mesa_image_address(dims, srcPacking, srcAddr,
++      const uint8_t *src
++         = (const uint8_t *) _mesa_image_address(dims, srcPacking, srcAddr,
+                srcWidth, srcHeight,
+                srcFormat, srcType,
+                img, 0, 0);
