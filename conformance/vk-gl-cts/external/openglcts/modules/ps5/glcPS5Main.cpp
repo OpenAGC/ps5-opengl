@@ -533,6 +533,12 @@ void runSession(tcu::Platform &platform, tcu::Archive &archive, const std::strin
         arg = "--deqp-caselist-file=" + caseList;
     logName += ".resume";
   }
+  // Supplementary runs: the cases that insist on a window surface (see the
+  // platform port) run with the same offscreen surface declared as a window.
+  if (std::getenv("PS5_CTS_OFFSCREEN_WINDOW") != nullptr)
+    for (std::string &arg : args)
+      if (arg == "--deqp-surface-type=pbuffer")
+        arg = "--deqp-surface-type=window";
   args.push_back("--deqp-log-filename=" + dir + "/" + logName);
   if (!logImages)
     args.push_back("--deqp-log-images=disable");

@@ -20,6 +20,7 @@
 #include <EGL/eglext.h>
 
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 #include <vector>
 
@@ -156,13 +157,16 @@ RenderContext::RenderContext(const glu::RenderConfig &config,
       throw tcu::NotSupportedError(
           "PS5 CTS target supports OpenGL 3.0 through 4.6");
 
-    const glu::ContextFlags unsupported =
-        glu::ContextFlags(glu::CONTEXT_ROBUST | glu::CONTEXT_NO_ERROR);
-    if ((m_type.getFlags() & unsupported) != 0)
-      throw tcu::NotSupportedError(
-          "Requested OpenGL context flags are unsupported");
+    // The conformant config has no window surfaces, so the runner asks for
+    // pbuffers and the cases that insist on a window report NotSupported.
+    // PS5_CTS_OFFSCREEN_WINDOW=1 (supplementary runs only) lets those cases run:
+    // a window is then the same offscreen surface, never presented.
+    const bool offscreenWindow =
+        config.surfaceType == glu::RenderConfig::SURFACETYPE_WINDOW &&
+        std::getenv("PS5_CTS_OFFSCREEN_WINDOW") != nullptr;
     if (config.surfaceType != glu::RenderConfig::SURFACETYPE_DONT_CARE &&
-        config.surfaceType != glu::RenderConfig::SURFACETYPE_OFFSCREEN_GENERIC)
+        config.surfaceType != glu::RenderConfig::SURFACETYPE_OFFSCREEN_GENERIC &&
+        !offscreenWindow)
       throw tcu::NotSupportedError("PS5 CTS adapter currently supports pbuffers only");
     if (config.componentType == glu::RenderConfig::COMPONENT_TYPE_FLOAT)
       throw tcu::NotSupportedError("PS5 EGL has no floating-point pbuffer config");
@@ -226,7 +230,9 @@ RenderContext::RenderContext(const glu::RenderConfig &config,
       contextFlags |= EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR;
     if ((m_type.getFlags() & glu::CONTEXT_FORWARD_COMPATIBLE) != 0)
       contextFlags |= EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR;
-    const EGLint contextAttributes[] = {
+    if ((m_type.getFlags() & glu::CONTEXT_ROBUST) != 0)
+      contextFlags |= EGL_CONTEXT_OPENGL_ROBUST_ACCESS_BIT_KHR;
+    std::vector<EGLint> contextAttributes = {
         EGL_CONTEXT_MAJOR_VERSION_KHR,
         major,
         EGL_CONTEXT_MINOR_VERSION_KHR,
@@ -236,8 +242,19 @@ RenderContext::RenderContext(const glu::RenderConfig &config,
                                          : EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT_KHR,
         EGL_CONTEXT_FLAGS_KHR,
         contextFlags,
-        EGL_NONE,
     };
+    if (config.resetNotificationStrategy != glu::RESET_NOTIFICATION_STRATEGY_NOT_SPECIFIED) {
+      contextAttributes.push_back(EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_KHR);
+      contextAttributes.push_back(
+          config.resetNotificationStrategy == glu::RESET_NOTIFICATION_STRATEGY_LOSE_CONTEXT_ON_RESET
+              ? EGL_LOSE_CONTEXT_ON_RESET_KHR
+              : EGL_NO_RESET_NOTIFICATION_KHR);
+    }
+    if ((m_type.getFlags() & glu::CONTEXT_NO_ERROR) != 0) {
+      contextAttributes.push_back(EGL_CONTEXT_OPENGL_NO_ERROR_KHR);
+      contextAttributes.push_back(EGL_TRUE);
+    }
+    contextAttributes.push_back(EGL_NONE);
 
     const RenderContext *shared =
         dynamic_cast<const RenderContext *>(sharedContext);
@@ -245,7 +262,7 @@ RenderContext::RenderContext(const glu::RenderConfig &config,
       throw tcu::NotSupportedError("Cannot share with a foreign context type");
     m_context = eglCreateContext(m_display, eglConfig,
                                  shared ? shared->eglContext() : EGL_NO_CONTEXT,
-                                 contextAttributes);
+                                 contextAttributes.data());
     if (m_context == EGL_NO_CONTEXT)
       throw tcu::ResourceError("eglCreateContext failed");
 

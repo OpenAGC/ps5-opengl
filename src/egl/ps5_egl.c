@@ -614,7 +614,8 @@ eglQueryString(EGLDisplay display, EGLint name)
       return "1.4 PS5 experimental";
    case EGL_EXTENSIONS:
       return PS5_ENABLE_CORE_CONTEXT_CANDIDATE ?
-         "EGL_KHR_create_context EGL_KHR_no_config_context "
+         "EGL_KHR_create_context EGL_KHR_create_context_no_error "
+         "EGL_EXT_create_context_robustness EGL_KHR_no_config_context "
          "EGL_KHR_surfaceless_context" : "";
    case EGL_CLIENT_APIS:
       return "OpenGL";
@@ -816,6 +817,77 @@ eglCreateWindowSurface(EGLDisplay display, EGLConfig config,
    return (EGLSurface)surface;
 }
 
+struct ps5_egl_context_request {
+   int major, minor;
+   EGLint profile_mask;
+   unsigned st_flags;   /* ST_CONTEXT_FLAG_* */
+   unsigned pipe_flags; /* PIPE_CONTEXT_* */
+};
+
+/* EGL_KHR_create_context, EGL_KHR_create_context_no_error and
+ * EGL_EXT_create_context_robustness. Returns EGL_SUCCESS or the EGL error. */
+static EGLint
+ps5_context_attributes(const EGLint *attributes,
+                       struct ps5_egl_context_request *request)
+{
+   memset(request, 0, sizeof(*request));
+   while (attributes && *attributes != EGL_NONE) {
+      const EGLint name = *attributes++;
+      const EGLint value = *attributes++;
+
+      switch (name) {
+      case EGL_CONTEXT_MAJOR_VERSION_KHR:
+         request->major = value;
+         break;
+      case EGL_CONTEXT_MINOR_VERSION_KHR:
+         request->minor = value;
+         break;
+      case EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR:
+         request->profile_mask = value;
+         break;
+      case EGL_CONTEXT_FLAGS_KHR:
+         if (value & ~(EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR |
+                       EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR |
+                       EGL_CONTEXT_OPENGL_ROBUST_ACCESS_BIT_KHR))
+            return EGL_BAD_ATTRIBUTE;
+         if (value & EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR)
+            request->st_flags |= ST_CONTEXT_FLAG_DEBUG;
+         if (value & EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR)
+            request->st_flags |= ST_CONTEXT_FLAG_FORWARD_COMPATIBLE;
+         if (value & EGL_CONTEXT_OPENGL_ROBUST_ACCESS_BIT_KHR)
+            request->pipe_flags |= PIPE_CONTEXT_ROBUST_BUFFER_ACCESS;
+         break;
+      case EGL_CONTEXT_OPENGL_ROBUST_ACCESS_EXT:
+         if (value != EGL_TRUE && value != EGL_FALSE)
+            return EGL_BAD_ATTRIBUTE;
+         if (value)
+            request->pipe_flags |= PIPE_CONTEXT_ROBUST_BUFFER_ACCESS;
+         break;
+      case EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_KHR:
+      case EGL_CONTEXT_OPENGL_RESET_NOTIFICATION_STRATEGY_EXT:
+         if (value == EGL_LOSE_CONTEXT_ON_RESET_KHR)
+            request->pipe_flags |= PIPE_CONTEXT_LOSE_CONTEXT_ON_RESET;
+         else if (value != EGL_NO_RESET_NOTIFICATION_KHR)
+            return EGL_BAD_ATTRIBUTE;
+         break;
+      case EGL_CONTEXT_OPENGL_NO_ERROR_KHR:
+         if (value != EGL_TRUE && value != EGL_FALSE)
+            return EGL_BAD_ATTRIBUTE;
+         if (value)
+            request->st_flags |= ST_CONTEXT_FLAG_NO_ERROR;
+         break;
+      default:
+         return EGL_BAD_ATTRIBUTE;
+      }
+   }
+   /* A no-error context can be neither a debug nor a robust-access context. */
+   if ((request->st_flags & ST_CONTEXT_FLAG_NO_ERROR) &&
+       ((request->st_flags & ST_CONTEXT_FLAG_DEBUG) ||
+        (request->pipe_flags & PIPE_CONTEXT_ROBUST_BUFFER_ACCESS)))
+      return EGL_BAD_MATCH;
+   return EGL_SUCCESS;
+}
+
 EGLAPI EGLContext EGLAPIENTRY
 eglCreateContext(EGLDisplay display, EGLConfig config, EGLContext share,
                  const EGLint *attributes)
@@ -830,6 +902,7 @@ eglCreateContext(EGLDisplay display, EGLConfig config, EGLContext share,
    int requested_major = 0, requested_minor = 0;
    EGLint profile_mask = 0;
    unsigned context_flags = 0;
+   unsigned pipe_flags = 0;
 
    PS5_EGL_LOCK();
 
@@ -859,36 +932,17 @@ eglCreateContext(EGLDisplay display, EGLConfig config, EGLContext share,
          ps5_set_error(EGL_BAD_ATTRIBUTE);
          return EGL_NO_CONTEXT;
       }
-      while (*attributes != EGL_NONE) {
-         EGLint name = *attributes++;
-         EGLint value = *attributes++;
-
-         switch (name) {
-         case EGL_CONTEXT_MAJOR_VERSION_KHR:
-            requested_major = value;
-            break;
-         case EGL_CONTEXT_MINOR_VERSION_KHR:
-            requested_minor = value;
-            break;
-         case EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR:
-            profile_mask = value;
-            break;
-         case EGL_CONTEXT_FLAGS_KHR:
-            if (value & ~(EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR |
-                          EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR)) {
-               ps5_set_error(EGL_BAD_ATTRIBUTE);
-               return EGL_NO_CONTEXT;
-            }
-            if (value & EGL_CONTEXT_OPENGL_DEBUG_BIT_KHR)
-               context_flags |= ST_CONTEXT_FLAG_DEBUG;
-            if (value & EGL_CONTEXT_OPENGL_FORWARD_COMPATIBLE_BIT_KHR)
-               context_flags |= ST_CONTEXT_FLAG_FORWARD_COMPATIBLE;
-            break;
-         default:
-            ps5_set_error(EGL_BAD_ATTRIBUTE);
-            return EGL_NO_CONTEXT;
-         }
+      struct ps5_egl_context_request request;
+      const EGLint error = ps5_context_attributes(attributes, &request);
+      if (error != EGL_SUCCESS) {
+         ps5_set_error(error);
+         return EGL_NO_CONTEXT;
       }
+      requested_major = request.major;
+      requested_minor = request.minor;
+      profile_mask = request.profile_mask;
+      context_flags = request.st_flags;
+      pipe_flags = request.pipe_flags;
    }
    memset(&options, 0, sizeof(options));
    options.allow_compressed_fallback =
@@ -942,6 +996,7 @@ eglCreateContext(EGLDisplay display, EGLConfig config, EGLContext share,
    attribs.major = requested_major ? requested_major : major;
    attribs.minor = requested_major ? requested_minor : minor;
    attribs.flags = context_flags;
+   attribs.context_flags = pipe_flags;
    attribs.visual = ps5_config.visual;
    attribs.options = options;
    context->st = st_api_create_context(&ps5_display.frontend, &attribs,

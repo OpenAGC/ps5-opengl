@@ -17541,7 +17541,9 @@ ps5_context_create(struct pipe_screen *screen, void *priv, unsigned flags)
    struct ps5_context *context;
    struct pipe_resource descriptor_template;
 
-   if (flags & ~PIPE_CONTEXT_PREFER_THREADED)
+   /* Robust buffer access and reset notification need no context state here. */
+   if (flags & ~(PIPE_CONTEXT_PREFER_THREADED | PIPE_CONTEXT_ROBUST_BUFFER_ACCESS |
+                 PIPE_CONTEXT_LOSE_CONTEXT_ON_RESET))
       return NULL;
 
    context = calloc(1, sizeof(*context));
