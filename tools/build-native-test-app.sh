@@ -188,14 +188,19 @@ if [[ $gate_object == egl_public_gl46_showcase.o ]]; then
     for asset in icon0.png pic0.dds pic1.dds snd0.at9; do
         install -m 0644 "$presentation/$asset" "$app/sce_sys/$asset"
     done
-    python3 - "$app/sce_sys/param.json" <<'PY'
+    # Its name and its content version come from its own param.json, a file of the repository:
+    # the homebrew catalog reads the content version there, and a console compares it with the
+    # installed one to tell that a release is newer.
+    python3 - "$app/sce_sys/param.json" "$presentation/param.json" <<'PY'
 import json
 import sys
 from pathlib import Path
 
 path = Path(sys.argv[1])
 metadata = json.loads(path.read_text())
-metadata["localizedParameters"]["en-US"]["titleName"] = "PS5 OpenGL Showcase"
+own = json.loads(Path(sys.argv[2]).read_text())
+metadata["localizedParameters"]["en-US"]["titleName"] = own["localizedParameters"]["en-US"]["titleName"]
+metadata["contentVersion"] = own["contentVersion"]
 path.write_text(json.dumps(metadata, indent=2) + "\n")
 PY
 fi

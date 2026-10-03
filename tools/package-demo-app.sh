@@ -22,8 +22,9 @@ rm -f -- "$destination/$name.zip" "$destination/$name.zip.sha256"
 (cd "$dist" && python3 -m zipfile -c "$destination/$name.zip" PPSA99005)
 cd "$destination"
 python3 -m zipfile -t "$name.zip" >/dev/null
-python3 - "$name.zip" <<'PY'
+python3 - "$name.zip" "$version" <<'PY'
 import json
+import re
 import sys
 import zipfile
 
@@ -36,6 +37,14 @@ with zipfile.ZipFile(sys.argv[1]) as archive:
     metadata = json.loads(archive.read("PPSA99005/sce_sys/param.json"))
 assert metadata["titleId"] == "PPSA99005"
 assert metadata["localizedParameters"]["en-US"]["titleName"] == "PS5 OpenGL Showcase"
+# A release X.Y.Z carries content version 0X.00Y.00Z (examples/core46-showcase/sce_sys/param.json):
+# a console tells a newer release by it, so a release that forgot to raise it is refused here.
+release = re.fullmatch(r"(\d{1,2})\.(\d{1,3})\.(\d{1,3})(-.+)?", sys.argv[2])
+if release:
+    expected = "%02d.%03d.%03d" % tuple(int(part) for part in release.groups()[:3])
+    assert metadata["contentVersion"] == expected, (
+        f"contentVersion {metadata['contentVersion']} is not {expected}: "
+        "raise it in examples/core46-showcase/sce_sys/param.json")
 PY
 sha256sum "$name.zip" > "$name.zip.sha256"
 printf 'Demo app: %s\n' "$destination/$name.zip"

@@ -77,3 +77,11 @@ cc -std=c11 -O2 -DSHOWCASE_HOST_PREVIEW=120 -DSHOWCASE_WIDTH=1920 -DSHOWCASE_HEI
    examples/core46-showcase/main.c -o showcase -lEGL -lGL -lm
 EGL_PLATFORM=surfaceless MESA_GL_VERSION_OVERRIDE=4.6 ./showcase   # writes showcase.ppm
 ```
+
+## Releasing
+
+`sce_sys/param.json` holds the demo app's name and its content version. The
+content version is what a console reports for an installed app and what the
+[homebrew catalog](https://homebrew.page) reads to tell that a release is
+newer, so each release raises it: release `X.Y.Z` carries `0X.00Y.00Z`.
+`make demo` refuses a release version whose content version does not match.
