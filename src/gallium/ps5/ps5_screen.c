@@ -17022,30 +17022,34 @@ ps5_set_constant_buffer(struct pipe_context *base, mesa_shader_stage shader,
       return;
    }
    state = &context->constants[slot][index];
-   pipe_resource_reference(&state->buffer, NULL);
+   /* Keep the slot's old reference until the new one is taken, as for vertex
+    * buffers: the buffer being set may be the one this slot already holds,
+    * with the slot's reference as the last. */
+   struct pipe_resource *previous = state->buffer;
+   state->buffer = NULL;
    state->offset = 0;
    state->valid = false;
    state->copied = false;
    state->size = 0;
    if (!buffer)
-      return;
+      goto release;
    maximum_size = PS5_ENABLE_UBO_CANDIDATE
                      ? PS5_MAX_CONSTANT_BUFFER_SIZE
                      : PS5_DIRECT_ALIGNMENT - PS5_CONSTANT_DATA_OFFSET;
    if (!buffer->buffer_size ||
        buffer->buffer_size > maximum_size ||
        (index && (buffer->buffer_offset & 15u)))
-      return;
+      goto release;
    if (buffer->user_buffer) {
       if (index)
-         return;
+         goto release;
       storage =
          (struct ps5_resource *)context->descriptor_storage[descriptor_slot];
       destination_offset = ps5_copied_constant_offset(slot);
       copied_size = (buffer->buffer_size + 15u) & ~15u;
       if (!storage || destination_offset > storage->size ||
           copied_size > storage->size - destination_offset)
-         return;
+         goto release;
       memcpy(storage->data + destination_offset, buffer->user_buffer,
              buffer->buffer_size);
       memset(storage->data + destination_offset + buffer->buffer_size, 0,
@@ -17058,12 +17062,14 @@ ps5_set_constant_buffer(struct pipe_context *base, mesa_shader_stage shader,
       if (!resource || resource->base.target != PIPE_BUFFER ||
           buffer->buffer_offset > resource->size ||
           buffer->buffer_size > resource->size - buffer->buffer_offset)
-         return;
+         goto release;
       pipe_resource_reference(&state->buffer, buffer->buffer);
       state->offset = buffer->buffer_offset;
    }
    state->size = buffer->buffer_size;
    state->valid = true;
+release:
+   pipe_resource_reference(&previous, NULL);
 }
 
 static void

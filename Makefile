@@ -106,6 +106,7 @@ test:
 	python3 tests/ps5/test_gpu_clear_state.py
 	python3 tests/ps5/test_vertex_layout_state.py
 	python3 tests/ps5/test_vertex_buffer_references.py
+	python3 tests/ps5/test_constant_buffer_references.py
 	python3 tests/ps5/test_gpu_blit.py
 	python3 tests/ps5/test_linear_color_targets.py
 	python3 tests/ps5/test_render_target_extents.py
@@ -157,6 +158,7 @@ test-compiler:
 	python3 tests/ps5/test_meta_vertex_inputs.py
 	python3 tests/ps5/test_unused_primitive_export.py
 	python3 tests/ps5/test_vertex_constants.py
+	python3 tests/ps5/test_vertex_binding_alignment.py
 	python3 tests/ps5/test_geometry_texture_bindings.py
 	python3 tests/ps5/test_buffer_array_lowering.py
 	python3 tests/ps5/test_compute_metadata.py
