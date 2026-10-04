@@ -99,6 +99,25 @@ The campaign found and fixed these defects before the final run:
   objects and change the result of a later case at random.
 - Logs are buffered during the run and written when a session ends.
 
+## Later releases
+
+A changed driver does not inherit the result above.
+
+**SDK 1.0.1** (October 4, 2026) is 1.0.0 plus one driver change: binding vertex
+buffers takes the new references before it drops the old ones
+([issue 3](https://github.com/blackbearreloaded/ps5-opengl/issues/3)). It was
+checked with a focused run on the same console, not a new complete run:
+
+- 3,317 cases that exercise vertex buffers, vertex arrays and attributes, draw
+  calls, transform feedback and buffer objects, taken from three sessions of the
+  run above (OpenGL ES 3.0 tests, OpenGL ES 3.1 tests, OpenGL 4.6 at 64x64).
+- One launch, buffered logs, no crash or hang: 3,213 Pass, 103 NotSupported and
+  1 compatibility warning.
+- Every case has the same result as in the 1.0.0 run.
+
+The raw logs of this focused run are kept locally and are not part of the
+published evidence.
+
 ## Scope
 
 The result belongs to the tested binary, the CTS application built from the

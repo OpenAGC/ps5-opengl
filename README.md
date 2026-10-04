@@ -183,13 +183,17 @@ it. The earlier OpenGL 3.3 campaign accounts for 39,544 results: 37,404 pass and
 
 The results were not submitted to Khronos: this is the project's own run of the
 test suite, not Khronos certification. They belong to the tested binary, the
-test application built from the 1.0.0 source, and to one console. See
+test application built from the 1.0.0 source, and to one console. SDK 1.0.1 is
+1.0.0 plus one vertex-buffer fix; it was checked with a focused run of 3,317 of
+those cases, not a new complete run
+([details](docs/gl46-conformance-run.md#later-releases)). See
 [supported boundaries](docs/limitations.md).
 
 ## Releases
 
 | SDK | Highlights |
 | --- | --- |
+| [1.0.1](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/v1.0.1) | Fixes an abort or use-after-free when vertex buffers are re-sent while the driver holds their last reference ([#3](https://github.com/blackbearreloaded/ps5-opengl/issues/3)) |
 | [1.0.0](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/v1.0.0) | Passes the complete Khronos OpenGL 4.6 conformance test run ([report](docs/gl46-conformance-run.md)); robust-access and no-error contexts |
 | [0.6.0](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/v0.6.0) | Queued compute: about 15-35 us of CPU per dispatch instead of 1.1 ms; showcase demo app |
 | [0.5.0](https://github.com/blackbearreloaded/ps5-opengl/releases/tag/v0.5.0) | One SDK for every display: 1080p/1440p/4K at 60/120 Hz chosen at runtime |
