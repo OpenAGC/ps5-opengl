@@ -269,7 +269,8 @@ int main(void) {
         assert(closes == (n <= 120) && unregisters == 0);
         if (n > 120)
             assert(runtime_video_handle == 7 && runtime_video_registered && runtime_video_framebuffer == scanout);
-            assert(runtime_scanout_flush_needed == 1);
+        /* Every case: registration (setup) or the completed release re-armed it. */
+        assert(runtime_scanout_flush_needed == 1);
     }
     setup(); pending_error = -21;
     assert(runtime_video_wait_idle() != 0 && !waits && pending_calls == 1);
