@@ -192,7 +192,9 @@ cross-compiling an object alone does not produce a runnable application.
 
 ## Supported boundary and tests
 
-One fixed window at the selected SDK dimensions, one unshared 3.3 Core context, default context flags,
+One fixed window at the selected SDK dimensions, one unshared context with default context flags
+(3.3 to 4.6 Core, or a Compatibility context up to 4.6; the requested version and profile are
+passed to EGL unchanged),
 RGBA8 double buffering, config-checked depth/stencil and interval 0 or 1.
 G19 always owns the physical scanout. SDL's requested interval is reported;
 this is not a new timing or swap-tearing guarantee. Window/context operations
@@ -222,6 +224,9 @@ reinitialization, real SDL queue and virtual-joystick delivery, and the example.
 The example checks cover both probe coordinates/formats/frame numbers, a
 one-byte tolerance, two-byte mismatches at either frame, and early quit.
 It does not execute GPU rendering or physical input.
+Core is the conformance-tested profile. A Compatibility context (also what SDL's default
+profile mask selects) is accepted for ports of older renderers, without a conformance run
+behind it; see [limitations](../../docs/limitations.md).
 The optional host matrix runs legacy 1080p60, 1440p120 and 2160p120 against
 separate SDK copies with regenerated manifests. These copies are explicitly
 host profile fixtures, not native SDKs: their runtime archives are unchanged

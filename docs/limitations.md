@@ -8,10 +8,13 @@ Khronos-certified driver or a guarantee of universal application compatibility.
 Applications use fullscreen EGL and a static SDK in an already configured native
 homebrew environment. Desktop projects still need entry-point, build, window,
 input and lifecycle adaptation. GLX, WGL and reusable GLFW integration are absent;
-a desktop compatibility profile is not a supported product claim.
+Compatibility-profile contexts can be created through EGL and the SDL2 bridge for ports of
+older renderers (fixed function, legacy varyings, client-side arrays), but only the Core
+profile has a conformance run behind it; treat Compatibility as best effort.
 
 The [SDL2 bridge](../integration/SDL2/README.md) supports one fixed-size window
-and one unshared Core context. It is not a complete SDL platform port.
+and one unshared context (3.3 to 4.6 Core, or Compatibility). It is not a complete SDL
+platform port.
 The [physical-input check](sdl-input-validation.md) covers one controller/user,
 selected buttons/stick actions and reconnect at 1440p—not all input devices or
 automatic acceptance for every SDK version.

@@ -16,6 +16,7 @@ static int display_token, config_token, surface_token, context_token;
 #define CONTEXT ((EGLContext)&context_token)
 static int initialized, surface_live, context_live, current, swaps, creates, destroys;
 static unsigned reads, clears;
+static EGLint context_version, context_profile;
 static GLfloat color[4];
 static const char *failure;
 static EGLint error_code;
@@ -72,10 +73,12 @@ EGLBoolean eglBindAPI(EGLenum api)
 EGLContext eglCreateContext(EGLDisplay d, EGLConfig c, EGLContext share, const EGLint *a)
 {
     assert(d == DISPLAY && c == CONFIG && !share && !context_live);
-    assert(a[0] == EGL_CONTEXT_MAJOR_VERSION_KHR && a[1] == 3);
-    assert(a[2] == EGL_CONTEXT_MINOR_VERSION_KHR && a[3] == 3);
-    assert(a[4] == EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR && a[5] == EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR);
+    assert(a[0] == EGL_CONTEXT_MAJOR_VERSION_KHR && a[2] == EGL_CONTEXT_MINOR_VERSION_KHR);
+    assert(a[4] == EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR && a[6] == EGL_NONE);
+    assert(a[5] == EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR ||
+           a[5] == EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT_KHR);
     if (fail("context")) return EGL_NO_CONTEXT;
+    context_version = a[1] * 10 + a[3]; context_profile = a[5];
     context_live = 1; clears = 0; return CONTEXT;
 }
 EGLBoolean eglMakeCurrent(EGLDisplay d, EGLSurface draw, EGLSurface read, EGLContext c)
@@ -137,11 +140,27 @@ __eglMustCastToProperFunctionPointerType eglGetProcAddress(const char *name)
     return NULL;
 }
 
-static void attributes(void)
+static void request(int major, int minor, int profile)
 {
-    assert(SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 3) == 0);
-    assert(SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, 3) == 0);
-    assert(SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, SDL_GL_CONTEXT_PROFILE_CORE) == 0);
+    assert(SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, major) == 0);
+    assert(SDL_GL_SetAttribute(SDL_GL_CONTEXT_MINOR_VERSION, minor) == 0);
+    assert(SDL_GL_SetAttribute(SDL_GL_CONTEXT_PROFILE_MASK, profile) == 0);
+}
+static void attributes(void) { request(3, 3, SDL_GL_CONTEXT_PROFILE_CORE); }
+/* The bridge forwards exactly the requested version and profile to EGL. */
+static void accepted(SDL_Window *w, int major, int minor, int profile, EGLint egl_profile)
+{
+    SDL_GLContext c;
+    request(major, minor, profile);
+    c = SDL_GL_CreateContext(w); assert(c && current);
+    assert(context_version == major * 10 + minor && context_profile == egl_profile);
+    SDL_GL_DeleteContext(c); assert(!context_live && !current);
+}
+static void rejected(SDL_Window *w, int major, int minor, int profile)
+{
+    request(major, minor, profile);
+    assert(!SDL_GL_CreateContext(w) && !context_live);
+    assert(strstr(SDL_GetError(), "3.3 to 4.6 Core, or Compatibility up to 4.6"));
 }
 static SDL_Window *window(void)
 { return SDL_CreateWindow("contract", 0, 0, PS5_OPENGL_NATIVE_WIDTH, PS5_OPENGL_NATIVE_HEIGHT, SDL_WINDOW_OPENGL); }
@@ -196,9 +215,21 @@ int main(void)
     for (unsigned i = 0; i < SDL_arraysize(context_failures); ++i) {
         failure = context_failures[i]; assert(!SDL_GL_CreateContext(w)); assert(!context_live);
     }
-    assert(SDL_GL_SetAttribute(SDL_GL_CONTEXT_MAJOR_VERSION, 4) == 0);
-    assert(!SDL_GL_CreateContext(w)); attributes();
+    rejected(w, 3, 2, SDL_GL_CONTEXT_PROFILE_CORE);
+    rejected(w, 4, 7, SDL_GL_CONTEXT_PROFILE_CORE);
+    rejected(w, 4, 7, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
+    rejected(w, 5, 0, SDL_GL_CONTEXT_PROFILE_CORE);
+    rejected(w, 3, 0, SDL_GL_CONTEXT_PROFILE_ES);
+    rejected(w, 0, 0, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY);
+    accepted(w, 4, 6, SDL_GL_CONTEXT_PROFILE_CORE, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR);
+    accepted(w, 4, 6, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY,
+             EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT_KHR);
+    accepted(w, 3, 2, SDL_GL_CONTEXT_PROFILE_COMPATIBILITY,
+             EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT_KHR);
+    accepted(w, 2, 1, 0, EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT_KHR);
+    attributes();
     c = SDL_GL_CreateContext(w); assert(c && current);
+    assert(context_version == 33 && context_profile == EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR);
     assert(!SDL_GL_CreateContext(w));
     assert(SDL_GL_GetCurrentContext() == c && SDL_GL_GetCurrentWindow() == w);
     assert(SDL_GL_MakeCurrent(NULL, NULL) == 0 && !current);
@@ -241,6 +272,7 @@ int main(void)
     failure = "width"; assert(g19_example_main(0, NULL) == 1); clean();
     failure = "height"; assert(g19_example_main(0, NULL) == 1); clean();
     assert(g19_example_main(0, NULL) == 0); clean(); assert(swaps == 181 && reads == 2);
+    assert(context_version == 33 && context_profile == EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR);
     failure = "proc"; assert(g19_example_main(0, NULL) == 1); clean();
     failure = "swap"; assert(g19_example_main(0, NULL) == 1); clean();
     failure = "pixel0"; assert(g19_example_main(0, NULL) == 1); clean();

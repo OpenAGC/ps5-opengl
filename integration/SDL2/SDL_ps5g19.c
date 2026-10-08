@@ -146,19 +146,29 @@ static void delete_context(_THIS, SDL_GLContext context)
 static SDL_GLContext create_context(_THIS, SDL_Window *window)
 {
     G19 *g = _this->driverdata;
+    const int major = _this->gl_config.major_version, minor = _this->gl_config.minor_version;
+    const int version = major * 10 + minor;
+    const int core = _this->gl_config.profile_mask == SDL_GL_CONTEXT_PROFILE_CORE;
+    /* SDL's default mask (0) asks for the desktop default, which is Compatibility. */
+    const int compatibility = !_this->gl_config.profile_mask ||
+        _this->gl_config.profile_mask == SDL_GL_CONTEXT_PROFILE_COMPATIBILITY;
     const EGLint attributes[] = {
-        EGL_CONTEXT_MAJOR_VERSION_KHR, 3, EGL_CONTEXT_MINOR_VERSION_KHR, 3,
-        EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR, EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR,
+        EGL_CONTEXT_MAJOR_VERSION_KHR, major, EGL_CONTEXT_MINOR_VERSION_KHR, minor,
+        EGL_CONTEXT_OPENGL_PROFILE_MASK_KHR, core ? EGL_CONTEXT_OPENGL_CORE_PROFILE_BIT_KHR :
+                                                    EGL_CONTEXT_OPENGL_COMPATIBILITY_PROFILE_BIT_KHR,
         EGL_NONE
     };
     if (on_thread(g) < 0) return NULL;
+    /* Core 3.3 to 4.6 is the conformance-tested path. Compatibility contexts are passed
+     * through to EGL as requested; see the README for what is covered there. */
     if (g->context || window != g->window ||
-        _this->gl_config.major_version != 3 || _this->gl_config.minor_version != 3 ||
-        _this->gl_config.profile_mask != SDL_GL_CONTEXT_PROFILE_CORE ||
+        (!core && !compatibility) || major < 1 || minor < 0 || minor > 6 || version > 46 ||
+        (core && version < 33) ||
         _this->gl_config.flags || _this->gl_config.share_with_current_context ||
         _this->gl_config.no_error || _this->gl_config.reset_notification ||
         _this->gl_config.release_behavior != SDL_GL_CONTEXT_RELEASE_BEHAVIOR_FLUSH) {
-        SDL_SetError("G19 SDL requires one unshared OpenGL 3.3 Core context with default flags");
+        SDL_SetError("G19 SDL requires one unshared OpenGL context with default flags: "
+                     "3.3 to 4.6 Core, or Compatibility up to 4.6");
         return NULL;
     }
     if (!eglBindAPI(EGL_OPENGL_API)) {
