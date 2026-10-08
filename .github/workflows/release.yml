@@ -14,8 +14,8 @@ on:
         options: [dynamic, 1080p60, 1440p120, 2160p120]
   # Every push to main (so also a merged pull request) builds the SDK and the showcase
   # app ZIP as run artifacts; only a v* tag reaches the release job.
+  # A build on main is started by hand (Run workflow): pushes to main build nothing.
   push:
-    branches: [main]
     tags: ['v*']
 
 permissions:
