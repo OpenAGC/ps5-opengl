@@ -12,7 +12,10 @@ on:
         type: choice
         default: dynamic
         options: [dynamic, 1080p60, 1440p120, 2160p120]
+  # Every push to main (so also a merged pull request) builds the SDK and the showcase
+  # app ZIP as run artifacts; only a v* tag reaches the release job.
   push:
+    branches: [main]
     tags: ['v*']
 
 permissions:
@@ -139,6 +142,22 @@ jobs:
         run: |
           make demo PS5_OPENGL_PREFIX="$RUNNER_TEMP/relocated-sdk" DEMO_VERSION="$SDK_VERSION"
           cp build/demo/ps5-opengl-showcase-"$SDK_VERSION"-PPSA99005.zip* "$RUNNER_TEMP/release/"
+      - name: Check the showcase app ZIP (every entry 0777) and its checksum
+        run: |
+          cd "$RUNNER_TEMP/release"
+          sha256sum --check ./*.zip.sha256
+          python3 - ps5-opengl-showcase-"$SDK_VERSION"-PPSA99005.zip <<'PY'
+          import sys, zipfile
+          with zipfile.ZipFile(sys.argv[1]) as z:
+              assert z.testzip() is None
+              infos = z.infolist()
+              names = [i.filename for i in infos]
+              assert all(n.startswith("PPSA99005/") for n in names), "entries outside the app folder"
+              assert "PPSA99005/eboot.bin" in names, "no eboot.bin"
+              wrong = [n.filename for n in infos if (n.external_attr >> 16) & 0o777 != 0o777]
+              assert not wrong, f"entries not stored as 0777: {wrong[:3]}"
+              print(f"{sys.argv[1]}: {len(names)} entries, all 0777")
+          PY
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: ps5-opengl-4.6-sdk
