@@ -99,13 +99,14 @@ console qualification.
    identify that scope explicitly. Do not attach an older SDK's acceptance to a
    rebuild.
 
-Every push to `main` (so also a merged pull request) runs the same build and keeps
+A push to `main` (so also a merged pull request) does not start this build; only
+**Host checks** runs on every push and pull request. Every manual or tag run keeps
 the SDK archive and the showcase app ZIP as Actions artifacts. The showcase app ZIP
 stores every entry with permissions 0777 (`tools/zip-open-modes.py`), because the
 console only starts an app whose files are open to all; the build fails otherwise.
 The SDK archive keeps its ordinary permissions.
 
-Manual runs and pushes to `main` only create Actions artifacts (seven-day retention); they do not
+Manual runs only create Actions artifacts (seven-day retention); they do not
 create tags or releases. Tag builds attach the archive and checksum to the published release.
 Existing releases/assets are never overwritten. Repository visibility is not
 changed by this workflow. Access follows the repository's permissions.
